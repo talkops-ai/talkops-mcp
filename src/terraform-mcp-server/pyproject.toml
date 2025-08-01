@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terraform-mcp-server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.13.4",
+    "dotenv>=0.9.9",
+    "langchain>=0.3.26",
+    "langchain-community>=0.3.27",
+    "langchain-core>=0.3.70",
+    "langchain-neo4j>=0.4.0",
+    "langchain-openai>=0.3.28",
+    "langchain-text-splitters>=0.3.8",
+    "langgraph>=0.5.4",
+    "langgraph-prebuilt>=0.5.2",
+    "loguru>=0.7.3",
+    "markdown>=3.8.2",
+    "mcp[cli]>=1.12.1",
+    "neo4j-graphrag[openai]>=1.8.0",
+    "pdfminer-six>=20250506",
+    "pydantic>=2.11.7",
+    "pypdf>=5.8.0",
+    "pypdf2>=3.0.1",
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+    "unstructured>=0.18.9",
+]
+
+[project.scripts]
+agents-mcp-server = "terraform_mcp_server.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["terraform_mcp_server*"]
+exclude = ["neo4j_data*", "tests*", "examples*"]
