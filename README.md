@@ -6,16 +6,17 @@ This repository serves as the **central hub for all MCP servers** built to suppo
 
 - **Kubernetes Package Management:** For managing Kubernetes workloads, the Helm MCP Server enables AI-driven Helm chart operations and best practices.
 - **CI/CD, Build & Release:** Dedicated MCP servers (e.g., ArgoCD MCP Server, Jenkins MCP Server) will provide automation and orchestration for continuous integration, delivery, and deployment pipelines.
-- **Cloud Orchestration:** To manage cloud resources across providers, there will be MCP servers for tools like Terraform and Terragrunt, supporting AWS, Azure, Google Cloud, and more.
+- **Cloud Orchestration:** Dedicated MCP Servers like Terraform MCP Server will provides comprehensive infrastructure as code management with secure command execution, semantic document search, and intelligent document ingestion for AWS, Azure, Google Cloud, and more.
 - **Observability & Monitoring:** For monitoring and observability, specialized MCP servers will be available for Prometheus, the TICK stack (Telegraf, InfluxDB, Chronograf, Kapacitor), and other monitoring solutions.
 
-The vision for CloudBrain MCP Servers is to offer a **modular, extensible, and unified platform** where each DevOps domain—whether infrastructure as code, CI/CD, cloud orchestration, or observability—can be managed through a dedicated MCP server. This approach empowers AI assistants and automation tools to deliver intelligent, context-aware DevOps workflows, regardless of the underlying technology stack.
+The vision for CloudBrain MCP Servers is to offer a **modular, extensible, and unified platform** where each DevOps domain—whether infrastructure as code, CI/CD, cloud orchestration, or observability—can be managed through a dedicated MCP server. This approach empowers AI agents and automation tools to deliver intelligent, context-aware DevOps workflows, regardless of the underlying technology stack.
 
 ## Table of Contents
 
 - [CloudBrain MCP Servers](#cloudbrain-mcp-servers)
   - [Table of Contents](#table-of-contents)
   - [Available Servers](#available-servers)
+    - [Terraform MCP Server](#terraform-mcp-server)
     - [Helm MCP Server](#helm-mcp-server)
     - [ArgoCD MCP Server](#argocd-mcp-server)
     - [Agents Central Registry](#agents-central-registry)
@@ -24,6 +25,40 @@ The vision for CloudBrain MCP Servers is to offer a **modular, extensible, and u
   - [License](#license)
 
 ## Available Servers
+
+### Terraform MCP Server
+
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Terraform](https://img.shields.io/badge/terraform-supported-brightgreen)](https://www.terraform.io/)
+[![Neo4j](https://img.shields.io/badge/neo4j-vector%20search-orange)](https://neo4j.com/)
+
+A comprehensive Model Context Protocol (MCP) server for Terraform operations, featuring secure command execution, semantic document search, and intelligent document ingestion with vector embeddings and Neo4j integration.
+
+- **Secure Terraform Execution**
+  - Enterprise-grade security with command whitelisting and validation
+  - Directory traversal protection and dangerous pattern detection
+  - Configurable timeouts and comprehensive output processing
+  - Support for all major Terraform commands (init, plan, validate, apply, destroy)
+- **Semantic Document Search**
+  - Vector similarity search over Terraform documentation using Neo4j
+  - Multi-type search across resources, data sources, and best practices
+  - Advanced filtering with similarity thresholds and node type filtering
+  - HNSW-based similarity search with 1536-dimensional embeddings
+- **Intelligent Document Ingestion**
+  - Multi-format support for HTML, Markdown, and PDF documents
+  - AI-powered content structuring with LLM integration
+  - Incremental processing with skip logic for already ingested documents
+  - Structured chunking with metadata preservation
+- **Multi-Provider AI Support**
+  - OpenAI, Anthropic, Azure OpenAI, HuggingFace, Cohere, Ollama integration
+  - Configurable LLM providers for document processing and search
+  - Flexible embedding models with customizable dimensions
+- **Neo4j Vector Database**
+  - Graph database storage with vector indexes for semantic search
+  - Comprehensive metadata tracking and relationship modeling
+  - High-performance query capabilities with connection reuse
+
+[Learn more](src/terraform-mcp-server/README.md)
 
 ### Helm MCP Server
 
