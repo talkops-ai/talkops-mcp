@@ -64,3 +64,6 @@ target/
 
 tasks/
 reference/
+docs/
+pyproject.toml.bak
+tests/

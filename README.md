@@ -1,4 +1,4 @@
-# CloudBrain MCP Servers
+# TalkOps MCP Servers
 
 A suite of Model Context Protocol (MCP) servers for DevOps tools and technologies, enabling AI assistants and automation to interact with modern infrastructure and deployment technologies.
 
@@ -9,16 +9,15 @@ This repository serves as the **central hub for all MCP servers** built to suppo
 - **Cloud Orchestration:** Dedicated MCP Servers like Terraform MCP Server will provides comprehensive infrastructure as code management with secure command execution, semantic document search, and intelligent document ingestion for AWS, Azure, Google Cloud, and more.
 - **Observability & Monitoring:** For monitoring and observability, specialized MCP servers will be available for Prometheus, the TICK stack (Telegraf, InfluxDB, Chronograf, Kapacitor), and other monitoring solutions.
 
-The vision for CloudBrain MCP Servers is to offer a **modular, extensible, and unified platform** where each DevOps domain—whether infrastructure as code, CI/CD, cloud orchestration, or observability—can be managed through a dedicated MCP server. This approach empowers AI agents and automation tools to deliver intelligent, context-aware DevOps workflows, regardless of the underlying technology stack.
+The vision for TalkOps MCP Servers is to offer a **modular, extensible, and unified platform** where each DevOps domain—whether infrastructure as code, CI/CD, cloud orchestration, or observability—can be managed through a dedicated MCP server. This approach empowers AI agents and automation tools to deliver intelligent, context-aware DevOps workflows, regardless of the underlying technology stack.
 
 ## Table of Contents
 
-- [CloudBrain MCP Servers](#cloudbrain-mcp-servers)
+- [TalkOps MCP Servers](#talkops-mcp-servers)
   - [Table of Contents](#table-of-contents)
   - [Available Servers](#available-servers)
     - [Terraform MCP Server](#terraform-mcp-server)
     - [Helm MCP Server](#helm-mcp-server)
-    - [ArgoCD MCP Server](#argocd-mcp-server)
     - [Agents Central Registry](#agents-central-registry)
   - [Installation and Setup](#installation-and-setup)
   - [Contributing](#contributing)
@@ -65,54 +64,35 @@ A comprehensive Model Context Protocol (MCP) server for Terraform operations, fe
 [![Docker](https://img.shields.io/badge/docker-ready-blue)](https://hub.docker.com/)
 [![Helm](https://img.shields.io/badge/helm-supported-brightgreen)](https://helm.sh/)
 
-A Model Context Protocol (MCP) server for managing Kubernetes workloads via Helm, inspired by EKS MCP and Terraform MCP architectures.
+A comprehensive Model Context Protocol (MCP) server for managing Kubernetes workloads via Helm. Designed for AI assistants to perform secure, production-grade Helm operations with full validation, monitoring, and best practices guidance.
 
-- **Helm Best Practices**
-  - Prescriptive guidance for Helm chart usage and deployment
-  - Security and compliance recommendations for Kubernetes workloads
-  - Multi-cluster and context-aware operations
-- **Helm Operations**
-  - Install, upgrade, list, uninstall Helm releases
-  - Search public Helm repositories (ArtifactHub, GitHub, etc.)
-  - Pass complex/nested values, multiple values files, and extra CLI flags
-  - Robust error handling and logging
+- **Discovery & Search**
+  - Search Helm charts across repositories (Bitnami, ArtifactHub, custom repos)
+  - Get detailed chart metadata, versions, documentation, and values schemas
+  - Access chart READMEs and comprehensive chart information
+- **Installation & Lifecycle Management**
+  - Install, upgrade, rollback, and uninstall Helm releases
+  - Dry-run installations to preview changes before deployment
+  - Support for custom values, multiple values files, and extra CLI arguments
+- **Validation & Safety**
+  - Validate chart values against JSON schemas
+  - Render and validate Kubernetes manifests before deployment
+  - Check chart dependencies and cluster prerequisites
+  - Generate installation plans with resource estimates
+- **Monitoring & Status**
+  - Monitor deployment health asynchronously
+  - Get real-time release status and history
+  - List all releases across namespaces
 - **Multi-Cluster Support**
-  - Switch between clusters via kubeconfig, context, or EKS cluster name
+  - List and switch between Kubernetes contexts
+  - Namespace-scoped operations for isolation
   - Generic, production-ready Kubernetes authentication
-- **Documentation and Resources**
-  - Access Helm best practices and workflow guides as MCP resources
-  - Rich metadata for Helm charts and repositories
+- **Built-in Guidance**
+  - Comprehensive workflow guides and best practices
+  - Security checklists and troubleshooting guides
+  - Step-by-step procedures for upgrades and rollbacks
 
 [Learn more](src/helm-mcp-server/README.md)
-
-### ArgoCD MCP Server
-
-[![Docker](https://img.shields.io/badge/docker-ready-blue)](https://hub.docker.com/)
-[![ArgoCD](https://img.shields.io/badge/argocd-supported-brightgreen)](https://argoproj.github.io/argo-cd/)
-
-A Model Context Protocol (MCP) server for managing Kubernetes applications and resources via ArgoCD using GitOps principles.
-
-- **GitOps Best Practices**
-  - Prescriptive guidance for ArgoCD application management
-  - Security and compliance recommendations for Kubernetes workloads
-  - Automated sync and self-healing capabilities
-  - Comprehensive resource monitoring and management
-- **ArgoCD Operations**
-  - Create, update, delete, and sync applications
-  - Manage application resources and their lifecycle
-  - Retrieve logs, events, and resource actions
-  - Robust error handling and logging
-- **Resource Management**
-  - Get resource trees and managed resources
-  - Retrieve workload logs and events
-  - Execute resource actions
-  - Monitor application health and status
-- **Documentation and Resources**
-  - Access ArgoCD best practices and workflow guides
-  - Rich metadata for applications and resources
-  - Comprehensive error handling and logging
-
-[Learn more](src/argocd-mcp-server/README.md)
 
 ### Agents Central Registry
 
@@ -152,3 +132,11 @@ Contributions are welcome! Please open an issue or pull request on the project r
 ## License
 
 This project is licensed under the Apache-2.0 License.
+
+## 📞 Support
+
+For questions, issues, or feature requests:
+- Open an issue on GitHub
+- Join our [Discord server](https://discord.gg/tSN2Qn9uM8) to raise requests and get community support
+- See each server's detailed README for specific documentation and guides
+
