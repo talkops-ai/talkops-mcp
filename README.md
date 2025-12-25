@@ -16,14 +16,66 @@ The vision for TalkOps MCP Servers is to offer a **modular, extensible, and unif
 - [TalkOps MCP Servers](#talkops-mcp-servers)
   - [Table of Contents](#table-of-contents)
   - [Available Servers](#available-servers)
-    - [Terraform MCP Server](#terraform-mcp-server)
+    - [ArgoCD MCP Server](#argocd-mcp-server)
     - [Helm MCP Server](#helm-mcp-server)
+    - [Terraform MCP Server](#terraform-mcp-server)
     - [Agents Central Registry](#agents-central-registry)
   - [Installation and Setup](#installation-and-setup)
   - [Contributing](#contributing)
   - [License](#license)
 
 ## Available Servers
+
+### ArgoCD MCP Server
+
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-green.svg)](https://modelcontextprotocol.io/)
+[![ArgoCD](https://img.shields.io/badge/ArgoCD-v2.x-blue.svg)](https://argo-cd.readthedocs.io/)
+[![Docker](https://img.shields.io/badge/docker-ready-blue)](https://hub.docker.com/)
+
+A comprehensive Model Context Protocol (MCP) server for managing Kubernetes applications via ArgoCD using GitOps principles. Designed for AI assistants to perform secure, production-grade ArgoCD operations with deep observability, validation, and guided workflows.
+
+- **Application Management**
+  - Create, update, and delete ArgoCD applications
+  - List applications across clusters with health and sync status
+  - Get detailed application information including resource breakdown
+  - Validate application configurations before deployment
+  - View application events and audit trails
+- **Deployment & Operations**
+  - Sync applications to desired state with dry-run support
+  - Get deployment diffs to preview changes
+  - Monitor sync operations in real-time
+  - Rollback to previous versions with impact analysis
+  - Prune orphaned resources and refresh operations
+  - Cancel ongoing deployments
+- **Repository Management**
+  - Onboard GitHub repositories via HTTPS or SSH
+  - Validate repository connections before onboarding
+  - List and manage registered repositories
+  - Generate Kubernetes secret manifests for disaster recovery
+  - Secure credential handling (never exposed to LLM)
+- **Project Management (Multi-Tenancy)**
+  - Create ArgoCD projects with RBAC policies
+  - Configure destination clusters and namespaces
+  - Whitelist/blacklist cluster and namespace resources
+  - Generate AppProject YAML manifests
+- **Monitoring & Debugging**
+  - Real-time application health metrics
+  - Smart log analysis with automatic error detection
+  - Cluster-wide health overview
+  - Active sync operation tracking
+  - Comprehensive troubleshooting workflows
+- **Guided Workflows & Prompts**
+  - Repository onboarding, full deployment, debugging workflows
+  - Automated rollback with history and impact preview
+  - Project setup and deployment validation
+- **Security & Safety**
+  - Read-only mode to disable all mutating operations
+  - Credential isolation - secrets never passed to LLM
+  - Write access control with granular operation permissions
+  - TLS verification and dry-run support
+
+[Learn more](src/argocd-mcp-server/README.md)
 
 ### Terraform MCP Server
 
