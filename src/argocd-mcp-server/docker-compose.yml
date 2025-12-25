@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  argocd-mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: argocd-mcp-server
+    
+    # Environment variables (override defaults from entrypoint)
+    environment:
+      # MCP Server Configuration
+      - MCP_SERVER_NAME=argocd-mcp-server
+      - MCP_SERVER_VERSION=0.1.0
+      - MCP_TRANSPORT=http
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8765
+      - MCP_PATH=/sse
+      - MCP_ALLOW_WRITE=false  # Set to 'true' to enable write operations
+      - MCP_HTTP_TIMEOUT=300
+      - MCP_HTTP_KEEPALIVE_TIMEOUT=5
+      - MCP_HTTP_CONNECT_TIMEOUT=60
+      - MCP_LOG_LEVEL=INFO
+      - MCP_LOG_FORMAT=json
+      
+      # ArgoCD Configuration (REQUIRED)
+      - ARGOCD_SERVER_URL=${ARGOCD_SERVER_URL:-https://argocd.example.com}
+      - ARGOCD_AUTH_TOKEN=${ARGOCD_AUTH_TOKEN}  # REQUIRED: Must be set
+      - ARGOCD_INSECURE=false
+      - ARGOCD_TIMEOUT=300
+      
+      # Git Credentials (for repository onboarding)
+      - GIT_USERNAME=${GIT_USERNAME:-}
+      - GIT_PASSWORD=${GIT_PASSWORD:-}  # GitHub token
+      - SSH_PRIVATE_KEY_PATH=/app/.ssh/id_rsa
+    
+    # Port mapping
+    ports:
+      - "8765:8765"
+    
+    # Volume mounts (OPTIONAL)
+    volumes:
+      # Mount SSH key (optional, for SSH repository onboarding)
+      - ${HOME}/.ssh/id_rsa:/app/.ssh/id_rsa:ro
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Resource limits (adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+# Example for read-only mode (monitoring/auditing)
+  argocd-mcp-server-readonly:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: argocd-mcp-server-readonly
+    environment:
+      - MCP_PORT=8766  # Different port
+      - MCP_ALLOW_WRITE=false  # Read-only mode
+      - ARGOCD_SERVER_URL=${ARGOCD_SERVER_URL}
+      - ARGOCD_AUTH_TOKEN=${ARGOCD_AUTH_TOKEN}
+      - MCP_LOG_LEVEL=INFO
+    ports:
+      - "8766:8766"
+    restart: unless-stopped
+    profiles:
+      - readonly  # Only start with: docker-compose --profile readonly up

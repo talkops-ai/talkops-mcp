@@ -562,5 +562,5 @@ memory-bank/*
 .clinerules
 src/jenkins-mcp-server
 src/terragrunt-mcp-server
-src/argocd-mcp-server
+#src/argocd-mcp-server
 tasks/
