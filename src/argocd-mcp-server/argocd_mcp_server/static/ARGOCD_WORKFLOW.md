@@ -1,427 +1,193 @@
-# ArgoCD GitOps Workflow
+# ArgoCD MCP Server - Workflow Architecture
 
-## Purpose and Usage
+## Overview
 
-This workflow guide provides a structured approach for developing, deploying, and managing Kubernetes applications using ArgoCD and GitOps principles. You should follow these steps when helping users create, modify, or operate ArgoCD applications and resources.
+This document outlines the **ArgoCD MCP Server** architecture, following the MCP standard three-component model. This architecture is designed to manage Kubernetes workloads using GitOps principles.
 
-## How to Use This Guide
-You have access to specialized tools and resources through this MCP server that significantly enhance your ability to assist with ArgoCD and GitOps workflows. When working with users on ArgoCD or Kubernetes resources:
+- **TOOLS (29 total)**: Atomic operations for discovery, deployment, repository management, and project management.
+- **PROMPTS (7 total)**: Guided, step-by-step workflows for complex operations.
+- **RESOURCES (5 total)**: Real-time data streams for monitoring and status tracking.
 
-1. Reference this workflow consistently throughout your interactions
-2. Leverage this MCP server's capabilities rather than relying solely on your general knowledge
-3. Explain the workflow steps to users as you assist them
-4. Always follow GitOps best practices for declarative, auditable, and secure operations
+---
 
-## Benefits to Emphasize
-By following this workflow and using these tools, you provide several advantages to users:
+## 🏗️ LAYER 1: TOOLS (The Capabilities)
 
-- Consistent, auditable, and secure application delivery
-- Early detection of configuration errors and drift
-- Automated deployment and rollback capabilities
-- Adherence to GitOps and Kubernetes best practices
-- Improved collaboration and review process for application changes
-- Enhanced security with proper authentication and permission management
-- Comprehensive error handling and logging
+The server exposes 29 distinct tools categorized by function.
 
-## GITOPS WORKFLOW
+### 1. Application Management (7 tools)
+*CRUD operations for ArgoCD Applications.*
+- `list_applications`: Discover apps with filtering.
+- `get_application_details`: Deep dive into app configuration and state.
+- `create_application`: Register new apps in ArgoCD.
+- `update_application`: Modify existing app config.
+- `delete_application`: Remove apps.
+- `validate_application_config`: Pre-deployment validation check.
+- `get_application_events`: Specific history and events.
+
+### 2. Deployment Executor (10 tools)
+*Core sync and state operations.*
+- `sync_application`: The primary deployment trigger.
+- `get_application_diff`: Critical pre-sync check (what will change?).
+- `get_sync_status`: Monitor ongoing operations.
+- `rollback_application` / `rollback_to_revision`: Recovery mechanisms.
+- `get_application_logs`: Debugging support with concise summaries and automatic error detection.
+- `prune_resources`: Cleanup orphaned resources.
+- `hard_refresh` / `soft_refresh`: Cache management.
+- `cancel_deployment`: Emergency stop.
+
+### 3. Repository Management (7 tools)
+*Git repository onboarding and lifecycle management.*
+- `onboard_repository_https`: Onboard Git repositories via HTTPS (credentials from env vars).
+- `onboard_repository_ssh`: Onboard Git repositories via SSH (key from file path).
+- `list_repositories`: List all registered repositories.
+- `get_repository`: Get repository details and connection status.
+- `validate_repository_connection`: Test repository connectivity.
+- `delete_repository`: Remove registered repositories.
+- `generate_repository_secret_manifest`: Generate Kubernetes Secret manifests for repo auth.
+
+### 4. Project Management (5 tools)
+*ArgoCD project administration and access control.*
+- `create_project`: Create new ArgoCD projects with RBAC policies.
+- `list_projects`: List all projects.
+- `get_project`: Get project details and policies.
+- `delete_project`: Remove projects.
+- `generate_project_manifest`: Generate AppProject YAML manifests.
+
+---
+
+## 📋 LAYER 2: PROMPTS (The Workflows)
+
+Prompts orchestrate multiple tools into cohesive, safe workflows.
+
+### 1. `deploy_new_version`
+**Goal:** Generic safe deployment wrapper.
+**Flow:**
+1.  **Validate**: Checks cluster connectivity and app existence.
+2.  **Diff**: Calls `get_application_diff` to show pending changes.
+3.  **Review**: Asks user to confirm changes.
+4.  **Deploy**: Calls `sync_application`.
+5.  **Monitor**: Polls status until completion.
+
+### 2. `rollback_decision`
+**Goal:** Guided recovery from failure.
+**Flow:**
+1.  **Assess**: Shows current version and history (`get_application_details`).
+2.  **Options**: Presents choice between "Rollback 1 step" or "Specific Revision".
+3.  **Impact**: Calls `get_application_diff` to show what reversions will happen.
+4.  **Execute**: Runs the chosen rollback tool.
+
+### 3. `post_deployment_validation`
+**Goal:** Comprehensive health check.
+**Flow:**
+1.  **Status**: Checks `sync_status` and `health_status`.
+2.  **Pods**: Verifies pod readiness and restart counts.
+3.  **Logs**: Scans recent logs for errors.
+4.  **Metrics**: Validates error rates and latency.
+
+---
+
+## 📡 LAYER 3: RESOURCES (The Data)
+
+Real-time read-only streams for monitoring and context.
+
+| URI Template | Description |
+| :--- | :--- |
+| `argocd://applications/{cluster_name}` | List of all apps with their live health/sync state. |
+| `argocd://application-metrics/{cluster}/{app}` | Live metrics (CPU, Memory, Error Rates) for an app. |
+| `argocd://sync-operations/{cluster_name}` | Active sync ops (good for finding stuck deployments). |
+| `argocd://deployment-events/{cluster_name}` | Event stream (SyncStarted, SyncFailed, HealthChanged). |
+| `argocd://cluster-health/{cluster_name}` | Aggregate health score of the cluster. |
+
+---
+
+## Workflow Diagram
 
 ```mermaid
-flowchart TD
-    start([Start GitOps Workflow]) --> auth[Authentication & Security Setup]
-    auth --> repoStructure[Organize GitOps Repository]
-    repoStructure --> appTemplate[Use Application Template or Example Workflow]
-    appTemplate -->|Template Exists| createApp[Create Application Manifest]
-    appTemplate -->|No Template| manualApp[Manually Create Application Manifest]
-    createApp --> validateApp[Validate Application Manifest]
-    manualApp --> validateApp
-    validateApp -->|Valid| commitPR[Commit & Open Pull Request]
-    validateApp -->|Invalid| fixApp[Fix Manifest Issues]
-    fixApp --> validateApp
-    commitPR --> reviewPR[Peer Review & Approval]
-    reviewPR -->|Approved| mergePR[Merge to Main Branch]
-    reviewPR -->|Changes Requested| fixApp
-    mergePR --> argocdSync[ArgoCD Detects Change & Syncs]
-    argocdSync --> monitor[Monitor Application Health & Status]
-    monitor -->|Healthy| done([Workflow Complete])
-    monitor -->|Issues| troubleshoot[Troubleshoot & Remediate]
-    troubleshoot --> fixApp
+graph TB
+    User[User / AI Agent]
     
-    classDef success fill:#bef5cb,stroke:#28a745
-    classDef warning fill:#fff5b1,stroke:#dbab09
-    classDef error fill:#ffdce0,stroke:#cb2431
-    classDef process fill:#f1f8ff,stroke:#0366d6
-    classDef decision fill:#d1bcf9,stroke:#8a63d2
-    classDef mcptool fill:#d0f0fd,stroke:#0969da,font-style:italic
-    classDef handoff fill:#ffdfb6,stroke:#f9a03f
-
-    class done success
-    class fixApp,reviewPR error
-    class validateApp,monitor,commitPR,mergePR,appTemplate,createApp,manualApp,repoStructure,done process
-    class argocdSync mcptool
+    User --> |Discovers & Executes| Prompts["📋 PROMPTS (7)<br/>Workflow Orchestration"]
+    User --> |Discovers & Calls| Tools["✨ TOOLS (29)<br/>Atomic Operations"]
+    User --> |Fetches| Resources["📚 RESOURCES (5)<br/>Real-time Data"]
+    
+    subgraph "ArgoCD MCP Server"
+        
+        subgraph "PROMPTS - Guided Workflows"
+            P1["🚀 deploy_new_version<br/>(validate → diff → deploy → monitor)"]
+            P2["🔄 rollback_decision<br/>(assess → options → impact → execute)"]
+            P3["✅ post_deployment_validation<br/>(status → pods → logs → metrics)"]
+        end
+        
+        subgraph "TOOLS - Model Controlled"
+            subgraph Discovery["Discovery"]
+                T1["list_applications"]
+                T2["get_application_details"]
+                T3["get_application_events"]
+            end
+            
+            subgraph Deployment["Deployment"]
+                T4["sync_application"]
+                T5["create_application"]
+                T6["update_application"]
+                T7["delete_application"]
+            end
+            
+            subgraph Validation["Validation"]
+                T8["get_application_diff"]
+                T9["validate_application_config"]
+                T10["get_sync_status"]
+            end
+            
+            subgraph Operations["Operations"]
+                T11["rollback_application"]
+                T12["rollback_to_revision"]
+                T13["get_application_logs"]
+                T14["prune_resources"]
+                T15["cancel_deployment"]
+            end
+            
+            subgraph Utilities["Utilities"]
+                T16["hard_refresh"]
+                T17["soft_refresh"]
+            end
+        end
+        
+        subgraph "RESOURCES - Live Streams"
+            R1["argocd://applications/{cluster}<br/>(Live App List)"]
+            R2["argocd://application-metrics/{app}<br/>(Live Metrics)"]
+            R3["argocd://sync-operations/{cluster}<br/>(Active Ops)"]
+            R4["argocd://deployment-events/{cluster}<br/>(Event Stream)"]
+            R5["argocd://cluster-health/{cluster}<br/>(Aggregate Health)"]
+        end
+        
+        P1 --> T8
+        P1 --> T4
+        P1 --> T10
+        P1 --> R2
+        
+        P2 --> T2
+        P2 --> T8
+        P2 --> T11
+        P2 --> T12
+        P2 --> R3
+        
+        P3 --> T2
+        P3 --> T13
+        P3 --> R2
+        P3 --> R4
+    end
+    
+    Tools -->|Execute Against| ArgoCD_API["ArgoCD API<br/>(Core Operations)"]
+    Tools -->|Control| K8s_API["Kubernetes API<br/>(Cluster State)"]
+    Resources -.->|Feeds From| ArgoCD_API
+    
+    classDef prompt fill:#4A90E2,stroke:#2E5C8A,color:#fff
+    classDef tool fill:#7ED321,stroke:#5FA118,color:#000
+    classDef resource fill:#F5A623,stroke:#C17817,color:#000
+    classDef api fill:#BD10E0,stroke:#7A0880,color:#fff
+    
+    class P1,P2,P3 prompt
+    class T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,T16,T17 tool
+    class R1,R2,R3,R4,R5 resource
+    class ArgoCD_API,K8s_API api
 ```
-
-1. Authentication & Security Setup
-    - Use `fetch_argocd_token.py` to obtain and validate API tokens
-    - Configure TLS verification based on environment
-    - Set appropriate write permissions
-    - Follow security best practices for token management
-
-2. Organize GitOps Repository
-    - Structure your repository with clear directories for applications, environments, and base/overlays
-    - Use the `argocd_best_practices` resource for recommended repo layouts
-    - Implement proper security controls and access management
-
-3. Use Application Template or Example Workflow
-    - Check `argocd_best_practices` for templates and patterns
-    - If a template fits, use it to create your application manifest
-    - If not, create the manifest manually following best practices
-
-4. Create or Update Application Manifest
-    - Use `manage_argocd_application` with appropriate operation:
-      ```python
-      manage_argocd_application(
-          operation="create",
-          name="my-app",
-          namespace="argocd",
-          project="default",
-          repo_url="https://github.com/org/repo.git",
-          path="k8s/overlays/production",
-          target_revision="v1.2.3",
-          destination_server="https://kubernetes.default.svc",
-          destination_namespace="production",
-          sync_policy="Automated"
-      )
-      ```
-    - Ensure all required fields are set
-    - Configure proper sync policies and strategies
-    - Set appropriate write permissions
-
-5. Validate Application Manifest
-    - Use `manage_argocd_application` with "get" operation to check for errors
-    - Use `manage_argocd_resource` with "get_resource_tree" to validate resources:
-      ```python
-      manage_argocd_resource(
-          operation="get_resource_tree",
-          application_name="my-app"
-      )
-      ```
-    - Fix any issues before committing
-
-6. Commit & Open Pull Request
-    - Commit changes to a feature branch
-    - Open a pull request for review
-    - Include proper documentation and testing
-
-7. Peer Review & Approval
-    - Reviewers check for correctness, security, and best practices
-    - Use the `argocd_best_practices` resource as a checklist
-    - Address any requested changes
-
-8. Merge to Main Branch
-    - Once approved, merge the PR
-    - ArgoCD will detect the change and begin syncing
-
-9. Monitor Application Health & Status
-    - Use `manage_argocd_resource` to monitor:
-        - Resource tree:
-          ```python
-          manage_argocd_resource(
-              operation="get_resource_tree",
-              application_name="my-app"
-          )
-          ```
-        - Managed resources:
-          ```python
-          manage_argocd_resource(
-              operation="get_managed_resources",
-              application_name="my-app"
-          )
-          ```
-        - Workload logs:
-          ```python
-          manage_argocd_resource(
-              operation="get_workload_logs",
-              application_name="my-app",
-              resource_name="my-pod",
-              resource_kind="Pod",
-              tail_lines=100
-          )
-          ```
-        - Resource events:
-          ```python
-          manage_argocd_resource(
-              operation="get_resource_events",
-              application_name="my-app",
-              resource_name="my-deployment",
-              resource_kind="Deployment"
-          )
-          ```
-    - Track operation states and handle errors
-
-10. Troubleshoot & Remediate
-    - Use `manage_argocd_resource` for:
-        - Getting resource actions:
-          ```python
-          manage_argocd_resource(
-              operation="get_resource_actions",
-              application_name="my-app",
-              resource_name="my-deployment",
-              resource_kind="Deployment"
-          )
-          ```
-        - Running resource actions:
-          ```python
-          manage_argocd_resource(
-              operation="run_resource_action",
-              application_name="my-app",
-              resource_name="my-deployment",
-              resource_kind="Deployment",
-              action_name="restart",
-              action_params={"force": True}
-          )
-          ```
-        - Retrieving logs and events
-    - Update manifests and repeat validation as needed
-
-## Core Commands (Tool Examples)
-
-### Application Management
-
-#### Get Applications
-```python
-manage_argocd_application(
-    operation="get"
-    name="guestbook"
-)
-```
-
-#### Create Application
-```python
-manage_argocd_application(
-    operation="create",
-    name="guestbook",
-    project="default",
-    repo_url="https://github.com/argoproj/argocd-example-apps.git",
-    path="guestbook",
-    target_revision="HEAD",
-    destination_server="https://kubernetes.default.svc",
-    destination_namespace="default",
-    sync_policy="Manual"
-)
-```
-
-#### Update Application
-```python
-manage_argocd_application(
-    operation="update",
-    name="guestbook",
-    repo_url="https://github.com/argoproj/argocd-example-apps.git",
-    path="guestbook",
-    target_revision="v2",
-    destination_server="https://kubernetes.default.svc",
-    destination_namespace="default",
-    sync_policy="Automated"
-)
-```
-
-#### Delete Application
-```python
-manage_argocd_application(
-    operation="delete",
-    name="guestbook",
-    cascade=True
-)
-```
-
-#### Sync An Application
-```python
-manage_argocd_application(
-    operation="sync",
-    name="guestbook"
-)
-```
-
-### Resource Management
-
-#### Get Resource Tree
-```python
-manage_argocd_resource(
-    operation="get_resource_tree",
-    application_name="guestbook"
-)
-```
-
-#### Get Managed Resources
-```python
-manage_argocd_resource(
-    operation="get_managed_resources",
-    application_name="guestbook"
-)
-```
-
-#### Get Workload Logs
-```python
-manage_argocd_resource(
-    operation="get_workload_logs",
-    application_name="guestbook",
-    resource_name="guestbook-pod",
-    resource_kind="Pod",
-    tail_lines=100,
-    container="main"
-)
-```
-
-#### Get Resource Events
-```python
-manage_argocd_resource(
-    operation="get_resource_events",
-    application_name="guestbook",
-    resource_name="guestbook-deployment",
-    resource_kind="Deployment"
-)
-```
-
-#### Get Resource Actions
-```python
-manage_argocd_resource(
-    operation="get_resource_actions",
-    application_name="guestbook",
-    resource_name="guestbook-deployment",
-    resource_kind="Deployment"
-)
-```
-
-#### Run Resource Action
-```python
-manage_argocd_resource(
-    operation="run_resource_action",
-    application_name="guestbook",
-    resource_name="guestbook-deployment",
-    resource_kind="Deployment",
-    action_name="restart",
-    action_params={"force": True}
-)
-```
-
-#### Get Application Manifest
-```python
-manage_argocd_resource(
-    operation="get_application_manifest",
-    application_name="guestbook",
-    revision="v2"
-)
-```
-
-#### Get Application Parameters
-```python
-manage_argocd_resource(
-    operation="get_application_parameters",
-    application_name="guestbook"
-)
-```
-
-## Available Tools
-
-### 1. manage_argocd_application
-A unified interface for managing ArgoCD applications with the following operations:
-- **create**: Create a new application with specified configuration
-- **update**: Modify an existing application's configuration
-- **delete**: Remove an application (with optional cascade deletion)
-- **sync**: Sync an application with latest changes
-- **get**: Get an argocd application details
-
-### 2. manage_argocd_resource
-A unified interface for managing ArgoCD application resources with the following operations:
-- **get_resource_tree**: Get the complete resource tree for an application
-- **get_managed_resources**: List all resources managed by an application
-- **get_workload_logs**: Retrieve logs from application workloads
-- **get_resource_events**: Get events related to a specific resource
-- **get_resource_actions**: List available actions for a resource
-- **run_resource_action**: Execute an action on a resource
-- **get_application_manifest**: Retrieve application manifest
-- **get_application_parameters**: Get application parameters
-
-## Key Principles
-- **GitOps First**: All changes via Git and declarative manifests
-- **Security by Default**: 
-  - Proper authentication and token management
-  - TLS verification
-  - Write permission controls
-- **Validation**: Always validate manifests and application state
-- **Observability**: 
-  - Monitor application health
-  - Track sync status
-  - Log all operations
-- **Error Handling**: 
-  - Comprehensive error management
-  - Proper status code mapping
-  - Operation state tracking
-- **Least Privilege**: 
-  - Minimal RBAC permissions
-  - Write operation restrictions
-- **Namespace Awareness**: Always specify correct namespace
-- **Review and Approval**: Use PRs and peer review
-- **Automation**: Use MCP tools for repetitive tasks
-
-## Example Workflow: GitOps Deployment
-
-1. **Create Application**
-```python
-manage_application(
-    operation="create",
-    metadata={
-        "name": "my-app",
-        "namespace": "argocd",
-        "project": "default"
-    },
-    spec={
-        "source": {
-            "repoURL": "https://github.com/org/repo.git",
-            "path": "k8s/overlays/production",
-            "targetRevision": "v1.2.3"
-        },
-        "destination": {
-            "server": "https://kubernetes.default.svc",
-            "namespace": "production"
-        },
-        "syncPolicy": {
-            "automated": {
-                "prune": True,
-                "selfHeal": True
-            }
-        }
-    }
-)
-```
-
-3. **Monitor and Manage**
-```python
-# Get application status
-manage_application(
-    operation="get",
-    name="my-app"
-)
-
-# Get resource tree
-manage_resource(
-    operation="get_resource_tree",
-    application_name="my-app"
-)
-
-# Get logs
-manage_resource(
-    operation="get_workload_logs",
-    application_name="my-app",
-    resource_name="my-pod",
-    tail_lines=100
-)
-```
-
-**Best Practices:**
-- Use proper authentication and security
-- Follow GitOps principles
-- Implement proper error handling
-- Monitor application health
-- Use appropriate sync strategies
-- Maintain audit trails
-- Follow security guidelines 
