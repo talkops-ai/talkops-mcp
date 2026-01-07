@@ -253,6 +253,7 @@ class ChartManagementTools(BaseTool):
             chart_name: str = Field(..., min_length=1, description='Chart name (can include version)'),
             namespace: str = Field(default='default', description='Kubernetes namespace'),
             values: dict = Field(default_factory=dict, description='Chart values dictionary (will be written to temp file)'),
+            extra_args: Optional[List[str]] = Field(default=None, description='Extra CLI flags to pass to helm upgrade (e.g., --version, --set-string)'),
             ctx: Context = None
         ) -> Dict[str, Any]:
             """Upgrade an existing Helm release.
@@ -262,6 +263,7 @@ class ChartManagementTools(BaseTool):
                 chart_name: Chart name (can include version)
                 namespace: Kubernetes namespace
                 values: Chart values dictionary (will be written to temp file and passed as -f)
+                extra_args: Extra CLI flags to pass to helm upgrade (e.g., --version, --set-string)
             
             Returns:
                 Upgrade result with status and details
@@ -285,6 +287,7 @@ class ChartManagementTools(BaseTool):
                     chart_name=chart_name,
                     namespace=namespace,
                     values=values,
+                    extra_args=extra_args,
                 )
                 
                 await ctx.info(

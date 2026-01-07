@@ -727,6 +727,7 @@ class HelmService:
         chart_name: str,
         namespace: str = 'default',
         values: Optional[Dict[str, Any]] = None,
+        extra_args: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Upgrade a Helm release.
         
@@ -735,6 +736,7 @@ class HelmService:
             chart_name: Chart name (can include version)
             namespace: Kubernetes namespace
             values: Chart values dictionary (will be written to temp file)
+            extra_args: Extra CLI flags to pass to helm upgrade (e.g., --version, --set-string)
         
         Returns:
             Upgrade result with status and details
@@ -761,17 +763,111 @@ class HelmService:
                     temp_files=temp_files
                 )
             
+            # Add extra CLI args
+            if extra_args:
+                cmd.extend(extra_args)
+            
             # Safety check 2: Check for dangerous patterns in command
             self._check_dangerous_patterns(cmd, f'upgrade_release[{release_name}]')
             
             result = await self._run_helm_command(cmd)
-            output = json.loads(result) if result else {}
+            full_output = json.loads(result) if result else {}
+            
+            # Extract essential information only to avoid context pollution
+            # Similar to install_chart, filter out large fields like manifest
+            info = full_output.get('info', {})
+            chart = full_output.get('chart', {})
+            chart_metadata = chart.get('metadata', {}) if chart else {}
+            
+            # Create resource summary from manifest (if available)
+            manifest = full_output.get('manifest', '')
+            resource_summary = {}
+            total_resources = 0
+            if manifest:
+                # Count resources by kind from manifest YAML
+                try:
+                    resources = yaml.safe_load_all(manifest)
+                    for resource in resources:
+                        if resource and isinstance(resource, dict):
+                            kind = resource.get('kind', 'Unknown')
+                            resource_summary[kind] = resource_summary.get(kind, 0) + 1
+                            total_resources += 1
+                except Exception:
+                    # If parsing fails, just count approximate resources by "kind:" occurrences
+                    total_resources = manifest.count('kind:')
+            
+            # Create hook summary
+            hooks = full_output.get('hooks', [])
+            hook_summary = {}
+            if hooks:
+                for hook in hooks:
+                    hook_kind = hook.get('kind', 'Unknown')
+                    hook_summary[hook_kind] = hook_summary.get(hook_kind, 0) + 1
+            
+            # Extract notes (limit length to avoid huge outputs)
+            notes = info.get('notes', '')
+            if notes and len(notes) > 500:
+                notes = notes[:500] + '... (truncated)'
+            
+            # Extract template count (without including full template data)
+            templates = chart.get('templates', []) if chart else []
+            template_count = len(templates)
+            # Keep only name field from templates to reduce size
+            template_summary = [{'name': t.get('name', 'unknown')} for t in templates[:10]]  # First 10 templates
+            
+            # Extract dependencies info (limited)
+            dependencies = chart.get('lock', {}).get('dependencies', []) if chart.get('lock') else []
+            
+            # Build filtered response with only essential fields
+            # Maintain nested structure for compatibility with existing tools
+            filtered_output = {
+                'name': full_output.get('name'),
+                'namespace': full_output.get('namespace'),
+                'revision': full_output.get('revision'),
+                'app_version': chart_metadata.get('appVersion') or full_output.get('app_version'),
+                'first_deployed': full_output.get('first_deployed'),
+                'last_deployed': full_output.get('last_deployed'),
+                # Maintain nested 'info' structure for compatibility
+                'info': {
+                    'status': info.get('status', 'unknown'),
+                    'description': info.get('description', ''),
+                    'notes': notes if notes else None,
+                },
+                # Maintain nested 'chart' structure but filter out large fields
+                'chart': {
+                    'metadata': {
+                        'name': chart_metadata.get('name'),
+                        'version': chart_metadata.get('version'),
+                        'appVersion': chart_metadata.get('appVersion') or full_output.get('app_version'),
+                        'description': chart_metadata.get('description', ''),
+                    },
+                    # Include template names (limited) but not full template data
+                    'templates': template_summary + (['...'] if template_count > 10 else []),
+                    # Include limited dependencies info
+                    'lock': {
+                        'dependencies': [
+                            {'name': d.get('name'), 'version': d.get('version'), 'repository': d.get('repository')}
+                            for d in dependencies[:5]
+                        ] + (['...'] if len(dependencies) > 5 else [])
+                    } if dependencies else None,
+                } if chart else None,
+                # Add summary fields for easy access
+                'resource_summary': resource_summary,
+                'total_resources': total_resources,
+                'hook_summary': hook_summary if hook_summary else None,
+                'total_hooks': len(hooks) if hooks else 0,
+                'template_count': template_count,
+                'dependency_count': len(dependencies),
+                # Explicitly exclude large fields
+                # 'manifest' - excluded (use resource_summary instead)
+                # 'hooks' - excluded (use hook_summary instead)
+            }
             
             return {
                 'status': 'success',
                 'release_name': release_name,
                 'namespace': namespace,
-                'output': output
+                'output': filtered_output
             }
         
         except Exception as e:
@@ -808,7 +904,7 @@ class HelmService:
         self._check_write_access('rollback')
         
         try:
-            cmd = ['helm', 'rollback', release_name, '-n', namespace, '-o', 'json']
+            cmd = ['helm', 'rollback', release_name, '-n', namespace]
             
             if revision:
                 cmd.append(str(revision))
@@ -817,14 +913,15 @@ class HelmService:
             self._check_dangerous_patterns(cmd, f'rollback_release[{release_name}]')
             
             result = await self._run_helm_command(cmd)
-            output = json.loads(result) if result else {}
+            # helm rollback outputs plain text, not JSON
+            output = result.strip() if result else ''
             
             return {
                 'status': 'success',
                 'release_name': release_name,
                 'namespace': namespace,
                 'revision': revision,
-                'output': output
+                'message': output
             }
         
         except Exception as e:
@@ -1072,7 +1169,7 @@ class HelmService:
             List of release information dictionaries
         """
         try:
-            cmd = ['helm', 'list', '-n', namespace, '-o', 'json']
+            cmd = ['helm', 'list', '-n', namespace, '-o', 'json', '--max', '10000']
             result = await self._run_helm_command(cmd)
             releases = json.loads(result) if result else []
             return releases
@@ -1112,23 +1209,134 @@ class HelmService:
             
             # Extract essential information only
             info = full_status.get('info', {})
-            chart = full_status.get('chart', {})
             
-            # Create resource summary (counts by kind, not full details)
-            resources = full_status.get('resources', [])
+            # Resources are in info.resources as a dict: {"v1/ClusterRole": [resources...], ...}
+            resources_dict = info.get('resources', {})
             resource_summary = {}
-            if resources:
-                for resource in resources:
-                    kind = resource.get('kind', 'Unknown')
-                    resource_summary[kind] = resource_summary.get(kind, 0) + 1
+            resource_details = {}  # Store resource names grouped by kind
+            max_resources_per_kind = 20  # Limit to avoid token bloat
             
-            # Create hook summary
+            # Extract chart info from resource labels (they contain helm.sh/chart)
+            chart_name = None
+            chart_version = None
+            app_version = None
+            
+            # Process resources - they're grouped by API version/kind
+            total_resources = 0
+            for resource_key, resource_list in resources_dict.items():
+                if not isinstance(resource_list, list):
+                    continue
+                
+                # Extract kind from key (e.g., "v1/ClusterRole" -> "ClusterRole")
+                kind = resource_key.split('/')[-1] if '/' in resource_key else resource_key
+                
+                for resource in resource_list:
+                    total_resources += 1
+                    if not isinstance(resource, dict):
+                        continue
+                    
+                    metadata = resource.get('metadata', {})
+                    name = metadata.get('name', 'unknown')
+                    resource_namespace = metadata.get('namespace', '')
+                    labels = metadata.get('labels', {})
+                    
+                    # Extract chart info from first resource's labels
+                    if not chart_name and labels:
+                        chart_label = labels.get('helm.sh/chart', '')
+                        if chart_label:
+                            # Chart label format: "chart-name-version" (e.g., "argo-cd-9.2.4")
+                            parts = chart_label.rsplit('-', 1)
+                            if len(parts) == 2:
+                                chart_name = parts[0]
+                                chart_version = parts[1]
+                        app_version = labels.get('app.kubernetes.io/version') or app_version
+                    
+                    # Count by kind
+                    resource_summary[kind] = resource_summary.get(kind, 0) + 1
+                    
+                    # Store resource names (limited per kind)
+                    if kind not in resource_details:
+                        resource_details[kind] = []
+                    
+                    if len(resource_details[kind]) < max_resources_per_kind:
+                        resource_info = {'name': name}
+                        if resource_namespace and resource_namespace != full_status.get('namespace'):
+                            resource_info['namespace'] = resource_namespace
+                        resource_details[kind].append(resource_info)
+            
+            # Add truncation indicator if resources were limited
+            for kind, count in resource_summary.items():
+                if count > max_resources_per_kind and kind in resource_details:
+                    resource_details[kind].append(f'... and {count - max_resources_per_kind} more')
+            
+            # Create hook summary with names
             hooks = full_status.get('hooks', [])
             hook_summary = {}
+            hook_details = {}  # Store hook names grouped by kind
+            max_hooks_per_kind = 10  # Limit hooks per kind
+            
             if hooks:
                 for hook in hooks:
                     hook_kind = hook.get('kind', 'Unknown')
+                    hook_name = hook.get('name', 'unknown')
+                    
+                    # Count by kind
                     hook_summary[hook_kind] = hook_summary.get(hook_kind, 0) + 1
+                    
+                    # Store hook names (limited per kind)
+                    if hook_kind not in hook_details:
+                        hook_details[hook_kind] = []
+                    
+                    if len(hook_details[hook_kind]) < max_hooks_per_kind:
+                        hook_details[hook_kind].append({'name': hook_name})
+            
+            # Add truncation indicator if hooks were limited
+            for hook_kind, count in hook_summary.items():
+                if count > max_hooks_per_kind and hook_kind in hook_details:
+                    hook_details[hook_kind].append(f'... and {count - max_hooks_per_kind} more')
+            
+            # If chart info not found in resources, try to get it from helm list
+            if not chart_name:
+                try:
+                    list_cmd = ['helm', 'list', '-n', namespace, '-o', 'json', '--max', '1', '--filter', release_name]
+                    list_result = await self._run_helm_command(list_cmd)
+                    list_data = json.loads(list_result) if list_result else []
+                    releases = list_data if isinstance(list_data, list) else [list_data]
+                    if releases and len(releases) > 0:
+                        release_info = releases[0]
+                        chart_full = release_info.get('chart', '')
+                        if chart_full:
+                            # Chart format: "chart-name-version" (e.g., "argo-cd-9.2.4")
+                            parts = chart_full.rsplit('-', 1)
+                            if len(parts) == 2:
+                                chart_name = parts[0]
+                                chart_version = parts[1]
+                        app_version = release_info.get('app_version') or app_version
+                except Exception:
+                    # If helm list fails, continue without chart info
+                    pass
+            
+            # Get revision history
+            revision_history = []
+            try:
+                history_cmd = ['helm', 'history', release_name, '-n', namespace, '-o', 'json', '--max', '50']
+                history_result = await self._run_helm_command(history_cmd)
+                history_data = json.loads(history_result) if history_result else []
+                revisions = history_data if isinstance(history_data, list) else [history_data]
+                
+                # Format revision history (limit to essential info)
+                for rev in revisions:
+                    revision_history.append({
+                        'revision': rev.get('revision'),
+                        'status': rev.get('status'),
+                        'updated': rev.get('updated'),
+                        'description': rev.get('description', ''),
+                        'chart': rev.get('chart'),
+                        'app_version': rev.get('app_version'),
+                    })
+            except Exception:
+                # If history fails, continue without revision history
+                pass
             
             # Extract notes (limit length to avoid huge outputs)
             notes = info.get('notes', '')
@@ -1139,19 +1347,23 @@ class HelmService:
             filtered_status = {
                 'name': full_status.get('name'),
                 'namespace': full_status.get('namespace'),
-                'revision': full_status.get('revision'),
+                'revision': full_status.get('version'),  # 'version' is the revision number
                 'status': info.get('status', 'unknown'),
-                'chart': chart.get('metadata', {}).get('name') if chart else None,
-                'chart_version': chart.get('metadata', {}).get('version') if chart else None,
-                'app_version': full_status.get('app_version'),
+                'chart': chart_name,
+                'chart_version': chart_version,
+                'app_version': app_version,
                 'description': info.get('description', ''),
-                'first_deployed': full_status.get('first_deployed'),
-                'last_deployed': full_status.get('last_deployed'),
+                'first_deployed': info.get('first_deployed'),
+                'last_deployed': info.get('last_deployed'),
                 'resource_summary': resource_summary,
-                'total_resources': len(resources),
+                'resources': resource_details if resource_details else None,
+                'total_resources': total_resources,
                 'hook_summary': hook_summary if hook_summary else None,
+                'hooks': hook_details if hook_details else None,
                 'total_hooks': len(hooks) if hooks else 0,
                 'notes': notes if notes else None,
+                'revision_history': revision_history if revision_history else None,
+                'total_revisions': len(revision_history) if revision_history else 0,
             }
             
             return {
