@@ -314,7 +314,7 @@ class KubernetesService:
             raise KubernetesOperationError('Helm binary is not installed or not found in PATH.')
         
         try:
-            cmd = ['helm', 'list', '-o', 'json']
+            cmd = ['helm', 'list', '-o', 'json', '--max', '10000']
             
             if namespace:
                 cmd.extend(['-n', namespace])
