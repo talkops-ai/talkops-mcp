@@ -480,6 +480,19 @@ class RepositoryManagementTools(BaseTool):
                 auth_config["username"] = username or ""
                 auth_config["password"] = password
             elif auth_method_enum == AuthMethod.SSH_KEY:
+                # If key not provided, try to read from environment variable path
+                if not ssh_private_key:
+                    ssh_key_path = os.getenv('SSH_PRIVATE_KEY_PATH', '~/.ssh/id_rsa')
+                    ssh_key_path = os.path.expanduser(ssh_key_path)
+                    
+                    if os.path.exists(ssh_key_path):
+                        await ctx.info(f"Reading SSH key from {ssh_key_path}")
+                        try:
+                            with open(ssh_key_path, 'r') as key_file:
+                                ssh_private_key = key_file.read()
+                        except Exception as e:
+                            await ctx.warning(f"Failed to read SSH key from {ssh_key_path}: {e}")
+
                 if not ssh_private_key:
                     error_msg = "SSH private key is required for SSH authentication"
                     await ctx.error(error_msg)
@@ -658,6 +671,19 @@ class RepositoryManagementTools(BaseTool):
                 auth_config["username"] = username or ""
                 auth_config["password"] = password
             elif auth_method_enum == AuthMethod.SSH_KEY:
+                # If key not provided, try to read from environment variable path
+                if not ssh_private_key:
+                    ssh_key_path = os.getenv('SSH_PRIVATE_KEY_PATH', '~/.ssh/id_rsa')
+                    ssh_key_path = os.path.expanduser(ssh_key_path)
+                    
+                    if os.path.exists(ssh_key_path):
+                        await ctx.info(f"Reading SSH key from {ssh_key_path}")
+                        try:
+                            with open(ssh_key_path, 'r') as key_file:
+                                ssh_private_key = key_file.read()
+                        except Exception as e:
+                            await ctx.warning(f"Failed to read SSH key from {ssh_key_path}: {e}")
+
                 if not ssh_private_key:
                     error_msg = "SSH private key is required for SSH authentication"
                     await ctx.error(error_msg)
