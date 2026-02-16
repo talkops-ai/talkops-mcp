@@ -1,189 +1,318 @@
-# TalkOps MCP Servers
+# TalkOps MCP Ecosystem
 
-A suite of Model Context Protocol (MCP) servers for DevOps tools and technologies, enabling AI assistants and automation to interact with modern infrastructure and deployment technologies.
+Model Context Protocol (MCP) Servers for AI-Driven DevOps
 
-This repository serves as the **central hub for all MCP servers** built to support a wide range of DevOps tools and workflows. Each MCP server provides a standardized interface for AI agents and automation platforms to interact with specific tools, services, or platforms, making it easier to integrate, automate, and extend DevOps operations across diverse environments.
+TalkOps MCP is a modular ecosystem of production-ready MCP servers that allow AI agents (Claude, Cursor, internal copilots) to securely interact with:
 
-- **Kubernetes Package Management:** For managing Kubernetes workloads, the Helm MCP Server enables AI-driven Helm chart operations and best practices.
-- **CI/CD, Build & Release:** Dedicated MCP servers (e.g., ArgoCD MCP Server, Jenkins MCP Server) will provide automation and orchestration for continuous integration, delivery, and deployment pipelines.
-- **Cloud Orchestration:** Dedicated MCP Servers like Terraform MCP Server will provides comprehensive infrastructure as code management with secure command execution, semantic document search, and intelligent document ingestion for AWS, Azure, Google Cloud, and more.
-- **Observability & Monitoring:** For monitoring and observability, specialized MCP servers will be available for Prometheus, the TICK stack (Telegraf, InfluxDB, Chronograf, Kapacitor), and other monitoring solutions.
+- Kubernetes via Helm
+- GitOps via ArgoCD
+- Infrastructure via Terraform
+- Centralized Agent Registry
 
-The vision for TalkOps MCP Servers is to offer a **modular, extensible, and unified platform** where each DevOps domain—whether infrastructure as code, CI/CD, cloud orchestration, or observability—can be managed through a dedicated MCP server. This approach empowers AI agents and automation tools to deliver intelligent, context-aware DevOps workflows, regardless of the underlying technology stack.
+Each module runs independently and communicates via SSE (Server-Sent Events) following the Model Context Protocol specification.
 
-## Table of Contents
+## Architecture Overview
+> ⚠️ This is a simplified logical architecture. Actual execution includes deterministic HITL gates and safe tool boundaries.
 
-- [TalkOps MCP Servers](#talkops-mcp-servers)
-  - [Table of Contents](#table-of-contents)
-  - [Available Servers](#available-servers)
-    - [ArgoCD MCP Server](#argocd-mcp-server)
-    - [Helm MCP Server](#helm-mcp-server)
-    - [Terraform MCP Server](#terraform-mcp-server)
-    - [Agents Central Registry](#agents-central-registry)
-  - [Installation and Setup](#installation-and-setup)
-  - [Contributing](#contributing)
-  - [License](#license)
+![TalkOps Architecture](src/docs/images/architecture-flow.png)
 
-## Available Servers
+All services can run:
 
-### ArgoCD MCP Server
+- Locally (development)
+- In Docker
+- In production environments
+- Behind reverse proxies
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-green.svg)](https://modelcontextprotocol.io/)
-[![ArgoCD](https://img.shields.io/badge/ArgoCD-v2.x-blue.svg)](https://argo-cd.readthedocs.io/)
-[![Docker](https://img.shields.io/badge/docker-ready-blue)](https://hub.docker.com/)
+## Choose Your Setup Path
+| Use Case                   | Recommended Setup           |
+| -------------------------- |-----------------------------|
+| 🧪 Quick local testing     | Docker (pre-built images)   |
+| 👩‍💻 Active development   | `uv` local environment      |
+| 🏢 Production deployment   | Docker + managed DB + TLS   |
+| 🤖 Claude Desktop / Cursor | SSE endpoints configuration |
 
-A comprehensive Model Context Protocol (MCP) server for managing Kubernetes applications via ArgoCD using GitOps principles. Designed for AI assistants to perform secure, production-grade ArgoCD operations with deep observability, validation, and guided workflows.
+## Global Prerequisites
+For local development across all modules:
 
-- **Application Management**
-  - Create, update, and delete ArgoCD applications
-  - List applications across clusters with health and sync status
-  - Get detailed application information including resource breakdown
-  - Validate application configurations before deployment
-  - View application events and audit trails
-- **Deployment & Operations**
-  - Sync applications to desired state with dry-run support
-  - Get deployment diffs to preview changes
-  - Monitor sync operations in real-time
-  - Rollback to previous versions with impact analysis
-  - Prune orphaned resources and refresh operations
-  - Cancel ongoing deployments
-- **Repository Management**
-  - Onboard GitHub repositories via HTTPS or SSH
-  - Validate repository connections before onboarding
-  - List and manage registered repositories
-  - Generate Kubernetes secret manifests for disaster recovery
-  - Secure credential handling (never exposed to LLM)
-- **Project Management (Multi-Tenancy)**
-  - Create ArgoCD projects with RBAC policies
-  - Configure destination clusters and namespaces
-  - Whitelist/blacklist cluster and namespace resources
-  - Generate AppProject YAML manifests
-- **Monitoring & Debugging**
-  - Real-time application health metrics
-  - Smart log analysis with automatic error detection
-  - Cluster-wide health overview
-  - Active sync operation tracking
-  - Comprehensive troubleshooting workflows
-- **Guided Workflows & Prompts**
-  - Repository onboarding, full deployment, debugging workflows
-  - Automated rollback with history and impact preview
-  - Project setup and deployment validation
-- **Security & Safety**
-  - Read-only mode to disable all mutating operations
-  - Credential isolation - secrets never passed to LLM
-  - Write access control with granular operation permissions
-  - TLS verification and dry-run support
+| Tool            | Version            |
+| --------------- | ------------------ |
+| Python          | 3.12+              |
+| Package Manager | `uv` (recommended) |
+| Docker          | Latest stable      |
 
-[Learn more](src/argocd-mcp-server/README.md)
+Install uv:
 
-### Terraform MCP Server
+```bash
 
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
-[![Terraform](https://img.shields.io/badge/terraform-supported-brightgreen)](https://www.terraform.io/)
-[![Neo4j](https://img.shields.io/badge/neo4j-vector%20search-orange)](https://neo4j.com/)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
-A comprehensive Model Context Protocol (MCP) server for Terraform operations, featuring secure command execution, semantic document search, and intelligent document ingestion with vector embeddings and Neo4j integration.
+## Security First
+Before running any server in production, review:
 
-- **Secure Terraform Execution**
-  - Enterprise-grade security with command whitelisting and validation
-  - Directory traversal protection and dangerous pattern detection
-  - Configurable timeouts and comprehensive output processing
-  - Support for all major Terraform commands (init, plan, validate, apply, destroy)
-- **Semantic Document Search**
-  - Vector similarity search over Terraform documentation using Neo4j
-  - Multi-type search across resources, data sources, and best practices
-  - Advanced filtering with similarity thresholds and node type filtering
-  - HNSW-based similarity search with 1536-dimensional embeddings
-- **Intelligent Document Ingestion**
-  - Multi-format support for HTML, Markdown, and PDF documents
-  - AI-powered content structuring with LLM integration
-  - Incremental processing with skip logic for already ingested documents
-  - Structured chunking with metadata preservation
-- **Multi-Provider AI Support**
-  - OpenAI, Anthropic, Azure OpenAI, HuggingFace, Cohere, Ollama integration
-  - Configurable LLM providers for document processing and search
-  - Flexible embedding models with customizable dimensions
-- **Neo4j Vector Database**
-  - Graph database storage with vector indexes for semantic search
-  - Comprehensive metadata tracking and relationship modeling
-  - High-performance query capabilities with connection reuse
+- Never commit .env files 
+- Mount SSH keys as read-only 
+- Avoid ARGOCD_INSECURE=true in production 
+- Do NOT expose Neo4j publicly 
+- Restrict MCP ports via firewall 
+- Use MCP_ALLOW_WRITE=false unless required 
+- Store API keys in a secrets manager 
+
+⚠️Enabling write access allows mutating infrastructure operations.
+
+## Module 1: ArgoCD MCP Server
+**Location**: src/argocd-mcp-server
+**Default Port**: 8765
+
+### 1️⃣ Authentication Setup
+Generate an authentication token:
+
+```bash
+
+cd talkops-mcp/src/argocd-mcp-server/scripts
+
+export ARGOCD_SERVER="https://localhost:8080"
+export ARGOCD_USERNAME="admin"
+export ARGOCD_PASSWORD="your-password"
+export ARGOCD_VERIFY_TLS="false"
+
+python fetch_argocd_token.py
+```
+
+### 2️⃣ Run via Docker (Recommended)
+#### Read-Only Mode (Safe Default)
+```bash
+
+docker run --rm -it \
+-p 8765:8765 \
+-v ~/.ssh/id_ed25519:/app/.ssh/id_rsa:ro \
+-e ARGOCD_SERVER_URL="https://argocd.example.com" \
+-e SSH_PRIVATE_KEY_PATH=/app/.ssh/id_rsa \
+-e ARGOCD_AUTH_TOKEN="your-token" \
+sandeep2014/talkops-mcp:argocd-mcp-server-latest
+```
+
+#### Write Access Enabled
+```bash
+
+docker run --rm -it \
+-p 8765:8765 \
+-v ~/.ssh/id_ed25519:/app/.ssh/id_rsa:ro \
+-e ARGOCD_SERVER_URL="https://host.docker.internal:8080" \
+-e ARGOCD_AUTH_TOKEN="your-token" \
+-e MCP_ALLOW_WRITE=true \
+sandeep2014/talkops-mcp:argocd-mcp-server-latest
+```
+
+### 3️⃣ Local Development
+```bash
+
+cd talkops-mcp/src/argocd-mcp-server
+uv venv --python=3.12
+source .venv/bin/activate
+uv pip install -e .
+uv run argocd-mcp-server`
+```
+
+[Learn More](src/argocd-mcp-server/README.md)
+
+## Module 2: Terraform MCP Server
+**Location**: src/terraform-mcp-server
+**Default Port**: 8000
+**Requires**: Neo4j (v4.4+)
+
+### 1️⃣ Neo4j Setup
+```bash
+
+docker run \
+--publish=7474:7474 --publish=7687:7687 \
+--volume=$HOME/neo4j_data:/data \
+--env NEO4J_AUTH=neo4j/your-password \
+--env NEO4J_PLUGINS='["apoc"]' \
+neo4j
+```
+
+### 2️⃣ Create .env
+```env
+
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your-password
+
+OPENAI_API_KEY=sk-...
+
+HOST=0.0.0.0
+PORT=8000
+LOG_LEVEL=INFO
+```
+
+### 3️⃣ Run Locally
+```bash
+
+cd talkops-mcp/src/terraform-mcp-server
+uv venv --python=3.12
+source .venv/bin/activate
+uv pip install -e .
+uv run terraform_mcp_server
+```
+
+Runs via SSE on port 8000.
 
 [Learn more](src/terraform-mcp-server/README.md)
 
-### Helm MCP Server
+## Module 3: Helm MCP Server
+**Location**: src/helm-mcp-server
+**Default Port**: 8765
 
-[![Docker](https://img.shields.io/badge/docker-ready-blue)](https://hub.docker.com/)
-[![Helm](https://img.shields.io/badge/helm-supported-brightgreen)](https://helm.sh/)
+### Run via Docker
+```bash
 
-A comprehensive Model Context Protocol (MCP) server for managing Kubernetes workloads via Helm. Designed for AI assistants to perform secure, production-grade Helm operations with full validation, monitoring, and best practices guidance.
+docker run --rm -it \
+-p 9000:9000 \
+-v ~/.kube/config:/app/.kube/config:ro \
+-e MCP_PORT=9000 \
+-e MCP_ALLOW_WRITE=false \
+sandeep2014/talkops-mcp:helm-mcp-server-latest
+```
 
-- **Discovery & Search**
-  - Search Helm charts across repositories (Bitnami, ArtifactHub, custom repos)
-  - Get detailed chart metadata, versions, documentation, and values schemas
-  - Access chart READMEs and comprehensive chart information
-- **Installation & Lifecycle Management**
-  - Install, upgrade, rollback, and uninstall Helm releases
-  - Dry-run installations to preview changes before deployment
-  - Support for custom values, multiple values files, and extra CLI arguments
-- **Validation & Safety**
-  - Validate chart values against JSON schemas
-  - Render and validate Kubernetes manifests before deployment
-  - Check chart dependencies and cluster prerequisites
-  - Generate installation plans with resource estimates
-- **Monitoring & Status**
-  - Monitor deployment health asynchronously
-  - Get real-time release status and history
-  - List all releases across namespaces
-- **Multi-Cluster Support**
-  - List and switch between Kubernetes contexts
-  - Namespace-scoped operations for isolation
-  - Generic, production-ready Kubernetes authentication
-- **Built-in Guidance**
-  - Comprehensive workflow guides and best practices
-  - Security checklists and troubleshooting guides
-  - Step-by-step procedures for upgrades and rollbacks
+### Local Development
+```bash
+
+cd talkops-mcp/src/helm-mcp-server
+uv venv --python=3.12
+source .venv/bin/activate
+uv pip install -e .
+helm-mcp-server
+```
+
+### Write Access Control
+| MCP_ALLOW_WRITE | Permissions                           |
+| --------------- | ------------------------------------- |
+| `false`         | Read-only (recommended)               |
+| `true`          | Install, Upgrade, Rollback, Uninstall |
 
 [Learn more](src/helm-mcp-server/README.md)
 
-### Agents Central Registry
+## Module 4: Agents MCP Registry
+**Location**: src/agents-mcp-server
+**Default Port**: 8080
 
-[![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/)
-[![MCP Protocol](https://img.shields.io/badge/MCP-Protocol-green.svg)](https://modelcontextprotocol.io/)
+### Adding New Agents
+Add JSON files to:
 
-A central registry service that leverages the Model Context Protocol (MCP) to enable dynamic discovery and interaction between Google A2A (Agent-to-Agent) agents and various MCP servers. This system serves as a discovery hub for DevOps agents, facilitating seamless integration and communication across distributed agent architectures.
+```arduino
 
-- **Dynamic Agent Discovery**
-  - Enable agentic systems to dynamically find and connect with Google A2A agents
-  - Natural language queries to find agents and servers using descriptive capabilities
-  - Compatibility validation between agents and MCP servers
-- **MCP Server Discovery**
-  - Allow individual agents to discover capability-matched MCP servers
-  - Intelligent task mapping to the most suitable specialized agents
-  - Real-time registry updates as agents and servers come online or offline
-- **Standardized Integration**
-  - Provide a unified interface for agent communication using MCP protocol
-  - Centralized agent management through a single registry
-  - Support for complex multi-agent DevOps workflows with automatic task routing
-- **Scalable Architecture**
-  - Support growing numbers of agents and MCP servers
-  - Self-registration capabilities for executor agents
-  - Dynamic tool integration as new MCP servers become available
+agents_mcp_server/static/agent_cards/
+ agents_mcp_server/static/mcp_servers/
+ ```
+
+Example:
+```json
+
+{
+"id": "terraform-mcp-server",
+"name": "Terraform MCP Server",
+"version": "1.0.0",
+"capabilities": ["run_terraform_plan", "run_terraform_apply"]
+}
+```
+
+### Run Server
+```bash
+
+cd talkops-mcp/src/agents-mcp-server
+uv venv --python=3.12
+source .venv/bin/activate
+uv pip install -e .
+uv run -m agents_mcp_server
+```
+
+## Unified Client Configuration
+Example claude_desktop_config.json:
+```json
+{
+"mcpServers": {
+   "argocd-mcp": {
+      "url": "http://127.0.0.1:8765/sse",
+      "transport": "sse"
+},
+   "terraform-mcp": {
+     "url": "http://127.0.0.1:8000/sse",
+     "transport": "sse"
+},
+  "helm-mcp": {
+     "url": "http://127.0.0.1:9000/sse",
+     "transport": "sse"
+},
+   "agents-registry": {
+      "url": "http://127.0.0.1:8080/sse",
+      "transport": "sse"
+    }
+  }
+}
+```
 
 [Learn more](src/agents-mcp-server/README.md)
 
-## Installation and Setup
+## Quick Start (Minimal Example)
+```bash
 
-Each server has specific installation instructions.
-See each server's detailed README for specific requirements and configuration options.
+docker run -p 8765:8765 \
+-e ARGOCD_AUTH_TOKEN=your-token \
+sandeep2014/talkops-mcp:argocd-mcp-server-latest
+```
 
-## Contributing
+Connect via:
+```bash
 
-Contributions are welcome! Please open an issue or pull request on the project repository.
+http://localhost:8765/sse
 
-## License
+```
+
+## Production Recommendations
+- Deploy behind NGINX or Traefik
+- Enable TLS termination
+- Use managed Neo4j (AuraDB recommended)
+- Use Kubernetes secrets
+- Enable structured logging
+- Configure health checks
+- Restrict ingress to internal network only
+
+## Troubleshooting
+| Issue                    | Resolution                             |
+| ------------------------ | -------------------------------------- |
+| Token invalid            | Regenerate via `fetch_argocd_token.py` |
+| Neo4j connection refused | Verify port 7687                       |
+| SSE not connecting       | Check firewall / reverse proxy         |
+| Write operations blocked | Set `MCP_ALLOW_WRITE=true`             |
+
+
+## Repository Structure
+```pgsql
+src/
+├── argocd-mcp-server/
+├── terraform-mcp-server/
+├── helm-mcp-server/
+└── agents-mcp-server/
+
+```
+
+## 🤝 Contributing
+We welcome contributions.
+
+1. Fork the repository
+2. Create a feature branch
+3. Submit a PR
+4. Ensure tests pass
+
+## 📜 License
 
 This project is licensed under the Apache-2.0 License.
+
+## TalkOps Vision
+Secure. Modular. AI-native DevOps automation.
+
+TalkOps MCP provides the foundation for AI agents to safely manage real-world infrastructure — with enterprise-grade controls and production-ready architecture.
 
 ## 📞 Support
 
@@ -191,4 +320,9 @@ For questions, issues, or feature requests:
 - Open an issue on GitHub
 - Join our [Discord server](https://discord.gg/tSN2Qn9uM8) to raise requests and get community support
 - See each server's detailed README for specific documentation and guides
+
+## 🌟Star Us
+If you find TalkOps MCP helpful, please consider starring our repository:
+https://github.com/talkops-ai/talkops-mcp
+
 
