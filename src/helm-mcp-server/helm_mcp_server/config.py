@@ -40,7 +40,7 @@ class ServerConfig:
     transport: str = 'http'  # http (HTTP/SSE) or stdio
     host: str = '0.0.0.0'
     port: int = 8765  # HTTP/SSE server port
-    path: str = '/sse'  # SSE endpoint path
+    path: str = '/mcp'  # MCP endpoint path
     allow_write: bool = False  # Enable write access for mutating operations
     # HTTP server timeout settings (in seconds)
     http_timeout: int = 300  # HTTP request timeout
@@ -64,7 +64,7 @@ class Config:
             transport=os.getenv('MCP_TRANSPORT', 'http'),
             host=os.getenv('MCP_HOST', '0.0.0.0'),
             port=int(os.getenv('MCP_PORT', '8765')),
-            path=os.getenv('MCP_PATH', '/sse'),
+            path=os.getenv('MCP_PATH', '/mcp'),
             allow_write=os.getenv('MCP_ALLOW_WRITE', 'true').lower() == 'true',
             http_timeout=int(os.getenv('MCP_HTTP_TIMEOUT', '300')),
             http_keepalive_timeout=int(os.getenv('MCP_HTTP_KEEPALIVE_TIMEOUT', '5')),
