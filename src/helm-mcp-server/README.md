@@ -88,7 +88,7 @@ The server is organized into layered service modules — tools on top, business 
                                │
                     ┌──────────▼──────────────┐
                     │   FastMCP Server Core   │
-                    │   (SSE / stdio)         │
+                    │    (HTTP / stdio)       │
                     └──────────┬──────────────┘
                                │
           ┌────────────────────┼────────────────────┐
@@ -122,7 +122,7 @@ The server is organized into layered service modules — tools on top, business 
 
 **How it works in practice:**
 
-1. An AI assistant connects to the server over SSE (or stdio)
+1. An AI assistant connects to the server over HTTP (or stdio)
 2. It discovers available tools, resources, and prompts automatically
 3. When a user asks something like "Deploy PostgreSQL to the database namespace," the assistant calls the appropriate tools in sequence — search, validate, dry-run, install, monitor
 4. The service layer translates tool calls into Helm CLI and kubectl commands
@@ -160,7 +160,7 @@ The server is organized into layered service modules — tools on top, business 
 | **MCP Framework** | [FastMCP](https://github.com/jlowin/fastmcp) |
 | **Protocol** | [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) |
 | **Kubernetes** | Helm v3 · kubectl |
-| **Transport** | SSE (HTTP/Server-Sent Events) · stdio |
+| **Transport** | HTTP · stdio |
 | **Infrastructure** | Docker · [uv](https://github.com/astral-sh/uv) |
 
 ---
@@ -182,7 +182,7 @@ Pull the image from Docker Hub and run:
 docker run --rm -it \
   -p 8765:8765 \
   -v ~/.kube/config:/app/.kube/config:ro \
-  sandeep2014/talkops-mcp:helm-mcp-server-latest
+  talkopsai/helm-mcp-server:latest
 ```
 
 That's it. The server is now listening on `http://localhost:8765/mcp`.
@@ -193,7 +193,6 @@ Point your MCP client at it:
 {
   "mcpServers": {
     "helm-mcp-server": {
-      "transport": "sse",
       "url": "http://localhost:8765/mcp",
       "description": "Helm MCP Server for managing Kubernetes workloads via Helm"
     }
@@ -224,9 +223,14 @@ For development or if you want to run without Docker:
 2. Clone and set up:
 
 ```bash
-git clone git@github.com:talkops-ai/talkops-mcp.git
+# Install uv if not already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone the repository
+git clone https://github.com/talkops-ai/talkops-mcp.git
 cd talkops-mcp/src/helm-mcp-server
 
+# Create virtual environment and install
 uv venv --python=3.12
 source .venv/bin/activate  # On Unix/macOS
 # .venv\Scripts\activate   # On Windows
@@ -264,7 +268,7 @@ docker run --rm -it \
   -e MCP_PORT=9000 \
   -e MCP_LOG_LEVEL=DEBUG \
   -e MCP_ALLOW_WRITE=false \
-  sandeep2014/talkops-mcp:helm-mcp-server-latest
+  talkopsai/helm-mcp-server:latest
 ```
 
 ### Server Configuration
@@ -273,7 +277,7 @@ docker run --rm -it \
 |----------|---------|-------------|
 | `MCP_SERVER_NAME` | `helm-mcp-server` | Server name identifier |
 | `MCP_SERVER_VERSION` | `0.2.0` | Server version string |
-| `MCP_TRANSPORT` | `http` | Transport mode: `http` (SSE) or `stdio` |
+| `MCP_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
 | `MCP_HOST` | `0.0.0.0` | Host address for HTTP server |
 | `MCP_PORT` | `8765` | Port for HTTP server |
 | `MCP_PATH` | `/mcp` | MCP endpoint path |
@@ -501,16 +505,17 @@ helm-mcp-server/
 - [x] Write access control (`MCP_ALLOW_WRITE`)
 - [x] Built-in workflow guides, security checklists, and troubleshooting prompts
 - [x] Docker image with Helm + kubectl included
-- [x] SSE and stdio transport
+- [x] HTTP and stdio transport
 
 **Coming next:**
 
+- [ ] Comprehensive unit and integration test suite
+- [ ] Authentication and authorization layer for secure, multi-tenant access
 - [ ] OCI registry support for chart discovery
 - [ ] Helm secrets integration (SOPS, sealed-secrets)
 - [ ] Chart diff on upgrades (show what's changing before applying)
 - [ ] Release comparison across environments
 - [ ] Webhook notifications for deployment events
-- [ ] Helm plugin ecosystem integration
 
 See [open issues](https://github.com/talkops-ai/talkops-mcp/issues) for the full list of proposed features.
 
@@ -534,7 +539,7 @@ If you're considering something bigger, open an issue first so we can align on t
 <details>
 <summary><b>Which MCP clients work with this?</b></summary>
 
-Any MCP-compatible client that supports SSE transport — Claude Desktop, Cline, or your own custom agent. Configure the client to connect to the server's SSE endpoint.
+Any MCP-compatible client that supports HTTP transport — Claude Desktop, Cline, or your own custom agent. Point the client at `http://localhost:8765/mcp`.
 </details>
 
 <details>
@@ -580,7 +585,7 @@ If you see `httpx.ConnectTimeout` when connecting to the server, it's usually a 
 ```json
 {
   "url": "http://localhost:8765/mcp",
-  "transport": "sse",
+  "transport": "http",
   "timeout": 300,
   "connect_timeout": 60
 }

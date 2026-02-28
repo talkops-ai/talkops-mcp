@@ -36,6 +36,7 @@ class ChartResources(BaseResource):
                         mimeType="application/json",
                         contents=[
                             TextContent(
+                                type="text",
                                 text=json.dumps(chart, indent=2),
                                 mimeType="application/json"
                             )

@@ -18,8 +18,8 @@ def main():
         
         # Run FastMCP server with the configured transport
         if config.transport == 'http':
-            # HTTP/SSE transport mode
-            mcp.run(transport='sse', host=config.host, port=config.port, path=config.path)
+            # HTTP/Streamable HTTP transport mode (single unified endpoint)
+            mcp.run(transport='streamable-http', host=config.host, port=config.port, path=config.path)
         else:
             # STDIO transport mode (default for MCP)
             mcp.run()

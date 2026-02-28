@@ -49,6 +49,7 @@ class KubernetesResources(BaseResource):
                         mimeType="application/json",
                         contents=[
                             TextContent(
+                                type="text",
                                 text=json.dumps({"name": ns}, indent=2),
                                 mimeType="application/json"
                             )

@@ -37,7 +37,7 @@ class ServerConfig:
     """MCP server configuration."""
     name: str = 'helm-mcp-server'
     version: str = '0.2.0'
-    transport: str = 'http'  # http (HTTP/SSE) or stdio
+    transport: str = 'http'  # http (Streamable HTTP) or stdio
     host: str = '0.0.0.0'
     port: int = 8765  # HTTP/SSE server port
     path: str = '/mcp'  # MCP endpoint path

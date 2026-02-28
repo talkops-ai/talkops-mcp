@@ -1,7 +1,12 @@
 """Helm utility functions for safety checks and validation."""
 
+import re
 import shutil
 from typing import List, Optional
+
+# Patterns that can appear as substrings in legitimate URLs (e.g., "registry", "network")
+# Use word-boundary matching to avoid false positives
+WORD_BOUNDARY_PATTERNS = {'reg', 'net', 'sc', 'su'}
 
 
 def get_dangerous_patterns() -> List[str]:
@@ -54,6 +59,10 @@ def check_for_dangerous_patterns(args: List[str], log_prefix: Optional[str] = No
             if pattern == '--':
                 # Only flag if the argument is exactly '--'
                 if arg == '--':
+                    return pattern
+            elif pattern in WORD_BOUNDARY_PATTERNS:
+                # Use word boundary to avoid false positives (e.g., "registry" in OCI URLs)
+                if re.search(rf'\b{re.escape(pattern)}\b', arg):
                     return pattern
             else:
                 if pattern in arg:
