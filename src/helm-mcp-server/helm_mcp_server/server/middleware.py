@@ -102,16 +102,20 @@ def setup_middleware(mcp: FastMCP, config: ServerConfig) -> None:
     # 3. Caching - Store frequently requested data to improve performance
     # Caches tools/list, resources/list, prompts/list, tools/call, resources/read, prompts/get
     # Using TypedDict settings classes as per FastMCP documentation
+    #
+    # IMPORTANT: Resource reads (helm://releases, kubernetes://*) and tool calls
+    # (kubernetes_get_helm_releases, helm_get_release_status, etc.) return cluster
+    # state that changes on install/uninstall/upgrade. Use short TTLs (30s) so
+    # cache does not serve stale data after mutating operations.
     mcp.add_middleware(ResponseCachingMiddleware(
         # Cache list operations for 5 minutes (300 seconds)
         list_tools_settings=ListToolsSettings(ttl=300, enabled=True),
         list_resources_settings=ListResourcesSettings(ttl=300, enabled=True),
         list_prompts_settings=ListPromptsSettings(ttl=300, enabled=True),
-        # Cache tool calls for 1 hour (3600 seconds) - adjust based on your needs
-        call_tool_settings=CallToolSettings(ttl=3600, enabled=True),
-        # Cache resource reads for 1 hour
-        read_resource_settings=ReadResourceSettings(ttl=3600, enabled=True),
-        # Cache prompt gets for 1 hour
+        # Short TTL for cluster-state: install/uninstall/upgrade invalidate cache
+        call_tool_settings=CallToolSettings(ttl=30, enabled=True),
+        read_resource_settings=ReadResourceSettings(ttl=30, enabled=True),
+        # Prompts are static; longer TTL is fine
         get_prompt_settings=GetPromptSettings(ttl=3600, enabled=True),
     ))
     

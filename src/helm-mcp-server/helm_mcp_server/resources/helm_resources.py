@@ -19,28 +19,30 @@ class HelmResources(BaseResource):
             
             Returns dynamic resources for each release.
             """
+            # NOTE: Do not silently swallow errors here.
+            # If anything goes wrong, raise a HelmResourceError so agent
+            # can see a proper failure instead of an empty list.
             try:
-                # Get releases from Kubernetes service
                 releases = await self.k8s_service.get_helm_releases()
-                
-                return [
-                    Resource(
-                        uri=f"helm://releases/{rel['name']}",
-                        name=f"Release: {rel['name']}",
-                        description=f"Helm release {rel['name']} in namespace {rel.get('namespace', 'default')}",
-                        mimeType="application/json",
-                        contents=[
-                            TextContent(
-                                text=json.dumps(rel, indent=2),
-                                mimeType="application/json"
-                            )
-                        ]
-                    )
-                    for rel in releases
-                ]
             except Exception as e:
-                # Return empty list on error (graceful degradation)
-                return []
+                raise HelmResourceError(f"Failed to list Helm releases: {e}")
+
+            return [
+                Resource(
+                    uri=f"helm://releases/{rel['name']}",
+                    name=f"Release: {rel['name']}",
+                    description=f"Helm release {rel['name']} in namespace {rel.get('namespace', 'default')}",
+                    mimeType="application/json",
+                    contents=[
+                        TextContent(
+                            type="text",
+                            text=json.dumps(rel, indent=2),
+                            mimeType="application/json"
+                        )
+                    ]
+                )
+                for rel in releases
+            ]
         
         @mcp_instance.resource(
             "helm://releases/{release_name}",
