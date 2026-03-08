@@ -13,9 +13,9 @@ class ArgoCDPrompts(BasePrompt):
         
         @mcp_instance.prompt()
         async def deploy_new_version(
-            cluster_name: str,
-            app_name: str,
-            new_version: str,
+            cluster_name: str = "<CLUSTER_NAME>",
+            app_name: str = "<APP_NAME>",
+            new_version: str = "<NEW_VERSION>",
             strategy: str = 'canary'
         ) -> str:
             """Guided step-by-step deployment workflow.
@@ -134,9 +134,9 @@ Parameters:
         
         @mcp_instance.prompt()
         async def rollback_decision(
-            cluster_name: str,
-            app_name: str,
-            reason: str
+            cluster_name: str = "<CLUSTER_NAME>",
+            app_name: str = "<APP_NAME>",
+            reason: str = "<REASON_FOR_ROLLBACK>"
         ) -> str:
             """Guided rollback workflow.
             
@@ -239,7 +239,15 @@ Parameters:
 **After reviewing the above, execute:**
 
 1. **Notify team** about the rollback
-2. **Execute rollback command** (from Step 2)
+2. **Disable auto-sync** if it is currently enabled (otherwise ArgoCD will instantly undo the rollback):
+```
+Use: update_application
+Parameters:
+  - cluster_name: "{cluster_name}"
+  - app_name: "{app_name}"
+  - auto_sync: false
+```
+3. **Execute rollback command** (from Step 2)
 3. **Monitor deployment**:
 ```
 Use: get_sync_status
@@ -310,8 +318,8 @@ clients might fail after rollback.
         
         @mcp_instance.prompt()
         async def post_deployment_validation(
-            cluster_name: str,
-            app_name: str
+            cluster_name: str = "<CLUSTER_NAME>",
+            app_name: str = "<APP_NAME>"
         ) -> str:
             """Validate deployment after completion.
             

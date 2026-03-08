@@ -487,7 +487,7 @@ class ChartManagementTools(BaseTool):
                 # Build summary with key information only
                 chart_metadata = full_output.get('chart', {}).get('metadata', {}) if full_output.get('chart') else {}
                 release_info = full_output.get('info', {}) if full_output.get('info') else {}
-                notes = release_info.get('notes', '') if release_info else ''
+                notes = (release_info.get('notes') or '') if release_info else ''
                 
                 # Extract template count (without including template data)
                 templates = full_output.get('chart', {}).get('templates', []) if full_output.get('chart') else []

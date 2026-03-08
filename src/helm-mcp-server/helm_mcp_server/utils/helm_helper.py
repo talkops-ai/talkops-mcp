@@ -4,9 +4,9 @@ import re
 import shutil
 from typing import List, Optional
 
-# Patterns that can appear as substrings in legitimate URLs (e.g., "registry", "network")
+# Patterns that can appear as substrings in legitimate words (e.g., "registry", "network", "dashboard")
 # Use word-boundary matching to avoid false positives
-WORD_BOUNDARY_PATTERNS = {'reg', 'net', 'sc', 'su'}
+WORD_BOUNDARY_PATTERNS = {'reg', 'net', 'sc', 'su', 'sh'}
 
 
 def get_dangerous_patterns() -> List[str]:

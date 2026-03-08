@@ -84,21 +84,18 @@ class RepositoryManagementTools(BaseTool):
                 await ctx.error(error_msg)
                 raise ValueError(error_msg)
             
-            # Read credentials from environment variables
-            username = os.getenv('GIT_USERNAME', '')
-            password = os.getenv('GIT_PASSWORD', '')
-            
+            # Credentials from config (loaded from GIT_USERNAME / GIT_PASSWORD in config.py)
+            username = self.config.git.username
+            password = self.config.git.password
             if not password:
                 error_msg = (
-                    "GIT_PASSWORD environment variable is not set. "
-                    "This is required for HTTPS authentication. "
-                    "Set it to your Git password or personal access token:\n"
+                    "Git HTTPS credentials not set. Set GIT_PASSWORD (and optionally GIT_USERNAME) "
+                    "in the environment; they are loaded via config (see argocd_mcp_server.config.GitRepoConfig).\n"
                     "  export GIT_PASSWORD='your-token-here'"
                 )
                 await ctx.error(error_msg)
                 raise ValueError(error_msg)
-            
-            await ctx.info("✓ Credentials loaded from environment variables")
+            await ctx.info("✓ Using Git credentials from config (GIT_USERNAME / GIT_PASSWORD)")
             
             # Convert repo_type string to enum
             try:
@@ -216,17 +213,9 @@ class RepositoryManagementTools(BaseTool):
                 await ctx.error(error_msg)
                 raise ValueError(error_msg)
             
-            # Read SSH key from file path specified in environment variable
-            # Default to standard SSH key location if not specified
-            ssh_key_path = os.getenv('SSH_PRIVATE_KEY_PATH', '~/.ssh/id_rsa')
-            
-            await ctx.info(
-                f"Using SSH key path: {ssh_key_path} "
-                f"({'from SSH_PRIVATE_KEY_PATH env var' if os.getenv('SSH_PRIVATE_KEY_PATH') else 'default location'})"
-            )
-            
-            # Expand user home directory (~)
-            ssh_key_path = os.path.expanduser(ssh_key_path)
+            # SSH key path from config (loaded from SSH_PRIVATE_KEY_PATH in config.py)
+            ssh_key_path = os.path.expanduser(self.config.git.ssh_private_key_path)
+            await ctx.info(f"Using SSH key path from config (SSH_PRIVATE_KEY_PATH): {ssh_key_path}")
             
             # Check if file exists
             if not os.path.exists(ssh_key_path):
@@ -474,19 +463,24 @@ class RepositoryManagementTools(BaseTool):
             
             if auth_method_enum in [AuthMethod.HTTPS_BASIC, AuthMethod.HTTPS_TOKEN]:
                 if not password:
+                    password = self.config.git.password
+                    if password:
+                        await ctx.info("Using Git password/token from environment configuration")
+                if not password:
                     error_msg = "Password/token is required for HTTPS authentication"
                     await ctx.error(error_msg)
                     raise ValueError(error_msg)
+                
+                if not username:
+                    username = self.config.git.username
                 auth_config["username"] = username or ""
                 auth_config["password"] = password
             elif auth_method_enum == AuthMethod.SSH_KEY:
-                # If key not provided, try to read from environment variable path
+                # If key not provided, read from config path (SSH_PRIVATE_KEY_PATH)
                 if not ssh_private_key:
-                    ssh_key_path = os.getenv('SSH_PRIVATE_KEY_PATH', '~/.ssh/id_rsa')
-                    ssh_key_path = os.path.expanduser(ssh_key_path)
-                    
+                    ssh_key_path = os.path.expanduser(self.config.git.ssh_private_key_path)
                     if os.path.exists(ssh_key_path):
-                        await ctx.info(f"Reading SSH key from {ssh_key_path}")
+                        await ctx.info(f"Reading SSH key from config path: {ssh_key_path}")
                         try:
                             with open(ssh_key_path, 'r') as key_file:
                                 ssh_private_key = key_file.read()
@@ -671,13 +665,11 @@ class RepositoryManagementTools(BaseTool):
                 auth_config["username"] = username or ""
                 auth_config["password"] = password
             elif auth_method_enum == AuthMethod.SSH_KEY:
-                # If key not provided, try to read from environment variable path
+                # If key not provided, read from config path (SSH_PRIVATE_KEY_PATH)
                 if not ssh_private_key:
-                    ssh_key_path = os.getenv('SSH_PRIVATE_KEY_PATH', '~/.ssh/id_rsa')
-                    ssh_key_path = os.path.expanduser(ssh_key_path)
-                    
+                    ssh_key_path = os.path.expanduser(self.config.git.ssh_private_key_path)
                     if os.path.exists(ssh_key_path):
-                        await ctx.info(f"Reading SSH key from {ssh_key_path}")
+                        await ctx.info(f"Reading SSH key from config path: {ssh_key_path}")
                         try:
                             with open(ssh_key_path, 'r') as key_file:
                                 ssh_private_key = key_file.read()
