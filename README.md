@@ -42,7 +42,7 @@ Each table lists MCP servers by DevOps domain. Use **Quick Install** for the rec
 
 | Server Name | Description | Quick Install | README | Config | Video |
 |-------------|-------------|---------------|--------|--------|-------|
-| [ArgoCD MCP Server](src/argocd-mcp-server) | Manage ArgoCD applications, sync deployments, onboard repositories, create projects, debug with guided workflows. GitOps with credential isolation. | `docker run -p 8765:8765 -e ARGOCD_SERVER_URL=... -e ARGOCD_AUTH_TOKEN=... -v ~/.ssh/id_ed25519:/app/.ssh/id_rsa:ro sandeep2014/talkops-mcp:argocd-mcp-server-latest` | [README](src/argocd-mcp-server/README.md) | [Config](src/argocd-mcp-server/README.md#mcp-client-configuration) | — |
+| [ArgoCD MCP Server](src/argocd-mcp-server) | Manage ArgoCD applications, sync deployments, onboard repositories, create projects, debug with guided workflows. GitOps with credential isolation. | `docker run -p 8770:8770 -e ARGOCD_SERVER_URL=... -e ARGOCD_AUTH_TOKEN=... -e MCP_ALLOW_WRITE=true talkopsai/argocd-mcp-server:latest` | [README](src/argocd-mcp-server/README.md) | [Config](src/argocd-mcp-server/README.md#configuration) | [▶ Overview](https://youtu.be/5V0wo4jkUtQ)<br>[▶ Demo](https://youtu.be/gfMLUK9YcGc) |
 
 <a id="cloud-orchestration--infrastructure"></a>
 ### 🏗️ Cloud Orchestration & Infrastructure

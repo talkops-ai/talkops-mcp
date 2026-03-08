@@ -478,7 +478,7 @@ class ArgoCDService:
              # We rely on refreshing the app and checking resource statuses.
              
              if refresh:
-                 self._request('PUT', f'/api/v1/applications/{app_name}/refresh', params={'refresh': 'normal'})
+                 self._request('GET', f'/api/v1/applications/{app_name}', params={'refresh': 'normal'})
                  
              app = self._request('GET', f'/api/v1/applications/{app_name}')
              
@@ -741,7 +741,17 @@ class ArgoCDService:
         self._check_write_access('application hard refresh')
         
         try:
-            return self._request('PUT', f'/api/v1/applications/{app_name}/refresh', params={'refresh': 'hard'})
+            # Refresh is triggered via GET with refresh query parameter
+            app = self._request('GET', f'/api/v1/applications/{app_name}', params={'refresh': 'hard'})
+            return {
+                'app_name': app_name,
+                'refreshed': True,
+                'type': 'hard',
+                'sync_status': app.get('status', {}).get('sync', {}).get('status'),
+                'health_status': app.get('status', {}).get('health', {}).get('status'),
+                'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
+                'message': f"Application '{app_name}' hard refreshed successfully"
+            }
         except Exception as e:
             raise ArgoCDOperationError(f"Failed to hard refresh: {str(e)}")
 
@@ -755,7 +765,17 @@ class ArgoCDService:
         self._check_write_access('application soft refresh')
         
         try:
-            return self._request('PUT', f'/api/v1/applications/{app_name}/refresh', params={'refresh': 'normal'})
+            # Refresh is triggered via GET with refresh query parameter
+            app = self._request('GET', f'/api/v1/applications/{app_name}', params={'refresh': 'normal'})
+            return {
+                'app_name': app_name,
+                'refreshed': True,
+                'type': 'soft',
+                'sync_status': app.get('status', {}).get('sync', {}).get('status'),
+                'health_status': app.get('status', {}).get('health', {}).get('status'),
+                'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
+                'message': f"Application '{app_name}' soft refreshed successfully"
+            }
         except Exception as e:
             raise ArgoCDOperationError(f"Failed to soft refresh: {str(e)}")
 

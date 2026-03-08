@@ -84,6 +84,33 @@ Prompts orchestrate multiple tools into cohesive, safe workflows.
 3.  **Logs**: Scans recent logs for errors.
 4.  **Metrics**: Validates error rates and latency.
 
+### 4. `onboard_github_repository`
+**Goal:** Guided workflow to validate and attach Git repositories.
+**Flow:**
+1.  **Environment Check**: Expects tokens via environment.
+2.  **Validation**: Validates credentials via `validate_repository_connection`.
+3.  **Onboarding**: Registers the repository via `onboard_repository_https`/`ssh`.
+4.  **Verification**: Confirms via `get_repository`.
+
+### 5. `setup_argocd_project`
+**Goal:** Structured multi-tenant project assignment.
+**Flow:**
+1.  **Planning**: Defines restrictions (whitelist/blacklist).
+2.  **Creation**: Sets up `create_project`.
+3.  **GitOps**: Generates `generate_project_manifest` for IaC tracking.
+
+### 6. `debug_application_issues`
+**Goal:** End-to-end intelligent debugging of outages.
+**Flow:**
+1.  **State Check**: Fetches status and syncing states.
+2.  **Logs**: Parses smart logs with `get_application_logs`.
+3.  **Events**: Reviews crash timelines.
+4.  **Config**: Validates configuration integrity.
+
+### 7. `full_application_deployment`
+**Goal:** Comprehensive End-to-end deployment guide.
+**Flow:** Combines Repository Onboarding, Application Creation, Pre-deployment Diffs, Syncing, and Post-Validation into a single mega-workflow.
+
 ---
 
 ## 📡 LAYER 3: RESOURCES (The Data)
@@ -116,6 +143,10 @@ graph TB
             P1["🚀 deploy_new_version<br/>(validate → diff → deploy → monitor)"]
             P2["🔄 rollback_decision<br/>(assess → options → impact → execute)"]
             P3["✅ post_deployment_validation<br/>(status → pods → logs → metrics)"]
+            P4["📦 onboard_github_repository<br/>(env → validate → register)"]
+            P5["🏢 setup_argocd_project<br/>(plan → create → manifest)"]
+            P6["🔍 debug_application_issues<br/>(state → logs → events → config)"]
+            P7["🏗️ full_application_deployment<br/>(E2E Onboarding & Deployment)"]
         end
         
         subgraph "TOOLS - Model Controlled"
@@ -186,7 +217,7 @@ graph TB
     classDef resource fill:#F5A623,stroke:#C17817,color:#000
     classDef api fill:#BD10E0,stroke:#7A0880,color:#fff
     
-    class P1,P2,P3 prompt
+    class P1,P2,P3,P4,P5,P6,P7 prompt
     class T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,T16,T17 tool
     class R1,R2,R3,R4,R5 resource
     class ArgoCD_API,K8s_API api

@@ -13,9 +13,9 @@ class RepositoryWorkflowPrompts(BasePrompt):
         
         @mcp_instance.prompt()
         async def onboard_github_repository(
-            repo_url: str,
+            repo_url: str = "<REPOSITORY_URL>",
             auth_method: str = "https",
-            project_name: Optional[str] = None
+            project_name: str = ""
         ) -> str:
             """Guided workflow for onboarding a GitHub repository to ArgoCD.
             
@@ -309,8 +309,8 @@ Parameters:
 
         @mcp_instance.prompt()
         async def setup_argocd_project(
-            project_name: str,
-            team_name: str,
+            project_name: str = "<PROJECT_NAME>",
+            team_name: str = "<TEAM_NAME>",
             allowed_repos: str = "*",
             allowed_namespaces: str = "*"
         ) -> str:
@@ -506,7 +506,7 @@ Parameters:
   - project: "{project_name}"  # ← Must match this project
   - repo_url: "https://github.com/myorg/myrepo.git"
   - path: "k8s"
-  - dest_namespace: "{team_name}-production"  # ← Must match allowed namespaces
+  - destination_namespace: "{team_name}-production"  # ← Must match allowed namespaces
 ```
 
 **Security Enforcement:**
@@ -607,8 +607,8 @@ Cluster Resources: Allowed
 
         @mcp_instance.prompt()
         async def debug_application_issues(
-            cluster_name: str,
-            app_name: str,
+            cluster_name: str = "<CLUSTER_NAME>",
+            app_name: str = "<APP_NAME>",
             issue_description: str = "Application not working as expected"
         ) -> str:
             """Comprehensive debugging workflow for ArgoCD applications.
@@ -1049,8 +1049,8 @@ Parameters:
 
         @mcp_instance.prompt()
         async def full_application_deployment(
-            repo_url: str,
-            app_name: str,
+            repo_url: str = "<REPOSITORY_URL>",
+            app_name: str = "<APP_NAME>",
             cluster_name: str = "production",
             namespace: str = "default",
             path: str = "k8s",
@@ -1155,10 +1155,9 @@ Parameters:
   - repo_url: "{repo_url}"
   - path: "{path}"
   - target_revision: "HEAD"  # Or specific branch/tag
-  - dest_namespace: "{namespace}"
-  - dest_server: "https://kubernetes.default.svc"
-  - sync_policy_automated: false  # Manual sync for initial deployment
-  - auto_create_namespace: true
+  - destination_namespace: "{namespace}"
+  - destination_server: "https://kubernetes.default.svc"
+  - auto_sync: false  # Manual sync for initial deployment
 ```
 
 **Verify application creation:**
@@ -1312,8 +1311,8 @@ Use: update_application
 Parameters:
   - cluster_name: "{cluster_name}"
   - app_name: "{app_name}"
-  - sync_policy_automated: true
-  - auto_prune: true
+  - auto_sync: true
+  - prune: true
   - self_heal: true
 ```
 
