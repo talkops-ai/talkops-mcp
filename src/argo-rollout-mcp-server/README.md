@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../../assets/logo.png" alt="ArgoFlow MCP Server" width="140" onError="this.style.display='none'"/>
+  <img src="https://argo-cd.readthedocs.io/en/stable/assets/logo.png" alt="Argo Rollout MCP Server" width="140"/>
 </p>
 
 <h1 align="center">Argo Rollout MCP Server</h1>
