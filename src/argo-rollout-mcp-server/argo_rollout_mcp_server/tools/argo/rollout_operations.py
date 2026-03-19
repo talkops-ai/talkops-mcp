@@ -250,9 +250,9 @@ class RolloutOperationTools(BaseTool):
         @mcp_instance.tool()
         async def argo_configure_analysis_template(
             rollout_name: str = Field(..., min_length=1, description="Rollout name"),
-            mode: Literal["execute", "generate_yaml"] = Field(
+            mode: Literal["execute", "generate_yaml", "delete"] = Field(
                 ...,
-                description="execute: create AnalysisTemplate CRD and link to rollout. generate_yaml: return YAML only (GitOps review).",
+                description="execute: create AnalysisTemplate CRD and link to rollout. generate_yaml: return YAML only (GitOps review). delete: remove AnalysisTemplate from cluster.",
             ),
             namespace: str = Field(default="default", description="Kubernetes namespace"),
             template_name: Optional[str] = Field(
@@ -300,11 +300,25 @@ class RolloutOperationTools(BaseTool):
             """
             svc_name = service_name or rollout_name
             tpl_name = template_name or f"{svc_name}-analysis"
-            effective_prometheus_url = (
-                prometheus_url
-                or (self.config.prometheus_url if self.config else None)
-                or "http://prometheus:9090"
-            )
+            effective_prometheus_url = None
+            if mode != "delete":
+                effective_prometheus_url = (
+                    prometheus_url
+                    or (self.config.prometheus_url if self.config else None)
+                    or "http://prometheus:9090"
+                )
+
+            if mode == "delete":
+                await ctx.info(
+                    f"Deleting AnalysisTemplate '{tpl_name}'",
+                    extra={"template_name": tpl_name, "namespace": namespace},
+                )
+                result = self.argo_service.delete_analysis_template(
+                    name=tpl_name,
+                    namespace=namespace,
+                )
+                await ctx.info(result["message"])
+                return result
 
             if mode == "generate_yaml":
                 await ctx.info(
@@ -400,4 +414,5 @@ class RolloutOperationTools(BaseTool):
             except Exception as e:
                 await ctx.error(f"Failed to configure analysis template: {str(e)}")
                 raise ArgoRolloutError("Analysis configuration failed")
-        
+
+

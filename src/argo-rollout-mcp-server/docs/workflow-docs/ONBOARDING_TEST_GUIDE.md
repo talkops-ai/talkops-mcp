@@ -81,11 +81,16 @@ The default analysis template uses `http_requests_total` and `http_request_durat
 
 ### Traefik Service Name Format
 
-In Kubernetes, Traefik service names typically look like:
+In Kubernetes, Traefik service names vary by configuration:
+
+**Weighted TraefikService (canary/stable):**
 - `hello-world-stable-default@kubernetescrd`
 - `hello-world-canary-default@kubernetescrd`
 
-Use a regex to match both: `service=~"hello-world-(stable|canary).*"` or `service=~"hello-world.*"`.
+**Simple IngressRoute (direct K8s Service):**
+- `default-hello-world-622e858f1837aa111d78@kubernetescrd` (format: `{namespace}-{service}-{hash}@kubernetescrd`)
+
+Use a regex that matches any service containing your app name: `service=~".*hello-world.*"`. This works for both formats.
 
 ### Custom Metrics for `argo_configure_analysis_template`
 
@@ -94,15 +99,15 @@ When calling the tool with `metrics=[...]`, use these Traefik-specific queries:
 **Error rate** (< 5%):
 
 ```promql
-sum(rate(traefik_service_requests_total{service=~"hello-world.*", code=~"5.."}[5m])) 
-/ sum(rate(traefik_service_requests_total{service=~"hello-world.*"}[5m]))
+sum(rate(traefik_service_requests_total{service=~".*hello-world.*", code=~"5.."}[5m])) 
+/ sum(rate(traefik_service_requests_total{service=~".*hello-world.*"}[5m]))
 ```
 
 **P99 latency** (< 2 seconds):
 
 ```promql
 histogram_quantile(0.99, 
-  sum(rate(traefik_service_request_duration_seconds_bucket{service=~"hello-world.*"}[5m])) by (le)
+  sum(rate(traefik_service_request_duration_seconds_bucket{service=~".*hello-world.*"}[5m])) by (le)
 )
 ```
 
@@ -110,7 +115,7 @@ histogram_quantile(0.99,
 
 ```promql
 histogram_quantile(0.95, 
-  sum(rate(traefik_service_request_duration_seconds_bucket{service=~"hello-world.*"}[5m])) by (le)
+  sum(rate(traefik_service_request_duration_seconds_bucket{service=~".*hello-world.*"}[5m])) by (le)
 )
 ```
 
@@ -122,23 +127,24 @@ kubectl port-forward svc/prometheus-server -n monitoring 9090:80
 
 # Open http://localhost:9090 and run the queries above
 # Or use curl:
-curl -s 'http://localhost:9090/api/v1/query?query=sum(rate(traefik_service_requests_total{service=~"hello-world.*"}[5m]))'
+curl -s 'http://localhost:9090/api/v1/query?query=sum(rate(traefik_service_requests_total{service=~".*hello-world.*"}[5m]))'
 ```
 
 ### Full Custom Metrics JSON for Tool
 
 ```json
 [
-  {
+{
     "name": "error-rate",
     "interval": "60s",
     "initialDelay": "60s",
-    "failureLimit": 2,
+    "failureLimit": 1,
     "successCondition": "result[0] < 0.05",
+    "failureCondition": "result[0] >= 0.05",
     "provider": {
       "prometheus": {
         "address": "http://prometheus-server.monitoring.svc.cluster.local:80",
-        "query": "sum(rate(traefik_service_requests_total{service=~\"hello-world.*\", code=~\"5..\"}[5m])) / sum(rate(traefik_service_requests_total{service=~\"hello-world.*\"}[5m]))"
+        "query": "sum(rate(traefik_service_requests_total{service=~\".*hello-world.*\", code=~\"5..\"}[5m])) / sum(rate(traefik_service_requests_total{service=~\".*hello-world.*\"}[5m]))"
       }
     }
   },
@@ -151,7 +157,7 @@ curl -s 'http://localhost:9090/api/v1/query?query=sum(rate(traefik_service_reque
     "provider": {
       "prometheus": {
         "address": "http://prometheus-server.monitoring.svc.cluster.local:80",
-        "query": "histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket{service=~\"hello-world.*\"}[5m])) by (le))"
+        "query": "histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket{service=~\".*hello-world.*\"}[5m])) by (le))"
       }
     }
   },
@@ -164,7 +170,37 @@ curl -s 'http://localhost:9090/api/v1/query?query=sum(rate(traefik_service_reque
     "provider": {
       "prometheus": {
         "address": "http://prometheus-server.monitoring.svc.cluster.local:80",
-        "query": "histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{service=~\"hello-world.*\"}[5m])) by (le))"
+        "query": "histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{service=~\".*hello-world.*\"}[5m])) by (le))"
+      }
+    }
+  }
+]
+```
+
+### Error-Rate Only (Custom Metric Prompt)
+
+For analysis with only the error-rate metric (no P99/P95 latency):
+
+**Natural language prompt:**
+
+```
+Configure automated Prometheus analysis for the "hello-world" rollout in "default" with only the error-rate metric. Use the Traefik query sum(rate(traefik_service_requests_total{service=~".*hello-world.*", code=~"5.."}[5m])) / sum(rate(traefik_service_requests_total{service=~".*hello-world.*"}[5m])) — abort the canary if error rate exceeds 5%. Prometheus at http://prometheus-server.monitoring.svc.cluster.local:80.
+```
+
+**Custom metrics JSON (error-rate only):**
+
+```json
+[
+  {
+    "name": "error-rate",
+    "interval": "60s",
+    "initialDelay": "60s",
+    "failureLimit": 2,
+    "successCondition": "result[0] < 0.05",
+    "provider": {
+      "prometheus": {
+        "address": "http://prometheus-server.monitoring.svc.cluster.local:80",
+        "query": "sum(rate(traefik_service_requests_total{service=~\".*hello-world.*\", code=~\"5..\"}[5m])) / sum(rate(traefik_service_requests_total{service=~\".*hello-world.*\"}[5m]))"
       }
     }
   }

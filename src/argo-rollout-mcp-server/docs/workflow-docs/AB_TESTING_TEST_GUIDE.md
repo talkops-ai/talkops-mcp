@@ -1,8 +1,12 @@
 # A/B Testing Test Guide — Experiments with Argo Rollout MCP Server
 
 **Target application**: `hello-world` in `default` namespace  
-**Prerequisite**: Onboarded canary rollout with AnalysisTemplate (see [ONBOARDING_TEST_GUIDE.md](ONBOARDING_TEST_GUIDE.md))  
+**Prerequisite**: Onboarded rollout (canary or blue-green) with AnalysisTemplate (see [ONBOARDING_TEST_GUIDE.md](ONBOARDING_TEST_GUIDE.md))  
 **Related**: [WORKFLOW_JOURNEYS.md](WORKFLOW_JOURNEYS.md) § Workflow 3, [PROMPT_REFERENCE.md](PROMPT_REFERENCE.md)
+
+**Applicability**: A/B testing experiments work with **both canary and blue-green** rollouts. Use `specRef: "stable"`/`"canary"` for canary; use `specRef: "active"`/`"preview"` for blue-green.
+
+**Simulation flow**: (1) Trigger new version → (2) Create experiment with specRef → (3) Monitor via `argorollout://experiments/{ns}/{name}/status` → (4) Promote or abort based on results → (5) Delete experiment.
 
 ---
 
@@ -25,7 +29,7 @@
 | Kubernetes cluster | Accessible via `kubectl` |
 | Argo Rollouts | Installed (`kubectl get rollouts -A`) |
 | Argo Rollout MCP Server | Running (Docker recommended: `talkopsai/argo-rollout-mcp-server:latest`) |
-| hello-world Rollout | Canary strategy, onboarded in `default` namespace |
+| hello-world Rollout | Canary or blue-green strategy, onboarded in `default` namespace |
 | AnalysisTemplate | Exists for hello-world (see [ONBOARDING_TEST_GUIDE.md](ONBOARDING_TEST_GUIDE.md) for setup) |
 | Prometheus | Required for analysis-backed experiments |
 
@@ -35,24 +39,29 @@
 
 ## 2. Environment Setup
 
-### Verify hello-world Rollout and Canary
+### Verify hello-world Rollout and AnalysisTemplate
 
 ```bash
 kubectl get rollout hello-world -n default
 kubectl get analysistemplate -n default
 ```
 
-### Ensure Canary Deployment in Progress
+### Ensure Deployment in Progress (Canary or Preview)
 
-For experiments that use `specRef: "stable"` and `specRef: "canary"`, the rollout must have a canary deployment in progress:
+For experiments that use `specRef`, the rollout must have a **new deployment in progress** (canary for canary strategy, preview for blue-green):
+
+| Strategy | specRef (baseline) | specRef (candidate) |
+|----------|-------------------|---------------------|
+| **Canary** | `stable` | `canary` |
+| **Blue-Green** | `active` | `preview` |
 
 ```bash
 # Trigger a new version first
 # "Deploy hello-world:v2 to the hello-world rollout in default."
-# Then create the experiment while canary is running
+# Then create the experiment while canary/preview is running
 ```
 
-> **specRef resolution**: When using `specRef` in templates, the MCP server resolves stable/canary (or active/preview for blue-green) from the Rollout's ReplicaSets. You must pass `rollout_name` (and optionally `rollout_namespace` if different from the experiment namespace) so the server can fetch the correct pod templates. See [EXPERIMENT_SPECREF_FIX_PROPOSAL.md](../EXPERIMENT_SPECREF_FIX_PROPOSAL.md).
+> **specRef resolution**: When using `specRef` in templates, the MCP server resolves stable/canary (canary strategy) or active/preview (blue-green) from the Rollout's ReplicaSets. You must pass `rollout_name` (and optionally `rollout_namespace` if different from the experiment namespace) so the server can fetch the correct pod templates. See [EXPERIMENT_SPECREF_FIX_PROPOSAL.md](../EXPERIMENT_SPECREF_FIX_PROPOSAL.md).
 
 ### Start MCP Server (Docker — recommended)
 
@@ -88,16 +97,18 @@ docker run --rm -it \
 
 ### Scenario A: Create Experiment (Baseline + Candidate)
 
-Run two versions side-by-side for metric comparison. Templates reference the rollout's stable and canary ReplicaSets.
+Run two versions side-by-side for metric comparison. Templates reference the rollout's ReplicaSets via `specRef`.
 
 | Step | Action | Prompt / Tool |
 |------|--------|----------------|
-| 1 | Trigger canary (if not already) | "Deploy hello-world:v2 to the hello-world rollout in default." |
-| 2 | Create experiment | "Create an A/B test experiment called hello-world-ab-test in default — run baseline (stable) and candidate (canary) side by side for 30 minutes." |
-| 3 | Or use tool | `argo_create_experiment(name="hello-world-ab-test", namespace="default", templates=[{"name": "baseline", "specRef": "stable"}, {"name": "candidate", "specRef": "canary"}], duration="30m", rollout_name="hello-world", analyses=[{"name": "success-rate", "templateName": "hello-world-analysis"}])` |
+| 1 | Trigger new version (if not already) | "Deploy hello-world:v2 to the hello-world rollout in default." |
+| 2a | Create experiment (canary) | "Create an A/B test experiment called hello-world-ab-test in default — run baseline (stable) and candidate (canary) side by side for 30 minutes." |
+| 2b | Create experiment (blue-green) | "Create an A/B test experiment called hello-world-ab-test in default — run baseline (active) and candidate (preview) side by side for 30 minutes." |
+| 3a | Or use tool (canary) | `argo_create_experiment(name="hello-world-ab-test", namespace="default", templates=[{"name": "baseline", "specRef": "stable"}, {"name": "candidate", "specRef": "canary"}], duration="30m", rollout_name="hello-world", analyses=[{"name": "success-rate", "templateName": "hello-world-analysis"}])` |
+| 3b | Or use tool (blue-green) | `argo_create_experiment(name="hello-world-ab-test", namespace="default", templates=[{"name": "baseline", "specRef": "active"}, {"name": "candidate", "specRef": "preview"}], duration="30m", rollout_name="hello-world", analyses=[{"name": "success-rate", "templateName": "hello-world-analysis"}])` |
 
 **Notes**:
-- `rollout_name` is **required** when templates use `specRef` — the server resolves stable/canary from the Rollout's ReplicaSets.
+- `rollout_name` is **required** when templates use `specRef` — the server resolves stable/canary (canary) or active/preview (blue-green) from the Rollout's ReplicaSets.
 - Replace `hello-world-analysis` with your actual AnalysisTemplate name from onboarding.
 
 ---
@@ -145,7 +156,7 @@ Run two versions side-by-side for metric comparison. Templates reference the rol
 
 Copy-paste these prompts into your MCP client (Cursor, Claude, etc.).
 
-### Create Experiment
+### Create Experiment (Canary)
 
 ```
 Create an A/B test experiment called "hello-world-ab-test" in "default" — run "baseline" (stable) and "candidate" (canary) side by side for 30 minutes. Use rollout "hello-world" for specRef resolution.
@@ -155,7 +166,17 @@ Create an A/B test experiment called "hello-world-ab-test" in "default" — run 
 Start an Argo Experiment named "hello-world-ab-test" in "default" with two templates: baseline (stable spec) and candidate (canary spec), running for 1 hour. Resolve specRef from rollout "hello-world".
 ```
 
-> When using specRef, the MCP client must pass `rollout_name="hello-world"` to `argo_create_experiment` so the server can resolve stable/canary from the Rollout's ReplicaSets.
+### Create Experiment (Blue-Green)
+
+```
+Create an A/B test experiment called "hello-world-ab-test" in "default" — run "baseline" (active) and "candidate" (preview) side by side for 30 minutes. Use rollout "hello-world" for specRef resolution.
+```
+
+```
+Start an Argo Experiment named "hello-world-ab-test" in "default" with two templates: baseline (active spec) and candidate (preview spec), running for 1 hour. Resolve specRef from rollout "hello-world".
+```
+
+> When using specRef, the MCP client must pass `rollout_name="hello-world"` to `argo_create_experiment` so the server can resolve stable/canary (canary) or active/preview (blue-green) from the Rollout's ReplicaSets.
 
 ### Monitor
 
@@ -195,8 +216,8 @@ Clean up the "hello-world-ab-test" experiment in "default".
 
 | Issue | Check |
 |-------|-------|
-| Experiment stuck in Pending | Verify rollout has canary in progress. Check pod status: `kubectl get pods -n default -l app=hello-world` |
+| Experiment stuck in Pending | Verify rollout has canary/preview in progress. Check pod status: `kubectl get pods -n default -l app=hello-world` |
 | AnalysisTemplate not found | Ensure AnalysisTemplate exists and `templateName` in `analyses` matches. See [ONBOARDING_TEST_GUIDE.md](ONBOARDING_TEST_GUIDE.md). |
-| specRef "stable"/"canary" invalid | Pass `rollout_name` when using specRef (required). Ensure the Rollout has a canary deployment in progress — trigger `argo_update_rollout(update_type='image')` first. |
+| specRef invalid | Pass `rollout_name` when using specRef (required). Use `stable`/`canary` for canary rollouts, `active`/`preview` for blue-green. Ensure a new deployment is in progress — trigger `argo_update_rollout(update_type='image')` first. |
 | Traefik traffic routing | Traefik does not support experiment traffic routing. Use experiments for metrics comparison only; configure ingress separately for user-facing A/B tests. |
 | Experiment Failed | Check AnalysisRun status: `kubectl get analysisruns -n default`. Verify Prometheus queries return data. |

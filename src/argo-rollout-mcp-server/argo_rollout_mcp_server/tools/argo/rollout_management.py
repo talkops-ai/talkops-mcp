@@ -7,7 +7,7 @@ from fastmcp import Context
 
 from argo_rollout_mcp_server.tools.base import BaseTool
 
-UPDATE_ROLLOUT_TYPES = Literal["image", "strategy", "traffic_routing", "workload_ref"]
+UPDATE_ROLLOUT_TYPES = Literal["image", "strategy", "traffic_routing", "workload_ref", "fix_strategy"]
 from argo_rollout_mcp_server.exceptions.custom import (
     ArgoRolloutError,
     RolloutNotFoundError,
@@ -450,7 +450,7 @@ class RolloutManagementTools(BaseTool):
             Returns:
                 Update result
             """
-            valid_types = ("image", "strategy", "traffic_routing", "workload_ref")
+            valid_types = ("image", "strategy", "traffic_routing", "workload_ref", "fix_strategy")
             if update_type not in valid_types:
                 raise ValueError(f"Invalid update_type '{update_type}'. Must be one of: {', '.join(valid_types)}")
 
@@ -577,6 +577,24 @@ class RolloutManagementTools(BaseTool):
                     ),
                     "suggested_tool": "argo_update_rollout",
                     "suggested_args": {"name": name, "namespace": namespace, "update_type": "image"},
+                })
+                return result
+
+            if update_type == "fix_strategy":
+                await ctx.info(
+                    f"Removing conflicting strategy block from Rollout '{name}'",
+                    extra={"rollout_name": name, "namespace": namespace},
+                )
+                result = self.argo_service.remove_conflicting_strategy_block(
+                    name=name,
+                    namespace=namespace,
+                )
+                await ctx.info(result["message"])
+                result.setdefault("next_action_hints", [])
+                result["next_action_hints"].append({
+                    "label": "Verify rollout health",
+                    "description": "Check that the rollout phase is Healthy after the fix.",
+                    "resource": f"argorollout://rollouts/{namespace}/{name}/detail",
                 })
                 return result
 
