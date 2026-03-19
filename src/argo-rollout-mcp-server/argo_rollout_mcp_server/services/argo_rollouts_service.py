@@ -612,14 +612,17 @@ class ArgoRolloutsService:
                         content_type="application/merge-patch+json"
                     )
                 
-                # Patch status to promote full
+                # Patch status: promote full and clear abort if set (so Degraded clears)
+                status_patch = {"status": {"promoteFull": True}}
+                if status.get("abort"):
+                    status_patch["status"]["abort"] = False
                 custom_api.patch_namespaced_custom_object_status(
                     group="argoproj.io",
                     version="v1alpha1",
                     namespace=namespace,
                     plural="rollouts",
                     name=name,
-                    body={"status": {"promoteFull": True}}
+                    body=status_patch
                 )
             else:
                 # Incremental promotion
@@ -634,11 +637,9 @@ class ArgoRolloutsService:
                 
                 status_patch = {}
                 if status.get("pauseConditions"):
-                    status_patch = {
-                        "status": {
-                            "pauseConditions": None
-                        }
-                    }
+                    status_patch = {"status": {"pauseConditions": None}}
+                    if status.get("abort"):
+                        status_patch["status"]["abort"] = False
                 elif not spec.get("paused"):
                     raise RolloutPromotionError("Rollout is not paused or has no pause conditions to clear")
                 
@@ -1577,6 +1578,7 @@ class ArgoRolloutsService:
                         "interval": "60s",
                         "initialDelay": "60s",
                         "failureLimit": 2,
+                        "count": 3,
                         "successCondition": "result[0] >= 0.99",
                         "provider": {
                             "prometheus": {
@@ -1586,6 +1588,23 @@ class ArgoRolloutsService:
                         }
                     }
                 ]
+        
+        # Add count to metrics with successCondition so template works for BOTH canary and blue-green.
+        # Blue-green prePromotionAnalysis requires count; canary accepts it (passes after N successes).
+        metrics = [
+            {**m, "count": m.get("count", 3)} if m.get("successCondition") and "count" not in m else m
+            for m in metrics
+        ]
+        
+        try:
+            # Fetch rollout to determine strategy for linking (blueGreen vs canary)
+            rollout = self._rollout_api.get(name=rollout_name, namespace=namespace)
+            rollout_dict = _to_plain_dict(rollout)
+            strategy = rollout_dict.get("spec", {}).get("strategy", {})
+        except ApiException as e:
+            if e.status == 404:
+                raise RolloutNotFoundError(f"Rollout '{rollout_name}' not found")
+            raise AnalysisTemplateError(f"Failed to get rollout: {e}")
         
         if scope == "cluster":
             analysis_template = {
@@ -1632,25 +1651,38 @@ class ArgoRolloutsService:
                             content_type="application/merge-patch+json"
                         )
             
-            # Update rollout to reference this template
-            rollout = self._rollout_api.get(name=rollout_name, namespace=namespace)
-            
+            # Update rollout to reference this template (rollout/strategy already fetched above)
+
             template_ref = {"templateName": template_name}
             if scope == "cluster":
                 template_ref["clusterScope"] = True
-            
-            patch = {
-                "spec": {
-                    "strategy": {
-                        "canary": {
-                            "analysis": {
-                                "templates": [template_ref]
+
+            # Use blueGreen.prePromotionAnalysis for blue-green, canary.analysis for canary
+            if "blueGreen" in strategy:
+                patch = {
+                    "spec": {
+                        "strategy": {
+                            "blueGreen": {
+                                "prePromotionAnalysis": {
+                                    "templates": [template_ref]
+                                }
                             }
                         }
                     }
                 }
-            }
-            
+            else:
+                patch = {
+                    "spec": {
+                        "strategy": {
+                            "canary": {
+                                "analysis": {
+                                    "templates": [template_ref]
+                                }
+                            }
+                        }
+                    }
+                }
+
             self._rollout_api.patch(
                 name=rollout_name,
                 namespace=namespace,
@@ -1673,6 +1705,41 @@ class ArgoRolloutsService:
             raise AnalysisTemplateError(f"Failed to configure analysis: {e}")
         except Exception as e:
             raise AnalysisTemplateError(f"Failed to configure analysis: {e}")
+
+    def delete_analysis_template(
+        self,
+        name: str,
+        namespace: str = "default",
+    ) -> Dict[str, Any]:
+        """Delete an AnalysisTemplate from the cluster.
+
+        Args:
+            name: AnalysisTemplate name
+            namespace: Kubernetes namespace
+
+        Returns:
+            Dict with status and message
+        """
+        self._ensure_initialized()
+
+        try:
+            self._analysis_template_api.delete(name=name, namespace=namespace)
+            logger.info(f"✅ Deleted AnalysisTemplate: {name}")
+            return {
+                "status": "success",
+                "template_name": name,
+                "namespace": namespace,
+                "message": f"AnalysisTemplate '{name}' deleted successfully",
+            }
+        except ApiException as e:
+            if e.status == 404:
+                return {
+                    "status": "success",
+                    "template_name": name,
+                    "namespace": namespace,
+                    "message": f"AnalysisTemplate '{name}' not found (already deleted or never existed)",
+                }
+            raise AnalysisTemplateError(f"Failed to delete AnalysisTemplate '{name}': {e}")
     
     async def skip_analysis_promote(
         self,
@@ -2358,4 +2425,76 @@ class ArgoRolloutsService:
             "canary_steps": canary_spec.get("steps"),
             "scale_down_delay_seconds": canary_spec.get("scaleDownDelaySeconds"),
             "message": f"✅ Canary strategy updated on Rollout '{name}'",
+        }
+
+    def remove_conflicting_strategy_block(
+        self,
+        name: str,
+        namespace: str = "default",
+    ) -> Dict[str, Any]:
+        """Remove conflicting strategy block (e.g. canary from blue-green rollout).
+
+        When argo_configure_analysis_template incorrectly adds canary.analysis to a
+        blue-green rollout, the spec ends up with both blueGreen and canary, causing
+        InvalidSpec. This patches to remove the canary block, leaving blueGreen intact.
+
+        Args:
+            name: Rollout name
+            namespace: Kubernetes namespace
+
+        Returns:
+            Dict with status and message
+        """
+        self._ensure_initialized()
+
+        try:
+            current = self._rollout_api.get(name=name, namespace=namespace)
+        except ApiException as e:
+            if e.status == 404:
+                raise RolloutNotFoundError(f"Rollout '{name}' not found in namespace '{namespace}'")
+            raise ArgoRolloutError(f"Failed to fetch rollout: {e}")
+
+        current_dict = _to_plain_dict(current)
+        strategy = current_dict.get("spec", {}).get("strategy", {})
+
+        if "canary" not in strategy:
+            return {
+                "status": "success",
+                "rollout_name": name,
+                "namespace": namespace,
+                "message": "No conflicting canary block found; rollout spec is valid.",
+            }
+
+        if "blueGreen" not in strategy:
+            raise RolloutStrategyError(
+                f"Rollout '{name}' has canary strategy only. "
+                "Use this fix only when both blueGreen and canary are present."
+            )
+
+        # JSON merge patch: null removes the key
+        patch_body = {
+            "spec": {
+                "strategy": {
+                    "canary": None,
+                }
+            }
+        }
+
+        try:
+            self._rollout_api.patch(
+                name=name,
+                namespace=namespace,
+                body=patch_body,
+                content_type="application/merge-patch+json",
+            )
+        except ApiException as e:
+            raise ArgoRolloutError(f"Failed to remove conflicting strategy block on rollout '{name}': {e}")
+
+        logger.info(f"✅ Removed conflicting canary block from blue-green Rollout '{name}'")
+
+        return {
+            "status": "success",
+            "rollout_name": name,
+            "namespace": namespace,
+            "message": f"✅ Removed conflicting canary block from Rollout '{name}'. Blue-green strategy is now valid.",
         }

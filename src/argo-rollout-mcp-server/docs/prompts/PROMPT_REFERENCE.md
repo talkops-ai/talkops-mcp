@@ -97,6 +97,12 @@ Configure analysis for my "hello-world" rollout using Prometheus at "http://prom
 Add automated health checks to the "api-service" rollout — link it to Prometheus so failing canaries auto-rollback.
 ```
 
+> **Custom metrics (Traefik, error-rate only):** Use `metrics=[...]` with custom Prometheus queries. For error-rate only with Traefik:
+
+```
+Configure automated Prometheus analysis for the "hello-world" rollout in "default" with only the error-rate metric. Use the Traefik query sum(rate(traefik_service_requests_total{service=~".*hello-world.*", code=~"5.."}[5m])) / sum(rate(traefik_service_requests_total{service=~".*hello-world.*"}[5m])) — abort the canary if error rate exceeds 5%. Prometheus at http://prometheus-server.monitoring.svc.cluster.local:80.
+```
+
 ---
 
 ## Workflow 2: Deploying a New Version

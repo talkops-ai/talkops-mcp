@@ -416,12 +416,14 @@ class GeneratorService:
         error_rate_decimal = error_rate_threshold / 100.0
         latency_p99_sec = latency_p99_threshold / 1000.0
         latency_p95_sec = latency_p95_threshold / 1000.0
+        # count: 3 ensures template works for both canary and blue-green (required for prePromotionAnalysis)
         return [
             {
                 "name": "error-rate",
                 "interval": "60s",
                 "initialDelay": "60s",
                 "failureLimit": 2,
+                "count": 3,
                 "provider": {
                     "prometheus": {
                         "address": prometheus_url,
@@ -439,6 +441,7 @@ class GeneratorService:
                 "interval": "60s",
                 "initialDelay": "60s",
                 "failureLimit": 2,
+                "count": 3,
                 "provider": {
                     "prometheus": {
                         "address": prometheus_url,
@@ -456,6 +459,7 @@ class GeneratorService:
                 "interval": "60s",
                 "initialDelay": "60s",
                 "failureLimit": 2,
+                "count": 3,
                 "provider": {
                     "prometheus": {
                         "address": prometheus_url,
