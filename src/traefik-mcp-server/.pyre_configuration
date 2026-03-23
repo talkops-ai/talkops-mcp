@@ -1,0 +1,15 @@
+{
+  "source_directories": [
+    "traefik_mcp_server",
+    "tests",
+    "scripts"
+  ],
+  "search_path": [
+    ".venv/lib/python3.12/site-packages"
+  ],
+  "exclude": [
+    ".*/venv/.*",
+    ".*/\\.venv/.*",
+    ".*/build/.*"
+  ]
+}
