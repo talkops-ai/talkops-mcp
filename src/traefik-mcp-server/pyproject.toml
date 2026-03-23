@@ -1,0 +1,25 @@
+[project]
+name = "traefik-mcp-server"
+version = "0.1.0"
+description = "MCP Server for Traefik traffic management — routing, middleware, mirroring, anomaly detection, and NGINX migration"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp",
+    "kubernetes",
+    "pyyaml",
+    "pydantic"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+traefik-mcp-server = "traefik_mcp_server.main:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
