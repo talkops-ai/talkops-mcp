@@ -43,13 +43,12 @@ class TraefikGeneratorTools(BaseTool):
                 "traefik_service",
                 "ingress_for_traefik_service",
                 "ingress_for_services",
-                "header_canary",
                 "mirroring",
                 "ingress_route_tcp",
                 "middleware_tcp",
             ] = Field(
                 ...,
-                description="Manifest type: traefik_service | ingress_for_traefik_service | ingress_for_services | header_canary | mirroring | ingress_route_tcp | middleware_tcp",
+                description="Manifest type: traefik_service | ingress_for_traefik_service | ingress_for_services | mirroring | ingress_route_tcp | middleware_tcp",
             ),
             name: str = Field(
                 ...,
@@ -60,7 +59,7 @@ class TraefikGeneratorTools(BaseTool):
             ),
             hostname: Optional[str] = Field(
                 default=None,
-                description="Hostname for routing. Required for ingress_for_traefik_service, ingress_for_services, header_canary.",
+                description="Hostname for routing. Required for ingress_for_traefik_service, ingress_for_services.",
             ),
             stable_service: Optional[str] = Field(
                 default=None,
@@ -106,26 +105,6 @@ class TraefikGeneratorTools(BaseTool):
                 default=True,
                 description="Omit weights for Argo management (traefik_service).",
             ),
-            header_name: str = Field(
-                default="X-Canary",
-                description="Header to match for header_canary.",
-            ),
-            header_value: str = Field(
-                default="true",
-                description="Header value for header_canary.",
-            ),
-            cookie_name: Optional[str] = Field(
-                default=None,
-                description="Cookie for cookie-based routing (header_canary).",
-            ),
-            cookie_regex: Optional[str] = Field(
-                default=None,
-                description="Cookie regex (header_canary).",
-            ),
-            priority: int = Field(
-                default=100,
-                description="Route priority for header_canary.",
-            ),
             main_service: Optional[str] = Field(
                 default=None,
                 description="Main service for mirroring. Required for manifest_type=mirroring.",
@@ -162,13 +141,15 @@ class TraefikGeneratorTools(BaseTool):
             ),
             ctx: Optional[Context] = None,
         ) -> str:
-            """Generate Traefik routing manifests (TraefikService, IngressRoute, header canary).
+            """Generate Traefik routing manifests (TraefikService, IngressRoute, TCP, etc.).
 
             Unified tool for YAML generation. Use manifest_type to select:
             - traefik_service: WeightedService for canary (name=app_name, stable_service, canary_service)
             - ingress_for_traefik_service: IngressRoute → TraefikService (name=traefik_service_name, hostname)
             - ingress_for_services: IngressRoute → direct K8s Services (name=route_name, hostname, routes)
-            - header_canary: IngressRoute with header match (name=canary_service_name, hostname)
+
+            Header/cookie routing on live clusters: use ``traefik_manage_weighted_routing`` (create) with
+            ``header_name`` / ``header_value`` or ``cookie_name`` / ``cookie_regex``.
 
             Returns:
                 JSON string with generated YAML
@@ -382,86 +363,3 @@ class TraefikGeneratorTools(BaseTool):
                     await ctx.error(f"Failed to generate MiddlewareTCP: {str(e)}")
                     return json.dumps({"error": str(e)}, indent=2)
 
-            else:  # header_canary
-                if not hostname or not hostname.strip():
-                    raise ValueError(
-                        "Missing required argument 'hostname' for manifest_type='header_canary'"
-                    )
-                await ctx.info(
-                    f"Generating canary header route for '{name}' at host '{hostname}'"
-                )
-                try:
-                    result = (
-                        await self.generator_service.create_canary_header_route(
-                            canary_service_name=name,
-                            hostname=hostname,
-                            header_name=header_name,
-                            header_value=header_value,
-                            namespace=namespace,
-                            route_name=route_name,
-                            entry_points=entry_points,
-                            path_prefix=path_prefix,
-                            tls_enabled=tls_enabled,
-                            tls_secret_name=tls_secret_name,
-                            traefik_version=traefik_version,
-                            cookie_name=cookie_name,
-                            cookie_regex=cookie_regex,
-                            priority=priority,
-                            port=port,
-                        )
-                    )
-                    if result.get("status") == "success":
-                        await ctx.info(
-                            f"Generated canary {result.get('routing_type')} route '{result.get('route_name')}'"
-                        )
-                    else:
-                        await ctx.error(
-                            f"Canary route generation failed: {result.get('error')}"
-                        )
-                    return json.dumps(result, indent=2)
-                except Exception as e:
-                    await ctx.error(
-                        f"Failed to create canary header route: {str(e)}"
-                    )
-                    return json.dumps({"error": str(e)}, indent=2)
-
-        @mcp_instance.tool()
-        async def convert_nginx_ingress_to_traefik(
-            ingress_yaml: str = Field(..., description="NGINX Ingress YAML string to convert"),
-            traefik_version: str = Field(default="v3", description="Traefik version"),
-            ctx: Optional[Context] = None
-        ) -> str:
-            """Convert an NGINX Ingress object into Traefik IngressRoute + Middleware YAML.
-            
-            Parses rules, hostnames, and basic annotations (like rewrite-target) to construct
-            a modern, native Traefik deployment ready for Argo Rollouts traffic shifting.
-            
-            Args:
-                ingress_yaml: NGINX Ingress YAML string
-                traefik_version: Traefik version for API group
-                
-            Returns:
-                JSON string with combined IngressRoute and Middleware YAMLs
-            """
-            assert self.generator_service is not None
-            assert ctx is not None
-
-            await ctx.info("Converting NGINX Ingress to Traefik IngressRoute")
-            
-            try:
-                result = await self.generator_service.convert_nginx_ingress_to_traefik(
-                    ingress_yaml=ingress_yaml,
-                    traefik_version=traefik_version
-                )
-                
-                if result.get("status") == "success":
-                    await ctx.info(f"Successfully converted NGINX Ingress '{result.get('app_name')}'")
-                else:
-                    await ctx.error(f"NGINX to Traefik conversion failed: {result.get('error')}")
-                
-                return json.dumps(result, indent=2)
-                
-            except Exception as e:
-                error_msg = f"Failed to convert NGINX Ingress: {str(e)}"
-                await ctx.error(error_msg)
-                return json.dumps({"error": error_msg}, indent=2)

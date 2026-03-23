@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="../../assets/logo.png" alt="Traefik MCP Server" width="140" onError="this.style.display='none'"/>
+  <img src="https://raw.githubusercontent.com/traefik/traefik/master/docs/content/assets/img/traefik.logo.png" alt="Traefik MCP Server" width="140" onError="this.style.display='none'"/>
 </p>
 
 <h1 align="center">Traefik MCP Server</h1>
 
 <p align="center">
-  An MCP server that gives AI assistants full control over Kubernetes traffic routing — from circuit breakers to NGINX migrations.
+  An MCP server that gives AI assistants the power to easily manage Kubernetes traffic for you—safely routing requests, adding instant protections like rate limits, and automatically upgrading outdated NGINX setups into modern Traefik configurations.
 </p>
 
 <p align="center">
@@ -24,21 +24,16 @@
 
 ## Why Traefik MCP Server?
 
-**The problem.** Routing traffic in Kubernetes is notoriously complex. You're dealing with brittle Ingress definitions, messy NGINX annotations, middleware chains, and TLS certificates. Want to apply a simple rate limiter? You have to dig through Traefik documentation, write custom CRDs, and manually `kubectl apply` them while hoping you don't break existing routes. 
+**The problem:** Managing Kubernetes traffic can be incredibly frustrating. Between brittle Ingress YAML files, messy NGINX annotations, and digging through documentation to figure out complex `Middleware` configurations, even a simple task like adding a rate limiter can feel overwhelming. If you want an AI assistant to do this for you, it usually struggles because it doesn't have a safe, structured way to interact with Traefik's custom resources natively.
 
-AI assistants should execute traffic configuration natively. But they can't — not without structured tools to natively read, write, and safely validate Traefik's custom resources.
+**The solution:** The Traefik MCP Server gives AI assistants (like Claude or Cline) direct tools to manage your Kubernetes traffic for you safely and automatically. Instead of writing endless YAML by hand, your AI can now confidently control how your apps are routed.
 
-**What Traefik MCP Server does.**
+Here's exactly what your AI assistant can now do for you:
 
-It exposes Traefik's powerful traffic shaping layer — `IngressRoute`, `Middleware`, and `TraefikService` CRDs — as a set of MCP tools, resources, and prompts. Any MCP-compatible AI assistant (Claude, Cline, or your own agent) can securely attach load balancing, apply rate limits, split traffic for canary deployments, and autonomously translate NGINX annotations into natively typed Traefik CRDs.
-
-Three things make this different:
-
-1. **Zero YAML Migration.** NGINX-to-Traefik migrations are fully automated natively. The assistant reads legacy NGINX annotations (like `limit-rps`), executes the `convert_nginx_ingress_to_traefik` tool, and pushes native Traefik middleware and routes directly.
-
-2. **Instant Resiliency Connections.** You don't have to author middleware definitions by hand. The assistant natively synthesizes and applies generic circuit breakers, retries, and rate limits dynamically mapping them directly into active HTTP pipelines. 
-
-3. **Advanced Micro-Observability.** Call a single context resource securely to expose exactly what percentage of traffic is hitting which pod, how many validation rules are in the chain, and the precise domain topologies globally.
+1. **Automated NGINX-to-Traefik Migrations (with AI Problem-Solving):** Moving away from NGINX? The AI scans your old Ingress files, analyzes the messy annotations (like CORS, sticky sessions, or custom auth), and automatically converts them into modern Traefik resources. If the AI detects a legacy configuration that breaks the migration, it can use built-in "Supervised Autonomy" to intelligently bypass the broken rule and build a custom workaround on the fly.
+2. **Effortless Traffic Splitting & Shadow Testing:** Need to test a new version of your app? Ask your AI to split traffic (e.g., 90% stable, 10% canary) or set up a "Shadow Launch" where live production traffic is copied to your new app for silent testing without users ever knowing.
+3. **Instant App Protections:** You no longer need to write complex `Middleware` YAML manually. Simply tell the AI, "Add a rate limit and a circuit breaker to the frontend," and it will instantly build and attach those network security protections.
+4. **Deep Network Insights:** Your AI gains advanced "Micro-Observability." It instantly knows exactly what percentage of traffic is hitting which container, what security middlewares are active, and if there are any immediate routing connection errors globally.
 
 ---
 
@@ -54,10 +49,15 @@ Three things make this different:
 - Construct `Retry` and `CircuitBreaker` logic gracefully across target connections
 - Attach independent modules onto active data plane networks effortlessly 
 
-**Legacy Extrication**
+**Legacy Extrication & Supervised Autonomy**
 - Scan legacy environments retrieving `Ingress` specs safely
 - Unpack annotations transforming behaviors into isolated CRDs 
 - Setup side-by-side verification tests safely
+- Agentic Overrides explicitly bypassing breaking legacy configs securely via AI logic
+
+**Advanced TCP & HTTP Routing**
+- Route standard TCP streams natively bypassing HTTP abstraction logic (Postgres, Redis)
+- Deploy simple non-weighted `IngressRoute` rules seamlessly
 
 **Deep Network Audits**
 - Access specific path definitions validating backend availability metrics
@@ -86,19 +86,19 @@ The server translates high-level MCP execution requests smoothly crossing direct
                     │    (HTTP / stdio)       │
                     └──────────┬──────────────┘
                                │
-          ┌────────────────────┼────────────────────┐
-          │                    │                     │
-    ┌─────▼─────┐      ┌──────▼──────┐      ┌──────▼──────┐
-    │   Tools   │      │  Resources  │      │   Prompts   │
-    │           │      │             │      │             │
-    │ Weights   │      │ traefik://  │      │ NGINX Mig   │
-    │ NGINX Conv│      │             │      │ Resiliency  │
-    │ Rate Limits│     │             │      │ Traffic     │
-    │ Splitting │      │             │      │             │
-    │           │      │             │      │             │
-    └─────┬─────┘      └──────┬──────┘      └──────┬──────┘
-          │                   │                     │
-          └───────────────────┼─────────────────────┘
+          ┌─────────────────────────┬─────────────────────────┐
+          │                                                   │
+    ┌─────▼─────┐                                       ┌─────▼─────┐
+    │   Tools   │                                       │ Resources │
+    │           │                                       │           │
+    │ Weights   │                                       │ traefik://│
+    │ NGINX Conv│                                       │           │
+    │ Rate Limits│                                      │           │
+    │ Splitting │                                       │           │
+    │           │                                       │           │
+    └─────┬─────┘                                       └─────┬─────┘
+          │                                                   │
+          └─────────────────────────┬─────────────────────────┘
                               │
                     ┌─────────▼──────────┐
                     │   Service Layer    │
@@ -133,7 +133,6 @@ The server translates high-level MCP execution requests smoothly crossing direct
 - [Configuration](#configuration)
 - [Available Tools](#available-tools)
 - [Available Resources](#available-resources)
-- [Available Prompts](#available-prompts)
 - [Usage](#usage)
 - [Project Structure](#project-structure)
 - [Roadmap](#roadmap)
@@ -176,7 +175,7 @@ Pull the image and run it directly:
 docker run --rm -it \
   -p 8769:8769 \
   -v ~/.kube/config:/app/.kube/config:ro \
-  argoflow/traefik-mcp-server:latest
+  talkopsai/traefik-mcp-server:latest
 ```
 
 That's it. The server is now listening on `http://localhost:8769/mcp`.
@@ -192,20 +191,6 @@ Point your MCP client at it:
     }
   }
 }
-```
-
-### Build from Source (Docker)
-
-If you prefer to build the image yourself:
-
-```bash
-cd talkops-mcp/src/argoflow-mcp-server/traefik-mcp-server
-docker build -t traefik-mcp-server .
-
-docker run --rm -it \
-  -p 8769:8769 \
-  -v ~/.kube/config:/app/.kube/config:ro \
-  traefik-mcp-server
 ```
 
 ### From Source (Python)
@@ -254,7 +239,7 @@ docker run --rm -it \
   -v ~/.kube/config:/app/.kube/config:ro \
   -e K8S_CONTEXT=production-cluster \
   -e MCP_LOG_LEVEL=DEBUG \
-  argoflow/traefik-mcp-server:latest
+  talkopsai/traefik-mcp-server:latest
 ```
 
 ### Server Configuration
@@ -283,7 +268,7 @@ docker run --rm -it \
 
 `MCP_ALLOW_WRITE=true` (default) allows in-cluster **apply** for the NGINX migration pipeline. If false, mutating actions are blocked and YAML-only **migrate** still works. Inventory and analysis: MCP resources `traefik://migration/nginx-ingress-scan` and `traefik://migration/nginx-ingress-analyze`.
 
-**RBAC (typical):** read paths need `get/list/watch` on **ingresses** and `get/list` on **pods** (controller detection). Apply paths additionally need `create/patch/update` on **middlewares** (`traefik.io/v1alpha1`) and `patch` on **ingresses** in target namespaces. 
+**RBAC (typical):** read paths need `get/list/watch` on **ingresses** and `get/list` on **pods** (controller detection). Apply paths additionally need `create/patch/update` on **middlewares** and **serverstransports** (`traefik.io/v1alpha1`), and `patch` on **ingresses** and **services** in target namespaces. 
 
 ---
 
@@ -302,11 +287,16 @@ docker run --rm -it \
 | `traefik_manage_traffic_mirroring` | Shadow traffic: `action=enable|disable|update` (mirror percent, optional attach/restore to WRR) |
 | `traefik_manage_route_middlewares` | Attach or detach middlewares on an IngressRoute (action=attach \| detach) |
 
-### Generators & Conversions
+### Backend TLS, timeouts & sticky sessions
 | Tool | Description |
 |------|-------------|
-| `traefik_generate_routing_manifest` | Generate TraefikService, IngressRoute, or header canary YAML. Use `manifest_type` (traefik_service, ingress_for_traefik_service, ingress_for_services, header_canary). |
-| `convert_nginx_ingress_to_traefik`| Parse legacy Ingress annotations into native Traefik Custom Resources |
+| `traefik_manage_servers_transport` | Create/update or delete Traefik **ServersTransport** CRDs (`action=create\|delete`): backend dial/response timeouts, `insecureSkipVerify`. Link Services with `traefik.ingress.kubernetes.io/service.serverstransport`. |
+| `traefik_configure_service_affinity` | **Enable** or **disable** Traefik sticky-cookie annotations on a Kubernetes **Service** (`action=enable\|disable`), matching NGINX migration semantics. |
+
+### Generators
+| Tool | Description |
+|------|-------------|
+| `traefik_generate_routing_manifest` | Generate TraefikService, IngressRoute, TCP manifests, etc. Use `manifest_type` (traefik_service, ingress_for_traefik_service, ingress_for_services, mirroring, ingress_route_tcp, middleware_tcp). Header/cookie routing is applied live via `traefik_manage_weighted_routing` (create). For **full** NGINX Ingress → Traefik translation (annotations, middlewares), use **`traefik_nginx_migration`** — not ad-hoc YAML snippets. |
 
 ### NGINX Migrations
 | Tool | Description |
@@ -341,39 +331,21 @@ docker run --rm -it \
 
 ---
 
-## Available Prompts
-
-| Prompt | Description |
-|--------|-------------|
-| `nginx_to_traefik_migration_guide`| Highly granular step-by-step playbook (overview, phase1, phase2, phase3, phase4, monitoring, rollback) executing NGINX-to-Traefik migrations safely native to MCP. |
-
----
-
 ## Usage
 
-### Applying Resiliency 
+Supported workflows with prompt examples and links to detailed guides:
 
-```
-"The authorization API is getting slammed. Add a rate limit of 100 requests per second with a burst of 50 to the 'auth-route' IngressRoute in production. Also, attach a circuit breaker."
-```
+| Workflow | Prompt Example | Documentation |
+|----------|----------------|---------------|
+| **Traffic Flow (Weighted Canary)** | `"Create a 90/10 weighted canary route 'api-route' in production for api.example.com."` | [TRAFFIC_MANAGEMENT_TEST_GUIDE.md](docs/TRAEFIK_TRAFFIC_MANAGEMENT_TEST_GUIDE.md) |
+| **Header-Based Canary** | `"Route only traffic with the header 'X-Canary: true' to the canary pod."` | [HEADER_CANARY_TEST_GUIDE.md](docs/TRAEFIK_HEADER_CANARY_TEST_GUIDE.md) |
+| **Traffic Mirroring (Shadow Launch)** | `"Mirror 20% of production traffic to the new service without affecting user responses."` | [SHADOW_LAUNCH_TEST_GUIDE.md](docs/TRAEFIK_SHADOW_LAUNCH_TEST_GUIDE.md) |
+| **TCP Routing & Middlewares** | `"Create a TCP route for Postgres on port 5432 with an IP Allowlist middleware."` | [TCP_ROUTING_TEST_GUIDE.md](docs/TRAEFIK_TCP_ROUTING_TEST_GUIDE.md) |
+| **NGINX to Traefik Migration** | `"Run the NGINX to Traefik migration for the 'ecommerce' namespace to translate annotations."` | [NGINX_MIGRATION_TEST_GUIDE.md](docs/TRAEFIK_NGINX_MIGRATION_TEST_GUIDE.md) |
+| **Agentic Override (Supervised Autonomy)**| `"Apply the migration but ignore the 'auth-url' annotation and inject my 'custom-auth' middleware."`| [WORKFLOW_JOURNEYS.md](docs/WORKFLOW_JOURNEYS.md) |
+| **Instant App Protection** | `"Add a rate limit of 100 rps and a 5xx circuit breaker to the frontend route."` | [PROMPT_REFERENCE.md](docs/PROMPT_REFERENCE.md) |
 
-The AI automatically:
-1. Calls Generators establishing `RateLimit` limitations in Python logic.
-2. Synchronizes configurations attaching/detaching middlewares on routes (`traefik_manage_route_middlewares`).
-
-### NGINX Migrations
-
-```
-"Start the NGINX to Traefik migration for 'checkout.myapp.com'. Analyze my legacy 'api-ingress' definition, and fully convert it natively."
-```
-
-### Validating Weight Split Distributions
-
-```
-"What is the current traffic split applied to 'api-service-route' in 'production'?"
-```
-
-The AI resolves metrics querying `traefik://traffic/production/api-service-route/distribution` reading active split topologies directly matching cluster state perfectly locally.
+See [WORKFLOW_JOURNEYS.md](docs/WORKFLOW_JOURNEYS.md) for the full workflow reference and [PROMPT_REFERENCE.md](docs/PROMPT_REFERENCE.md) for natural-language prompts.
 
 ---
 
@@ -389,8 +361,6 @@ traefik-mcp-server/
 │   ├── resources/                 # MCP Resources
 │   │   ├── traffic_resources.py
 │   │   └── anomaly_resources.py
-│   ├── prompts/                   # MCP Prompts
-│   │   └── setup_prompts.py
 │   ├── services/                  # Business logic
 │   │   ├── traefik_service.py     # Traefik native K8s wrapper
 │   │   └── generator_service.py   # YAML conversion logic
@@ -412,8 +382,9 @@ traefik-mcp-server/
 **Shipped:**
 
 - [x] Full CRD support for `IngressRoute` and `TraefikService`
-- [x] Powerful weighted network routing generators
-- [x] NGINX to Traefik automated conversion pipelines natively
+- [x] Powerful weighted network routing generators and Simple IngressRoutes
+- [x] TCP Routing and global Traffic Mirroring (Shadow Launch) capabilities
+- [x] NGINX to Traefik automated conversion pipelines with AI Agentic Overrides
 - [x] Context APIs fetching network configuration distribution
 
 **Coming next:**

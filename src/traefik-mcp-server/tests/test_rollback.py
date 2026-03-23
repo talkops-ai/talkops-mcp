@@ -15,6 +15,7 @@ from traefik_mcp_server.migration_nginx.scanner import (
     ScanResult,
     ServiceRef,
 )
+
 from traefik_mcp_server.services.nginx_migration_service import NginxMigrationService
 from traefik_mcp_server.config import ServerConfig, KubernetesConfig
 from traefik_mcp_server.migration_nginx.migration_plan import (
@@ -27,6 +28,16 @@ def _config():
         allow_write=True,
         kubernetes=KubernetesConfig(),
     )
+
+
+def _mock_traefik_for_migration():
+    mt = MagicMock()
+    mt.upsert_servers_transport = AsyncMock(
+        return_value={"name": "x", "namespace": "default", "action": "created"}
+    )
+    mt.merge_service_annotations = AsyncMock(return_value={"status": "success"})
+    mt.delete_servers_transport = AsyncMock(return_value={"status": "success"})
+    return mt
 
 
 def _ing(name="web", ns="default"):
@@ -65,7 +76,7 @@ def _scan_result(ing):
 
 class TestRollbackCache:
     def test_cache_is_empty_initially(self):
-        svc = NginxMigrationService(_config())
+        svc = NginxMigrationService(_config(), _mock_traefik_for_migration())
         assert svc._rollback_cache == {}
 
     def test_migration_plan_entry_does_not_affect_rollback(self):
@@ -79,7 +90,7 @@ class TestRevertMigration:
     def test_revert_strips_traefik_and_restores_nginx(self):
         import asyncio
 
-        svc = NginxMigrationService(_config())
+        svc = NginxMigrationService(_config(), _mock_traefik_for_migration())
 
         # Simulate cached annotations (as captured during apply)
         svc._rollback_cache["default/web"] = {
@@ -123,7 +134,7 @@ class TestRevertMigration:
         """P1.4: full-replace restores mutated values, not just missing ones."""
         import asyncio
 
-        svc = NginxMigrationService(_config())
+        svc = NginxMigrationService(_config(), _mock_traefik_for_migration())
 
         # Cache has the ORIGINAL annotation value
         svc._rollback_cache["default/web"] = {
@@ -160,7 +171,7 @@ class TestRevertMigration:
     def test_revert_without_cache_still_strips_traefik(self):
         import asyncio
 
-        svc = NginxMigrationService(_config())
+        svc = NginxMigrationService(_config(), _mock_traefik_for_migration())
 
         mock_networking = MagicMock()
         mock_custom = MagicMock()
@@ -185,7 +196,7 @@ class TestRevertMigration:
     def test_revert_deletes_labelled_middlewares(self):
         import asyncio
 
-        svc = NginxMigrationService(_config())
+        svc = NginxMigrationService(_config(), _mock_traefik_for_migration())
 
         mock_networking = MagicMock()
         mock_custom = MagicMock()
@@ -218,7 +229,7 @@ class TestRevertMigration:
     def test_revert_strips_service_sticky_session_patches(self):
         import asyncio
 
-        svc = NginxMigrationService(_config())
+        svc = NginxMigrationService(_config(), _mock_traefik_for_migration())
 
         # Simulate cached service patch:
         svc._service_patch_cache["default/web"] = [

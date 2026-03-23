@@ -1,7 +1,7 @@
 """NginxMigrationService.migrate() apply behavior for gateway-api vs traefik."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from traefik_mcp_server.config import KubernetesConfig, ServerConfig
 from traefik_mcp_server.migration_nginx.scanner import (
@@ -52,8 +52,16 @@ def _scan_default() -> ScanResult:
     )
 
 
+def _mock_tf():
+    m = Mock()
+    m.upsert_servers_transport = AsyncMock()
+    m.merge_service_annotations = AsyncMock()
+    m.delete_servers_transport = AsyncMock()
+    return m
+
+
 def test_migrate_gateway_api_apply_skipped_with_warning():
-    svc = NginxMigrationService(_cfg(allow_write=True))
+    svc = NginxMigrationService(_cfg(allow_write=True), _mock_tf())
     svc._ensure_clients = lambda: None
     svc._networking = MagicMock()
     svc._core = MagicMock()
@@ -86,7 +94,7 @@ def test_migrate_gateway_api_apply_skipped_with_warning():
 
 
 def test_migrate_traefik_apply_still_invokes_cluster_apply():
-    svc = NginxMigrationService(_cfg(allow_write=True))
+    svc = NginxMigrationService(_cfg(allow_write=True), _mock_tf())
     svc._ensure_clients = lambda: None
     svc._networking = MagicMock()
     svc._core = MagicMock()

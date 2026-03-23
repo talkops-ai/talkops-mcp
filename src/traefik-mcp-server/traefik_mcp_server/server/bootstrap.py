@@ -8,7 +8,6 @@ from traefik_mcp_server.services.traefik_generator_service import TraefikGenerat
 from traefik_mcp_server.services.nginx_migration_service import NginxMigrationService
 from traefik_mcp_server.tools import initialize_tools
 from traefik_mcp_server.resources import initialize_resources
-from traefik_mcp_server.prompts import initialize_prompts
 
 
 class ServerBootstrap:
@@ -30,7 +29,10 @@ class ServerBootstrap:
         # 3. Create services
         traefik_service = TraefikService(config)
         generator_service = TraefikGeneratorService(config=config)
-        nginx_migration_service = NginxMigrationService(config=config)
+        nginx_migration_service = NginxMigrationService(
+            config=config,
+            traefik_service=traefik_service,
+        )
         
         # 4. Initialize services asynchronously
         async def init_services():
@@ -56,8 +58,5 @@ class ServerBootstrap:
         resource_registry = initialize_resources(service_locator)
         resource_registry.register_all_resources(mcp)
         
-        # 8. Initialize and register prompts
-        prompt_registry = initialize_prompts(service_locator)
-        prompt_registry.register_all_prompts(mcp)
         
         return mcp, config

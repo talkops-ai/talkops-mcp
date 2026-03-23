@@ -3,8 +3,9 @@
 Tool Categories:
 1. Traefik Routing: Manage routes and weights
 2. Traefik Middleware: Manage rate limits, circuit breakers, mirroring, route middleware attachment
-3. Generators: Traefik CRD generators
-4. Migration: NGINX to Traefik migration (apply / generate / revert)
+3. Backend endpoints: ServersTransport CRDs, Service sticky-session annotations
+4. Generators: Traefik CRD generators
+5. Migration: NGINX to Traefik migration (apply / generate / revert)
 """
 
 from typing import Dict, Any, List
@@ -16,6 +17,9 @@ from traefik_mcp_server.tools.base import BaseTool
 from traefik_mcp_server.tools.traefik.traffic_routing import TrafficRoutingTools
 from traefik_mcp_server.tools.traefik.middleware_management import MiddlewareTools
 from traefik_mcp_server.tools.traefik.tcp_tools import TraefikTCPTools
+from traefik_mcp_server.tools.traefik.backend_endpoints_tools import (
+    TraefikBackendEndpointsTools,
+)
 
 # Generator Tools
 from traefik_mcp_server.tools.generators.traefik_generators import TraefikGeneratorTools
@@ -30,6 +34,7 @@ __all__ = [
     'TrafficRoutingTools',
     'MiddlewareTools',
     'TraefikTCPTools',
+    'TraefikBackendEndpointsTools',
     'TraefikGeneratorTools',
     'NginxMigrationTools',
 ]
@@ -51,6 +56,7 @@ def initialize_tools(service_locator: Dict[str, Any]) -> ToolRegistry:
         TrafficRoutingTools(service_locator),
         MiddlewareTools(service_locator),
         TraefikTCPTools(service_locator),
+        TraefikBackendEndpointsTools(service_locator),
         TraefikGeneratorTools(service_locator),
         NginxMigrationTools(service_locator),
     ]

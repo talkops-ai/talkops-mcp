@@ -15,6 +15,10 @@ from kubernetes.client import (
 from kubernetes.client.rest import ApiException
 
 from traefik_mcp_server.config import ServerConfig
+from traefik_mcp_server.services.traefik_service import (
+    TraefikService,
+    parse_multidoc_yaml_objects,
+)
 from traefik_mcp_server.migration_nginx.scanner import (
     NginxMigrationScanner,
     ScanResult,
@@ -79,8 +83,9 @@ class NginxMigrationService:
     TRAEFIK_MIDDLEWARE_PLURAL = "middlewares"
     TRAEFIK_SERVERSTRANSPORT_PLURAL = "serverstransports"
 
-    def __init__(self, config: ServerConfig):
+    def __init__(self, config: ServerConfig, traefik_service: TraefikService):
         self.config = config
+        self._traefik = traefik_service
         self._networking: Optional[NetworkingV1Api] = None
         self._core: Optional[CoreV1Api] = None
         self._custom: Optional[CustomObjectsApi] = None
@@ -563,73 +568,30 @@ class NginxMigrationService:
             }
 
     async def _apply_serverstransport_file(self, gf: GeneratedFile) -> List[Dict[str, Any]]:
-        """Parse and create/update ServersTransport CRDs."""
-        results = []
-        docs = gf.content.split("---")
-
-        for doc in docs:
-            doc = doc.strip()
-            if not doc:
-                continue
-            # Strip comment lines for YAML parsing
-            yaml_lines = [l for l in doc.split("\n") if not l.strip().startswith("#")]
-            yaml_body = "\n".join(yaml_lines).strip()
-            if not yaml_body:
+        """Parse and create/update ServersTransport CRDs via TraefikService."""
+        results: List[Dict[str, Any]] = []
+        for obj in parse_multidoc_yaml_objects(gf.content):
+            if obj.get("kind") != "ServersTransport":
                 continue
             try:
-                obj = pyyaml.safe_load(yaml_body)
-                if not obj or obj.get("kind") != "ServersTransport":
-                    continue
-
-                name = obj["metadata"]["name"]
-                namespace = obj["metadata"].get("namespace", "default")
-
-                try:
-                    self.custom_api.create_namespaced_custom_object(
-                        group=self.TRAEFIK_CRD_GROUP,
-                        version=self.TRAEFIK_CRD_VERSION,
-                        namespace=namespace,
-                        plural=self.TRAEFIK_SERVERSTRANSPORT_PLURAL,
-                        body=obj,
-                    )
-                    results.append({
-                        "name": name,
-                        "namespace": namespace,
+                r = await self._traefik.upsert_servers_transport(obj)
+                results.append(
+                    {
+                        "name": r.get("name"),
+                        "namespace": r.get("namespace"),
                         "status": "applied",
-                        "action": "created",
+                        "action": r.get("action", "created"),
                         "kind": "ServersTransport",
-                    })
-                except ApiException as e:
-                    if e.status == 409:
-                        self.custom_api.patch_namespaced_custom_object(
-                            group=self.TRAEFIK_CRD_GROUP,
-                            version=self.TRAEFIK_CRD_VERSION,
-                            namespace=namespace,
-                            plural=self.TRAEFIK_SERVERSTRANSPORT_PLURAL,
-                            name=name,
-                            body=obj,
-                        )
-                        results.append({
-                            "name": name,
-                            "namespace": namespace,
-                            "status": "applied",
-                            "action": "updated",
-                            "kind": "ServersTransport",
-                        })
-                    else:
-                        results.append({
-                            "name": name,
-                            "namespace": namespace,
-                            "status": "error",
-                            "error": str(e),
-                        })
+                    }
+                )
             except Exception as e:
-                results.append({
-                    "file": gf.rel_path,
-                    "status": "error",
-                    "error": f"YAML parse error: {e}",
-                })
-
+                results.append(
+                    {
+                        "file": gf.rel_path,
+                        "status": "error",
+                        "error": str(e),
+                    }
+                )
         return results
 
     async def _apply_service_patch_file(
@@ -639,30 +601,30 @@ class NginxMigrationService:
     ) -> Dict[str, Any]:
         """Parse and patch a Kubernetes Service with sticky session annotations."""
         try:
-            # Strip comment lines for YAML parsing
-            yaml_lines = [l for l in gf.content.split("\n") if not l.strip().startswith("#")]
-            yaml_body = "\n".join(yaml_lines).strip()
-            obj = pyyaml.safe_load(yaml_body)
-            if not obj or obj.get("kind") != "Service":
+            obj = None
+            for o in parse_multidoc_yaml_objects(gf.content):
+                if o.get("kind") == "Service":
+                    obj = o
+                    break
+            if not obj:
                 return {"file": gf.rel_path, "status": "skipped", "reason": "Not a Service"}
 
             name = obj["metadata"]["name"]
             namespace = obj["metadata"].get("namespace", "default")
-            annotations = obj["metadata"].get("annotations", {})
+            annotations = obj["metadata"].get("annotations", {}) or {}
+            if not annotations:
+                return {
+                    "file": gf.rel_path,
+                    "status": "skipped",
+                    "reason": "Service has no annotations",
+                }
 
-            patch_body = {
-                "metadata": {
-                    "annotations": annotations,
-                },
-            }
-
-            self.core_api.patch_namespaced_service(
+            await self._traefik.merge_service_annotations(
                 name=name,
                 namespace=namespace,
-                body=patch_body,
+                annotations=dict(annotations),
             )
 
-            # Cache patched annotation keys for rollback
             if ingress_key:
                 self._service_patch_cache.setdefault(ingress_key, []).append(
                     (namespace, name, list(annotations.keys()))
@@ -825,12 +787,9 @@ class NginxMigrationService:
             for st in st_list.get("items", []):
                 st_name = st["metadata"]["name"]
                 try:
-                    self.custom_api.delete_namespaced_custom_object(
-                        group=self.TRAEFIK_CRD_GROUP,
-                        version=self.TRAEFIK_CRD_VERSION,
-                        namespace=namespace,
-                        plural=self.TRAEFIK_SERVERSTRANSPORT_PLURAL,
+                    await self._traefik.delete_servers_transport(
                         name=st_name,
+                        namespace=namespace,
                     )
                     deleted_serverstransports.append(st_name)
                 except Exception:

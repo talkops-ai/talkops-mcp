@@ -39,6 +39,22 @@ class TrafficRoutingTools(BaseTool):
             tls_enabled: bool = Field(default=False, description="TLS. create only."),
             tls_secret_name: Optional[str] = Field(default=None, description="TLS secret. create only."),
             middlewares: Optional[List[str]] = Field(default=None, description="Middleware names. create only."),
+            header_name: Optional[str] = Field(
+                default=None,
+                description="create only: e.g. 'X-Canary'. Combined with hostname/path matching (Traefik Header matcher).",
+            ),
+            header_value: Optional[str] = Field(
+                default=None,
+                description="create only: header value to match; default 'true' when header_name is set.",
+            ),
+            cookie_name: Optional[str] = Field(
+                default=None,
+                description="create only: cookie name; match uses HeaderRegexp on Cookie header (cookie wins over header_name).",
+            ),
+            cookie_regex: Optional[str] = Field(
+                default=None,
+                description="create only: regex for cookie value after 'name='; default pattern targets '=true' if omitted.",
+            ),
             ctx: Optional[Context] = None,
         ) -> Dict[str, Any]:
             """Weighted canary routing: create (route+TraefikService), update weights, delete, or ensure_backend."""
@@ -79,6 +95,10 @@ class TrafficRoutingTools(BaseTool):
                         tls_enabled=tls_enabled,
                         tls_secret_name=tls_secret_name,
                         middlewares=middlewares,
+                        header_name=header_name,
+                        header_value=header_value,
+                        cookie_name=cookie_name,
+                        cookie_regex=cookie_regex,
                     )
                 except (TraefikWeightError, TraefikRouteConfigError, TraefikServiceError):
                     raise

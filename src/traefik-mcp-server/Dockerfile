@@ -37,9 +37,9 @@ RUN apt-get update && \
 # Install uv package manager
 RUN pip install uv
 
-# Install the project's dependencies
+# Create virtual environment and install the project's dependencies
+RUN uv venv /app/.venv
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install setuptools && \
     uv sync --python 3.12 --no-install-project --no-dev --no-editable
 
 # Then, add the rest of the project source code and install it

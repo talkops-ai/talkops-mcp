@@ -179,100 +179,6 @@ class TraefikGeneratorService:
         except Exception as e:
             return {'status': 'error', 'error': f'Failed to create IngressRoute: {str(e)}'}
 
-    async def convert_nginx_ingress_to_traefik(self, ingress_yaml: str, traefik_version: str='v3') -> Dict[str, Any]:
-        """Convert an NGINX Ingress YAML to Traefik IngressRoute + Middleware YAML.
-        
-        Args:
-            ingress_yaml: NGINX Ingress YAML string
-            traefik_version: Traefik version
-            
-        Returns:
-            Dict containing generation status and combined YAML
-        """
-        try:
-            ingress = yaml.safe_load(ingress_yaml)
-            if ingress.get('kind') != 'Ingress':
-                raise ValueError(f"Input must be an Ingress, got: {ingress.get('kind')}")
-            metadata = ingress.get('metadata', {})
-            name = metadata.get('name', 'unknown')
-            namespace = metadata.get('namespace', 'default')
-            annotations = metadata.get('annotations', {})
-            rewrite_target = annotations.get('nginx.ingress.kubernetes.io/rewrite-target')
-            tls_enabled = 'tls' in ingress.get('spec', {})
-            middlewares_to_create = []
-            combined_yamls = []
-            if rewrite_target:
-                mw_name = f'{name}-rewrite'
-                regexes = []
-                rules = ingress.get('spec', {}).get('rules', [])
-                for rule in rules:
-                    for path_obj in rule.get('http', {}).get('paths', []):
-                        path = path_obj.get('path', '')
-                        if '(' in path:
-                            regexes.append(path)
-                if not regexes:
-                    regexes = ['/']
-                mw_yaml = await self.create_strip_prefix_middleware(middleware_name=mw_name, regex_patterns=regexes, namespace=namespace, traefik_version=traefik_version, force_slash=False)
-                if mw_yaml.get('status') == 'success':
-                    combined_yamls.append(mw_yaml['middleware_yaml'])
-                    middlewares_to_create.append(mw_name)
-            rules = ingress.get('spec', {}).get('rules', [])
-            for rule in rules:
-                hostname = rule.get('host', 'example.com')
-                routes_to_create = []
-                for path_obj in rule.get('http', {}).get('paths', []):
-                    path = path_obj.get('path', '/')
-                    backend = path_obj.get('backend', {})
-                    svc = backend.get('service', {})
-                    svc_name = svc.get('name')
-                    svc_port = svc.get('port', {}).get('number', 80)
-                    if svc_name:
-                        routes_to_create.append({'path_prefix': path, 'service_name': svc_name, 'service_port': svc_port, 'middlewares': middlewares_to_create})
-                if routes_to_create:
-                    ir_resp = await self.create_ingress_route_for_services(route_name=f'{name}-route', hostname=hostname, routes=routes_to_create, namespace=namespace, tls_enabled=tls_enabled, traefik_version=traefik_version)
-                    if ir_resp.get('status') == 'success':
-                        combined_yamls.append(ir_resp['ingress_yaml'])
-            return {'status': 'success', 'app_name': name, 'combined_yaml': '---\\n'.join(combined_yamls), 'warnings': ['TLS secrets must be manually linked if not specified in default certStore', 'Advanced NGINX annotations (cors, auth, etc.) require manual transition to Traefik Middlewares']}
-        except Exception as e:
-            return {'status': 'error', 'error': f'Failed to convert NGINX Ingress: {str(e)}'}
-
-    async def create_strip_prefix_middleware(self, middleware_name: str, regex_patterns: Optional[List[str]]=None, prefixes: Optional[List[str]]=None, namespace: str='default', traefik_version: str='v3', force_slash: bool=True) -> Dict[str, Any]:
-        """Generate a Traefik stripPrefix or stripPrefixRegex Middleware CRD.
-        
-        Used for path rewriting in canary deployments, particularly when
-        converting nginx rewrite-target annotations to Traefik middleware.
-        
-        Args:
-            middleware_name: Name of the middleware
-            regex_patterns: Regex patterns for stripPrefixRegex (e.g. ["^/backend(/|$)"])
-            prefixes: Simple prefixes for stripPrefix (e.g. ["/api", "/backend"])
-            namespace: Kubernetes namespace
-            traefik_version: "v3" (traefik.io) or "v2" (traefik.containo.us)
-            force_slash: Whether to force a trailing slash after stripping
-        
-        Returns:
-            Dict with middleware_yaml and metadata
-        """
-        try:
-            if not middleware_name:
-                raise ValueError('middleware_name is required')
-            if not regex_patterns and (not prefixes):
-                raise ValueError('Either regex_patterns or prefixes must be provided')
-            if regex_patterns and prefixes:
-                raise ValueError('Provide either regex_patterns OR prefixes, not both')
-            api_version = 'traefik.io/v1alpha1' if traefik_version == 'v3' else 'traefik.containo.us/v1alpha1'
-            if regex_patterns:
-                middleware_type = 'stripPrefixRegex'
-                spec = {'stripPrefixRegex': {'regex': regex_patterns}}
-            else:
-                middleware_type = 'stripPrefix'
-                spec = {'stripPrefix': {'prefixes': prefixes, 'forceSlash': force_slash}}
-            middleware: Dict[str, Any] = {'apiVersion': api_version, 'kind': 'Middleware', 'metadata': {'name': middleware_name, 'namespace': namespace, 'labels': {'managed-by': 'traefik-mcp-server'}}, 'spec': spec}
-            middleware_yaml = yaml.dump(middleware, default_flow_style=False)
-            return {'status': 'success', 'middleware_name': middleware_name, 'middleware_type': middleware_type, 'namespace': namespace, 'middleware_yaml': middleware_yaml}
-        except Exception as e:
-            return {'status': 'error', 'error': f'Failed to create strip prefix middleware: {str(e)}'}
-
     async def create_canary_header_route(self, canary_service_name: str, hostname: str, header_name: str='X-Canary', header_value: str='true', namespace: str='default', route_name: Optional[str]=None, entry_points: Optional[List[str]]=None, path_prefix: Optional[str]=None, tls_enabled: bool=False, tls_secret_name: Optional[str]=None, traefik_version: str='v3', cookie_name: Optional[str]=None, cookie_regex: Optional[str]=None, priority: int=100, port: int=80) -> Dict[str, Any]:
         """Generate a secondary IngressRoute with header/cookie-match for canary routing.
         
@@ -320,7 +226,7 @@ class TraefikGeneratorService:
                 else:
                     match_parts.append(f'HeaderRegexp(`Cookie`, `.*{cookie_name}=true.*`)')
             else:
-                match_parts.append(f'Headers(`{header_name}`, `{header_value}`)')
+                match_parts.append(f'Header(`{header_name}`, `{header_value}`)')
             match_rule = ' && '.join(match_parts)
             route_spec: Dict[str, Any] = {'match': match_rule, 'kind': 'Rule', 'priority': priority, 'services': [{'name': canary_service_name, 'port': port}]}
             ingress_route: Dict[str, Any] = {'apiVersion': api_version, 'kind': 'IngressRoute', 'metadata': {'name': route_name, 'namespace': namespace, 'labels': {'managed-by': 'traefik-mcp-server', 'argoflow/route-type': 'canary-header'}}, 'spec': {'entryPoints': entry_points, 'routes': [route_spec]}}

@@ -6,7 +6,9 @@ routing, middleware, and canary deployments.
 
 import asyncio
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Iterable
+
+import yaml as pyyaml
 from kubernetes import client, config
 from kubernetes.dynamic import DynamicClient
 from kubernetes.client.rest import ApiException
@@ -43,6 +45,35 @@ from traefik_mcp_server.exceptions.custom import (
     KubernetesResourceError,
 )
 
+TRAEFIK_INGRESS_ANNOTATION_PREFIX = "traefik.ingress.kubernetes.io/"
+# Keys the NGINX migrator may set on Services for sticky sessions (see migrator_traefik.generate_service_patches).
+TRAEFIK_STICKY_SERVICE_ANNOTATION_KEYS: List[str] = [
+    f"{TRAEFIK_INGRESS_ANNOTATION_PREFIX}service.sticky.cookie",
+    f"{TRAEFIK_INGRESS_ANNOTATION_PREFIX}service.sticky.cookie.name",
+    f"{TRAEFIK_INGRESS_ANNOTATION_PREFIX}service.sticky.cookie.maxage",
+    f"{TRAEFIK_INGRESS_ANNOTATION_PREFIX}service.sticky.cookie.samesite",
+    f"{TRAEFIK_INGRESS_ANNOTATION_PREFIX}service.sticky.cookie.secure",
+]
+
+
+def parse_multidoc_yaml_objects(content: str) -> List[Dict[str, Any]]:
+    """Split on --- and parse YAML documents (strip # comment lines like migration apply)."""
+    out: List[Dict[str, Any]] = []
+    for doc in content.split("---"):
+        doc = doc.strip()
+        if not doc:
+            continue
+        yaml_lines = [ln for ln in doc.split("\n") if not ln.strip().startswith("#")]
+        yaml_body = "\n".join(yaml_lines).strip()
+        if not yaml_body:
+            continue
+        try:
+            obj = pyyaml.safe_load(yaml_body)
+            if isinstance(obj, dict):
+                out.append(obj)
+        except Exception:
+            continue
+    return out
 
 
 class TraefikService:
@@ -66,6 +97,7 @@ class TraefikService:
         self._middleware_api: Any = None
         self._ingressroutetcp_api: Any = None
         self._middlewaretcp_api: Any = None
+        self._serverstransport_api: Any = None
         self._initialized = False
     
     async def initialize(self) -> None:
@@ -127,6 +159,16 @@ class TraefikService:
                 )
             except Exception as e:
                 raise KubernetesResourceError("Traefik Middleware CRD not found")
+            try:
+                self._serverstransport_api = self._dyn_client.resources.get(
+                    api_version="traefik.io/v1alpha1",
+                    kind="ServersTransport",
+                )
+            except Exception as e:
+                raise KubernetesResourceError(
+                    "Traefik ServersTransport CRD not found. "
+                    "Install Traefik with the Traefik CRDs (helm chart includes them)."
+                )
             try:
                 self._ingressroutetcp_api = self._dyn_client.resources.get(
                     api_version="traefik.io/v1alpha1",
@@ -206,6 +248,37 @@ class TraefikService:
             
         return stable_svc, canary_svc, services
 
+    def _append_header_or_cookie_match(
+        self,
+        match_rule: str,
+        *,
+        header_name: Optional[str] = None,
+        header_value: Optional[str] = None,
+        cookie_name: Optional[str] = None,
+        cookie_regex: Optional[str] = None,
+    ) -> str:
+        """Append Traefik v3 rule fragments for header or cookie constraints.
+
+        Traefik v3 uses ``Header`` / ``HeaderRegexp``. Cookie-style routing is expressed
+        as ``HeaderRegexp`` on the ``Cookie`` header (same pattern as YAML from
+        ``create_canary_header_route`` in the generator service).
+        """
+        cn = cookie_name.strip() if cookie_name and str(cookie_name).strip() else ""
+        hn = header_name.strip() if header_name and str(header_name).strip() else ""
+        if cn:
+            if cookie_regex and str(cookie_regex).strip():
+                cr = str(cookie_regex).strip()
+                return f"{match_rule} && HeaderRegexp(`Cookie`, `{cn}={cr}`)"
+            return f"{match_rule} && HeaderRegexp(`Cookie`, `.*{cn}=true.*`)"
+        if hn:
+            hv = (
+                str(header_value).strip()
+                if header_value is not None and str(header_value).strip()
+                else "true"
+            )
+            return f"{match_rule} && Header(`{hn}`, `{hv}`)"
+        return match_rule
+
     async def create_weighted_route(
         self,
         route_name: str,
@@ -221,6 +294,10 @@ class TraefikService:
         tls_enabled: bool = False,
         tls_secret_name: Optional[str] = None,
         middlewares: Optional[List[str]] = None,
+        header_name: Optional[str] = None,
+        header_value: Optional[str] = None,
+        cookie_name: Optional[str] = None,
+        cookie_regex: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create TraefikService (WRR) + IngressRoute for weighted canary. Single backend when canary_weight=0."""
         self._ensure_initialized()
@@ -266,7 +343,15 @@ class TraefikService:
                     match_rule += f" && PathRegexp(`{prefix}`)"
                 else:
                     match_rule += f" && PathPrefix(`{prefix}`)"
-            
+
+            match_rule = self._append_header_or_cookie_match(
+                match_rule,
+                header_name=header_name,
+                header_value=header_value,
+                cookie_name=cookie_name,
+                cookie_regex=cookie_regex,
+            )
+
             # Step 3: Create IngressRoute
             route_spec: Dict[str, Any] = {
                 "match": match_rule,
@@ -333,6 +418,18 @@ class TraefikService:
                     result["tls_secret_name"] = tls_secret_name
             if middlewares:
                 result["middlewares"] = middlewares
+            if cookie_name and str(cookie_name).strip():
+                result["cookie_name"] = str(cookie_name).strip()
+                if cookie_regex and str(cookie_regex).strip():
+                    result["cookie_regex"] = str(cookie_regex).strip()
+            elif header_name and str(header_name).strip():
+                result["header_name"] = str(header_name).strip()
+                result["header_value"] = (
+                    str(header_value).strip()
+                    if header_value is not None and str(header_value).strip()
+                    else "true"
+                )
+            result["match_rule"] = match_rule
             return result
         
         except ApiException as e:
@@ -2288,3 +2385,179 @@ class TraefikService:
                 f"{routes_updated} route rule(s) in IngressRoute '{route_name}'."
             ),
         }
+
+    # ── ServersTransport & Service backend annotations ─────────────────────
+
+    def _upsert_servers_transport_body(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Create ServersTransport or merge-patch on 409 (same semantics as migration apply)."""
+        self._ensure_initialized()
+        if body.get("kind") != "ServersTransport":
+            raise TraefikServiceError(
+                f"Expected kind ServersTransport, got {body.get('kind')!r}"
+            )
+        meta = body.get("metadata") or {}
+        name = meta.get("name")
+        if not name:
+            raise TraefikServiceError("ServersTransport metadata.name is required")
+        namespace = meta.get("namespace") or "default"
+        try:
+            self._serverstransport_api.create(body=body, namespace=namespace)
+            return {
+                "name": name,
+                "namespace": namespace,
+                "status": "success",
+                "action": "created",
+                "kind": "ServersTransport",
+            }
+        except ApiException as e:
+            if e.status != 409:
+                raise TraefikServiceError(f"Failed to create ServersTransport: {e}") from e
+            try:
+                self._serverstransport_api.patch(
+                    name=name,
+                    namespace=namespace,
+                    body=body,
+                    content_type="application/merge-patch+json",
+                )
+                return {
+                    "name": name,
+                    "namespace": namespace,
+                    "status": "success",
+                    "action": "updated",
+                    "kind": "ServersTransport",
+                }
+            except Exception as patch_e:
+                raise TraefikServiceError(
+                    f"ServersTransport '{name}' exists but failed to update: {patch_e}"
+                ) from patch_e
+
+    async def upsert_servers_transport(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or update a ServersTransport from a full CRD object."""
+        return self._upsert_servers_transport_body(body)
+
+    async def delete_servers_transport(
+        self, name: str, namespace: str = "default"
+    ) -> Dict[str, Any]:
+        """Delete a ServersTransport by name."""
+        self._ensure_initialized()
+        try:
+            self._serverstransport_api.delete(name=name, namespace=namespace)
+            return {
+                "status": "success",
+                "name": name,
+                "namespace": namespace,
+                "message": f"ServersTransport '{name}' deleted",
+            }
+        except ApiException as e:
+            if e.status == 404:
+                raise TraefikServiceError(
+                    f"ServersTransport '{name}' not found in namespace '{namespace}'"
+                )
+            raise TraefikServiceError(f"Failed to delete ServersTransport: {e}")
+
+    async def merge_service_annotations(
+        self,
+        name: str,
+        namespace: str = "default",
+        annotations: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Merge annotations onto a Kubernetes Service (strategic merge patch)."""
+        self._ensure_initialized()
+        ann = annotations or {}
+        if not ann:
+            raise TraefikServiceError("annotations must be non-empty")
+        core_v1 = client.CoreV1Api(self._k8s_client)
+        try:
+            core_v1.patch_namespaced_service(
+                name=name,
+                namespace=namespace,
+                body={"metadata": {"annotations": ann}},
+            )
+            return {
+                "status": "success",
+                "name": name,
+                "namespace": namespace,
+                "kind": "Service",
+                "action": "patched",
+            }
+        except ApiException as e:
+            if e.status == 404:
+                raise TraefikServiceError(
+                    f"Service '{name}' not found in namespace '{namespace}'"
+                )
+            raise TraefikServiceError(f"Failed to patch Service: {e}")
+
+    async def strip_service_annotation_keys(
+        self,
+        name: str,
+        namespace: str = "default",
+        keys: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        """Remove annotation keys from a Service (null values in merge patch)."""
+        self._ensure_initialized()
+        key_list = list(keys) if keys is not None else TRAEFIK_STICKY_SERVICE_ANNOTATION_KEYS
+        if not key_list:
+            return {
+                "status": "no_op",
+                "name": name,
+                "namespace": namespace,
+                "message": "No keys to strip",
+            }
+        null_annotations = {k: None for k in key_list}
+        core_v1 = client.CoreV1Api(self._k8s_client)
+        try:
+            core_v1.patch_namespaced_service(
+                name=name,
+                namespace=namespace,
+                body={"metadata": {"annotations": null_annotations}},
+            )
+            return {
+                "status": "success",
+                "name": name,
+                "namespace": namespace,
+                "kind": "Service",
+                "action": "stripped",
+                "keys": key_list,
+            }
+        except ApiException as e:
+            if e.status == 404:
+                raise TraefikServiceError(
+                    f"Service '{name}' not found in namespace '{namespace}'"
+                )
+            raise TraefikServiceError(f"Failed to strip Service annotations: {e}")
+
+    async def build_and_upsert_servers_transport(
+        self,
+        name: str,
+        namespace: str = "default",
+        dial_timeout: Optional[str] = None,
+        response_header_timeout: Optional[str] = None,
+        insecure_skip_verify: bool = False,
+        labels: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Build a minimal ServersTransport spec and upsert (for MCP create)."""
+        spec: Dict[str, Any] = {}
+        timeouts: Dict[str, str] = {}
+        if dial_timeout and str(dial_timeout).strip():
+            timeouts["dialTimeout"] = str(dial_timeout).strip()
+        if response_header_timeout and str(response_header_timeout).strip():
+            timeouts["responseHeaderTimeout"] = str(response_header_timeout).strip()
+        if timeouts:
+            spec["forwardingTimeouts"] = timeouts
+        if insecure_skip_verify:
+            spec["insecureSkipVerify"] = True
+        if not spec:
+            raise TraefikServiceError(
+                "At least one of dial_timeout, response_header_timeout, or "
+                "insecure_skip_verify=True is required to create ServersTransport"
+            )
+        meta: Dict[str, Any] = {"name": name, "namespace": namespace}
+        if labels:
+            meta["labels"] = dict(labels)
+        body: Dict[str, Any] = {
+            "apiVersion": "traefik.io/v1alpha1",
+            "kind": "ServersTransport",
+            "metadata": meta,
+            "spec": spec,
+        }
+        return await self.upsert_servers_transport(body)
