@@ -7,6 +7,7 @@ This repository serves as the **central hub and MCP registry** for all MCP serve
 - **Kubernetes Package Management:** For managing Kubernetes workloads, the Helm MCP Server enables AI-driven Helm chart operations and best practices.
 - **CI/CD, Build & Release:** Dedicated MCP servers (e.g., ArgoCD MCP Server, Argo Rollout MCP Server, Jenkins MCP Server) provide automation and orchestration for continuous integration, delivery, and deployment pipelines.
 - **Cloud Orchestration:** Dedicated MCP Servers like Terraform MCP Server provide comprehensive infrastructure as code management with secure command execution, semantic document search, and intelligent document ingestion for AWS, Azure, Google Cloud, and more.
+- **Integration & Traffic:** Dedicated MCP Servers like Traefik MCP Server enables AI-driven edge routing, weighted canary traffic, traffic mirroring, NGINX-to-Traefik migration, and instant middleware protections (rate limit, circuit breaker).
 - **Observability & Monitoring:** For monitoring and observability, specialized MCP servers will be available for Prometheus, the TICK stack (Telegraf, InfluxDB, Chronograf, Kapacitor), and other monitoring solutions.
 
 The vision for TalkOps MCP Servers is to offer a **modular, extensible, and unified platform** where each DevOps domain—whether infrastructure as code, CI/CD, cloud orchestration, or observability—can be managed through a dedicated MCP server. This approach empowers AI agents and automation tools to deliver intelligent, context-aware DevOps workflows, regardless of the underlying technology stack.
@@ -18,6 +19,7 @@ The vision for TalkOps MCP Servers is to offer a **modular, extensible, and unif
   - [Available MCP Servers](#available-mcp-servers)
     - [📦 Kubernetes Package Management](#kubernetes-package-management)
     - [🚀 CI/CD & GitOps](#cicd--gitops)
+    - [📡 Integration & Traffic](#integration--traffic)
     - [🏗️ Cloud Orchestration & Infrastructure](#cloud-orchestration--infrastructure)
     - [🔗 Agent Discovery & Registry](#agent-discovery--registry)
   - [Contributing](#contributing)
@@ -44,6 +46,13 @@ Each table lists MCP servers by DevOps domain. Use **Quick Install** for the rec
 |-------------|-------------|---------------|--------|--------|-------|
 | [ArgoCD MCP Server](src/argocd-mcp-server) | Manage ArgoCD applications, sync deployments, onboard repositories, create projects, debug with guided workflows. GitOps with credential isolation. | `docker run -p 8770:8770 -e ARGOCD_SERVER_URL=... -e ARGOCD_AUTH_TOKEN=... -e MCP_ALLOW_WRITE=true talkopsai/argocd-mcp-server:latest` | [README](src/argocd-mcp-server/README.md) | [Config](src/argocd-mcp-server/README.md#configuration) | [▶ Overview](https://youtu.be/5V0wo4jkUtQ)<br>[▶ Demo](https://youtu.be/gfMLUK9YcGc) |
 | [Argo Rollout MCP Server](src/argo-rollout-mcp-server) | Convert K8s Deployments to Argo Rollouts, orchestrate canary/blue-green deployments, promote/pause/abort, integrate AnalysisTemplates. Zero-YAML onboarding with built-in playbooks. | `docker run -p 8768:8768 -v ~/.kube:/app/.kube:ro -e K8S_KUBECONFIG=/app/.kube/config talkopsai/argo-rollout-mcp-server:latest` | [README](src/argo-rollout-mcp-server/README.md) | [Config](src/argo-rollout-mcp-server/README.md#quick-start-with-docker-recommended) | [▶ Quick Walk](https://youtu.be/tPd6i7F8_e4?si=4jJjZzLyb6DD6lDL)<br>[▶ Migration](https://youtu.be/Kb0VNf6uGAs?si=bOGqnETYwDYHLapN)<br>[▶ Canary](https://youtu.be/E7riLSKC8Tg?si=VmD0pecfA19ryE9E)<br>[▶ Blue-Green](https://youtu.be/mb_gUr6KmYE?si=swU-irIyR3UyOZZn)<br>[▶ A/B Testing](https://youtu.be/yEXinOu2718?si=s2FWRNjFcG3W7Myp) |
+
+<a id="integration--traffic"></a>
+### 📡 Integration & Traffic
+
+| Server Name | Description | Quick Install | README | Config | Video |
+|-------------|-------------|---------------|--------|--------|-------|
+| [Traefik MCP Server](src/traefik-mcp-server) | Manage K8s traffic via Traefik: weighted canary routing, traffic mirroring, NGINX-to-Traefik migration, rate limit and circuit breaker middlewares. Works with Argo Rollouts for progressive delivery. | `docker run -p 8769:8769 -v ~/.kube/config:/app/.kube/config:ro talkopsai/traefik-mcp-server:latest` | [README](src/traefik-mcp-server/README.md) | [Config](src/traefik-mcp-server/README.md#quick-start-with-docker-recommended) | — |
 
 <a id="cloud-orchestration--infrastructure"></a>
 ### 🏗️ Cloud Orchestration & Infrastructure
