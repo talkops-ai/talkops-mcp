@@ -287,11 +287,23 @@ class GeneratorTools(BaseTool):
                         discovered_ports = svc_result["discovered_ports"]
                         source_service = svc_result["source_service"]
                     else:
-                        # Fallback: no existing service found — use service_port override or 80
-                        fallback_port = service_port or 80
+                        # Fallback: no existing service found — auto-discover
+                        # the container port from the Deployment's pod template
+                        # so the Service targetPort matches the actual listener
+                        # (prevents 502 Bad Gateway when container is not on 80).
+                        dep_pod_template = (
+                            dep_obj.get("spec", {})
+                            .get("template", {})
+                            .get("spec")
+                        )
+                        auto_port = self.generator_service._extract_container_port_from_pod_template(
+                            dep_pod_template
+                        )
+                        fallback_port = service_port or auto_port
                         await ctx.info(
                             f"⚠️  No existing Service found matching deployment selector — "
-                            f"creating Services with port {fallback_port}"
+                            f"creating Services with port={fallback_port} "
+                            f"(auto-discovered containerPort={auto_port} from pod template)"
                         )
                         svc_result = await self.generator_service.create_stable_canary_services(
                             app_name=app_name,
@@ -300,6 +312,7 @@ class GeneratorTools(BaseTool):
                             selector_labels=selector_labels or {"app": app_name},
                             apply=True,
                             strategy=strategy,
+                            pod_template_spec=dep_pod_template,
                         )
                         services_created = svc_result.get("created", [])
                         services_already_existed = svc_result.get("already_existed", [])

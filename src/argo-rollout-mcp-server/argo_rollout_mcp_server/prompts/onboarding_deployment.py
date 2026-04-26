@@ -214,7 +214,7 @@ If you used `apply=false` in Phase 2, apply manually:
    Args:
      - app_name: {app_name}
      - namespace: {namespace}
-     - port: 80
+     - port: <auto-discovered from Deployment containerPort; override only if needed>
    ```
 
 2. **Link rollout to traffic routing** (if using Traefik, Istio, or other ingress):

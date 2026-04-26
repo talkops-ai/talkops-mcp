@@ -25,6 +25,32 @@ class GeneratorService:
         self.config = config
         self._apps_v1 = None
     
+    @staticmethod
+    def _extract_container_port_from_pod_template(
+        pod_template_spec: Optional[Dict[str, Any]],
+    ) -> int:
+        """Extract the first containerPort from a pod template spec.
+
+        Inspects ``pod_template_spec["containers"][*]["ports"][*]["containerPort"]``
+        and returns the first numeric port found.  Falls back to **80** only if
+        no container port is declared at all.
+
+        Args:
+            pod_template_spec: The ``spec.template.spec`` dict from a Deployment
+                or Rollout.  May be ``None``.
+
+        Returns:
+            The discovered container port (int), or 80 as a last-resort default.
+        """
+        if not pod_template_spec:
+            return 80
+        for container in pod_template_spec.get("containers", []):
+            for port_def in container.get("ports", []):
+                cp = port_def.get("containerPort")
+                if cp is not None:
+                    return int(cp)
+        return 80
+
     def _ensure_k8s_client(self):
         """Lazily initialize Kubernetes AppsV1 client."""
         if self._apps_v1 is None:
@@ -1119,6 +1145,7 @@ class GeneratorService:
         selector_labels: Optional[Dict[str, str]] = None,
         apply: bool = False,
         strategy: str = "canary",
+        pod_template_spec: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Generate (and optionally apply) two K8s Service specs (stable+canary or active+preview).
         
@@ -1130,12 +1157,20 @@ class GeneratorService:
             app_name: Application name (used for service naming)
             namespace: Kubernetes namespace
             port: Service port number
-            target_port: Target port on pods (defaults to same as port)
+            target_port: Target port on pods.  When ``None`` and
+                ``pod_template_spec`` is provided, the port is auto-discovered
+                from the first ``containerPort`` in the pod template.  If
+                neither is available, defaults to ``port``.
             selector_labels: Pod selector labels (default: {app: app_name})
             apply: If True, create the Services directly in the cluster via
                    CoreV1Api (no kubectl needed). If False (default), return
                    YAML strings only.
             strategy: "canary" (stable+canary) or "bluegreen" (active+preview)
+            pod_template_spec: Optional Deployment pod template spec
+                (``deployment["spec"]["template"]["spec"]``).  Used to
+                auto-discover ``target_port`` when it is not explicitly
+                provided, preventing 502 errors when the container listens
+                on a non-80 port (e.g. 8080, 9090).
         
         Returns:
             Dict containing:
@@ -1152,7 +1187,16 @@ class GeneratorService:
         """
         try:
             if target_port is None:
-                target_port = port
+                if pod_template_spec:
+                    target_port = self._extract_container_port_from_pod_template(
+                        pod_template_spec
+                    )
+                    logger.info(
+                        f"Auto-discovered targetPort={target_port} from pod "
+                        f"template for '{app_name}'"
+                    )
+                else:
+                    target_port = port
             if selector_labels is None:
                 selector_labels = {"app": app_name}
             

@@ -308,3 +308,217 @@ class TestNamedPortResolution:
             created_names.append(svc_body.metadata.name)
         assert "hello-world-active" in created_names
         assert "hello-world-preview" in created_names
+
+
+# ── Tests for _extract_container_port_from_pod_template ──────────────
+
+class TestExtractContainerPort:
+    """Test the static helper that auto-discovers containerPort from pod template."""
+
+    def test_discovers_port_8080(self, generator_service):
+        """Container port 8080 is correctly discovered."""
+        pod_spec = {
+            "containers": [
+                {"name": "app", "ports": [{"containerPort": 8080}]}
+            ]
+        }
+        assert generator_service._extract_container_port_from_pod_template(pod_spec) == 8080
+
+    def test_discovers_port_9090(self, generator_service):
+        """Container port 9090 is correctly discovered."""
+        pod_spec = {
+            "containers": [
+                {"name": "app", "ports": [{"containerPort": 9090}]}
+            ]
+        }
+        assert generator_service._extract_container_port_from_pod_template(pod_spec) == 9090
+
+    def test_discovers_port_3000(self, generator_service):
+        """Container port 3000 (Node.js apps) is correctly discovered."""
+        pod_spec = {
+            "containers": [
+                {"name": "web", "ports": [{"name": "http", "containerPort": 3000}]}
+            ]
+        }
+        assert generator_service._extract_container_port_from_pod_template(pod_spec) == 3000
+
+    def test_returns_first_port_from_multiple(self, generator_service):
+        """When container has multiple ports, the first one is returned."""
+        pod_spec = {
+            "containers": [
+                {
+                    "name": "app",
+                    "ports": [
+                        {"name": "http", "containerPort": 8080},
+                        {"name": "metrics", "containerPort": 9090},
+                    ],
+                }
+            ]
+        }
+        assert generator_service._extract_container_port_from_pod_template(pod_spec) == 8080
+
+    def test_returns_first_container_port(self, generator_service):
+        """When there are multiple containers, the first container's port wins."""
+        pod_spec = {
+            "containers": [
+                {"name": "app", "ports": [{"containerPort": 8080}]},
+                {"name": "sidecar", "ports": [{"containerPort": 15090}]},
+            ]
+        }
+        assert generator_service._extract_container_port_from_pod_template(pod_spec) == 8080
+
+    def test_skips_container_without_ports(self, generator_service):
+        """First container has no ports, second does — second container's port is used."""
+        pod_spec = {
+            "containers": [
+                {"name": "init", "image": "busybox"},
+                {"name": "app", "ports": [{"containerPort": 9090}]},
+            ]
+        }
+        assert generator_service._extract_container_port_from_pod_template(pod_spec) == 9090
+
+    def test_defaults_to_80_when_no_ports(self, generator_service):
+        """Container with no ports array → fallback to 80."""
+        pod_spec = {
+            "containers": [{"name": "app", "image": "nginx"}]
+        }
+        assert generator_service._extract_container_port_from_pod_template(pod_spec) == 80
+
+    def test_defaults_to_80_when_empty_ports(self, generator_service):
+        """Container with empty ports array → fallback to 80."""
+        pod_spec = {
+            "containers": [{"name": "app", "ports": []}]
+        }
+        assert generator_service._extract_container_port_from_pod_template(pod_spec) == 80
+
+    def test_defaults_to_80_when_no_containers(self, generator_service):
+        """Pod spec with no containers → fallback to 80."""
+        assert generator_service._extract_container_port_from_pod_template({"containers": []}) == 80
+
+    def test_defaults_to_80_when_none(self, generator_service):
+        """None pod template spec → fallback to 80."""
+        assert generator_service._extract_container_port_from_pod_template(None) == 80
+
+
+# ── Tests for create_stable_canary_services with pod_template_spec ───
+
+class TestCreateServicesPortAutoDiscovery:
+    """Test that create_stable_canary_services auto-discovers targetPort from pod_template_spec."""
+
+    @pytest.mark.asyncio
+    async def test_auto_discovers_target_port_8080(self, generator_service):
+        """When target_port=None and pod has containerPort 8080, Services use targetPort 8080."""
+        pod_spec = {
+            "containers": [
+                {"name": "app", "ports": [{"containerPort": 8080}]}
+            ]
+        }
+        result = await generator_service.create_stable_canary_services(
+            app_name="hello-world",
+            namespace="default",
+            port=80,
+            target_port=None,
+            apply=False,
+            strategy="bluegreen",
+            pod_template_spec=pod_spec,
+        )
+        assert result["status"] == "success"
+        # Parse the generated YAML to verify targetPort
+        import yaml
+        for yaml_key in ("stable_yaml", "canary_yaml"):
+            svc = yaml.safe_load(result[yaml_key])
+            for port in svc["spec"]["ports"]:
+                assert port["targetPort"] == 8080, (
+                    f"Expected targetPort 8080 in {yaml_key}, got {port['targetPort']}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_auto_discovers_target_port_9090(self, generator_service):
+        """When target_port=None and pod has containerPort 9090, Services use targetPort 9090."""
+        pod_spec = {
+            "containers": [
+                {"name": "app", "ports": [{"containerPort": 9090}]}
+            ]
+        }
+        result = await generator_service.create_stable_canary_services(
+            app_name="metrics-api",
+            namespace="default",
+            port=80,
+            target_port=None,
+            apply=False,
+            strategy="canary",
+            pod_template_spec=pod_spec,
+        )
+        assert result["status"] == "success"
+        import yaml
+        for yaml_key in ("stable_yaml", "canary_yaml"):
+            svc = yaml.safe_load(result[yaml_key])
+            for port in svc["spec"]["ports"]:
+                assert port["targetPort"] == 9090
+
+    @pytest.mark.asyncio
+    async def test_explicit_target_port_overrides_pod_template(self, generator_service):
+        """When target_port is explicitly provided, pod_template_spec is ignored."""
+        pod_spec = {
+            "containers": [
+                {"name": "app", "ports": [{"containerPort": 8080}]}
+            ]
+        }
+        result = await generator_service.create_stable_canary_services(
+            app_name="hello-world",
+            namespace="default",
+            port=80,
+            target_port=3000,  # explicit override
+            apply=False,
+            strategy="canary",
+            pod_template_spec=pod_spec,
+        )
+        assert result["status"] == "success"
+        import yaml
+        for yaml_key in ("stable_yaml", "canary_yaml"):
+            svc = yaml.safe_load(result[yaml_key])
+            for port in svc["spec"]["ports"]:
+                assert port["targetPort"] == 3000, (
+                    f"Explicit target_port=3000 should override, got {port['targetPort']}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_no_pod_template_defaults_to_port(self, generator_service):
+        """When target_port=None and no pod_template_spec, defaults to port value."""
+        result = await generator_service.create_stable_canary_services(
+            app_name="hello-world",
+            namespace="default",
+            port=80,
+            target_port=None,
+            apply=False,
+            strategy="canary",
+            pod_template_spec=None,
+        )
+        assert result["status"] == "success"
+        import yaml
+        for yaml_key in ("stable_yaml", "canary_yaml"):
+            svc = yaml.safe_load(result[yaml_key])
+            for port in svc["spec"]["ports"]:
+                assert port["targetPort"] == 80
+
+    @pytest.mark.asyncio
+    async def test_pod_template_no_ports_defaults_to_port(self, generator_service):
+        """When pod has no ports declared at all, falls back to port value."""
+        pod_spec = {
+            "containers": [{"name": "app", "image": "nginx"}]
+        }
+        result = await generator_service.create_stable_canary_services(
+            app_name="hello-world",
+            namespace="default",
+            port=80,
+            target_port=None,
+            apply=False,
+            strategy="canary",
+            pod_template_spec=pod_spec,
+        )
+        assert result["status"] == "success"
+        import yaml
+        for yaml_key in ("stable_yaml", "canary_yaml"):
+            svc = yaml.safe_load(result[yaml_key])
+            for port in svc["spec"]["ports"]:
+                assert port["targetPort"] == 80
