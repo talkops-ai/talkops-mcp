@@ -235,6 +235,7 @@ class TestScrapeConfigTools:
         self.k8s = MagicMock()
         self.k8s.apply_servicemonitor = AsyncMock()
         self.k8s.get_servicemonitor_required_labels = AsyncMock(return_value={})
+        self.k8s.discover_service_details = AsyncMock(return_value=None)
         self.tools = _register(ScrapeConfigTools(
             _sl(kubernetes_service=self.k8s)
         ))
