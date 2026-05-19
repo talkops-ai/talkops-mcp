@@ -1,0 +1,221 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TalkOps MCP Server — PyPI Release Pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+# Trigger: Push a tag like  prometheus-mcp-server/v0.2.0
+# Result:  Build → Test → Publish to PyPI → GitHub Release with artifacts
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: "📦 Release to PyPI"
+
+on:
+  push:
+    tags:
+      # Matches tags like: prometheus-mcp-server/v0.1.0, helm-mcp-server/v0.2.0
+      - "*/v*"
+
+# Cancel in-flight runs for the same tag
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write        # GitHub Releases
+  id-token: write        # PyPI Trusted Publishers (OIDC)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reusable metadata extracted from the git tag
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  # ── Step 1: Parse the tag and validate ──────────────────────────────────
+  meta:
+    name: "🏷️ Parse Release Tag"
+    runs-on: ubuntu-latest
+    outputs:
+      server_name: ${{ steps.parse.outputs.server_name }}
+      version: ${{ steps.parse.outputs.version }}
+      server_dir: ${{ steps.parse.outputs.server_dir }}
+      pypi_name: ${{ steps.parse.outputs.pypi_name }}
+    steps:
+      - name: Parse tag
+        id: parse
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Tag format: <server-name>/v<version>
+          SERVER_NAME="${TAG%/v*}"
+          VERSION="${TAG#*/v}"
+
+          echo "server_name=${SERVER_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "server_dir=src/${SERVER_NAME}" >> "$GITHUB_OUTPUT"
+          echo "pypi_name=talkops-${SERVER_NAME}" >> "$GITHUB_OUTPUT"
+
+          echo "📦 Server: ${SERVER_NAME}"
+          echo "🏷️  Version: ${VERSION}"
+          echo "📁 Directory: src/${SERVER_NAME}"
+          echo "🐍 PyPI name: talkops-${SERVER_NAME}"
+
+      - uses: actions/checkout@v4
+
+      - name: Validate version matches pyproject.toml
+        run: |
+          TOML_VERSION=$(grep '^version' "${{ steps.parse.outputs.server_dir }}/pyproject.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TAG_VERSION="${{ steps.parse.outputs.version }}"
+          if [ "$TOML_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ Version mismatch! pyproject.toml=${TOML_VERSION} tag=${TAG_VERSION}"
+            exit 1
+          fi
+          echo "✅ Version match: ${TAG_VERSION}"
+
+  # ── Step 2: Run tests ──────────────────────────────────────────────────
+  test:
+    name: "🧪 Test"
+    needs: meta
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ needs.meta.outputs.server_dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run tests
+        run: |
+          if [ -d "tests" ] && [ "$(find tests -name 'test_*.py' -o -name '*_test.py' | head -1)" ]; then
+            uv run pytest tests/ -v --tb=short
+          else
+            echo "⚠️  No tests found — skipping"
+          fi
+
+  # ── Step 3: Build sdist + wheel ────────────────────────────────────────
+  build:
+    name: "🔨 Build"
+    needs: [meta, test]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ needs.meta.outputs.server_dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build package
+        run: uv build
+
+      - name: Verify built artifacts
+        run: |
+          echo "📦 Built artifacts:"
+          ls -lh dist/
+          # Verify the version in the filenames
+          VERSION="${{ needs.meta.outputs.version }}"
+          if ! ls dist/*${VERSION}* 1>/dev/null 2>&1; then
+            echo "❌ No artifacts found with version ${VERSION}"
+            exit 1
+          fi
+          echo "✅ Artifacts verified"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ needs.meta.outputs.server_name }}
+          path: ${{ needs.meta.outputs.server_dir }}/dist/
+          retention-days: 5
+
+  # ── Step 4: Publish to PyPI ────────────────────────────────────────────
+  publish-pypi:
+    name: "🚀 Publish to PyPI"
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/${{ needs.meta.outputs.pypi_name }}/
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ needs.meta.outputs.server_name }}
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # Uses Trusted Publishers (OIDC) — no API token needed in secrets
+        # Fallback: set PYPI_API_TOKEN in repository secrets
+        with:
+          # Uncomment the next line to use API token instead of Trusted Publishers:
+          # password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist/
+          verbose: true
+          print-hash: true
+
+  # ── Step 5: Create GitHub Release ──────────────────────────────────────
+  github-release:
+    name: "📋 GitHub Release"
+    needs: [meta, build, publish-pypi]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ needs.meta.outputs.server_name }}
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.server_name }}/v${{ needs.meta.outputs.version }}
+          name: "${{ needs.meta.outputs.server_name }} v${{ needs.meta.outputs.version }}"
+          body: |
+            ## 📦 ${{ needs.meta.outputs.server_name }} v${{ needs.meta.outputs.version }}
+
+            ### Install
+
+            ```bash
+            # pip
+            pip install ${{ needs.meta.outputs.pypi_name }}==${{ needs.meta.outputs.version }}
+
+            # uv
+            uv pip install ${{ needs.meta.outputs.pypi_name }}==${{ needs.meta.outputs.version }}
+
+            # uvx (run without installing)
+            uvx ${{ needs.meta.outputs.pypi_name }}
+            ```
+
+            ### Run
+
+            ```bash
+            # stdio mode (default — for MCP clients)
+            ${{ needs.meta.outputs.server_name }}
+
+            # HTTP mode
+            MCP_TRANSPORT=http ${{ needs.meta.outputs.server_name }}
+            ```
+
+            ### Links
+            - [PyPI](https://pypi.org/project/${{ needs.meta.outputs.pypi_name }}/${{ needs.meta.outputs.version }}/)
+            - [Documentation](https://github.com/talkops-ai/talkops-mcp/tree/main/src/${{ needs.meta.outputs.server_name }})
+          files: dist/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true

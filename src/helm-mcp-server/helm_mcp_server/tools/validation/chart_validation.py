@@ -19,7 +19,7 @@ class ValidationTools(BaseTool):
             chart_name: str = Field(..., description='Chart name'),
             values: dict = Field(default_factory=dict, description='Chart values to validate (defaults to empty dict for default chart values)'),
             json_schema: Optional[dict] = Field(default=None, description='Optional JSON schema for validation'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Validate Helm chart values against schema.
             
@@ -101,7 +101,7 @@ class ValidationTools(BaseTool):
             eks_cluster_name: Optional[str] = Field(default=None, description='AWS EKS cluster name for multi-cluster support'),
             include_full: bool = Field(default=False, description='Include full manifests in response (default: False to save tokens, only summary and preview included)'),
             preview_lines: int = Field(default=100, description='Number of lines to include in preview (default: 100)'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Render Kubernetes manifests from Helm chart and values.
             
@@ -245,7 +245,7 @@ class ValidationTools(BaseTool):
         @mcp_instance.tool()
         async def helm_validate_manifests(
             manifests: str = Field(..., description='Kubernetes manifests as YAML string'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Validate Kubernetes manifests (basic YAML and structure validation).
             
@@ -302,7 +302,7 @@ class ValidationTools(BaseTool):
         async def helm_check_dependencies(
             chart_name: str = Field(..., description='Chart name'),
             repository: str = Field(default='bitnami', description='Helm repository'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Check if chart dependencies are available.
             
@@ -362,7 +362,7 @@ class ValidationTools(BaseTool):
             chart_name: str = Field(..., description='Chart name'),
             values: dict = Field(default_factory=dict, description='Chart values'),
             namespace: str = Field(default='default', description='Kubernetes namespace'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Generate a detailed installation plan with resource estimates.
             

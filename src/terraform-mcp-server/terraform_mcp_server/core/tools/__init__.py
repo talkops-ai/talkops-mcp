@@ -15,26 +15,23 @@
 # Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 """
-Tools module for the Knowledge Graph MCP Server.
+Core tools module for the Terraform Knowledge Graph MCP Server.
 
-This module contains tools for querying the knowledge graph, performing
-vector searches, and providing various analysis capabilities.
+Contains the domain-level tool implementations with Pydantic validation,
+execution logic, and Neo4j integration. These are consumed by the
+MCP registration wrappers in terraform_mcp_server.tools.terraform.
 """
 
-from .base_tool import BaseMCPTool, register_tool_with_fastmcp, ToolResponse, ToolError
-from .tf_search_tool import TFSearchTool, create_tf_search_tool
-from .tf_ingestion_tool import TFIngestionTool, create_tf_ingestion_tool
-from .tf_execution_tool import TFExecutionTool, create_tf_execution_tool
+from .base_tool import BaseMCPTool, ToolResponse, ToolError
+from .tf_search_tool import TFSearchTool
+from .tf_ingestion_tool import TFIngestionTool
+from .tf_execution_tool import TFExecutionTool
 
 __all__ = [
     "BaseMCPTool",
-    "register_tool_with_fastmcp", 
     "ToolResponse",
     "ToolError",
     "TFSearchTool",
-    "create_tf_search_tool",
     "TFIngestionTool",
-    "create_tf_ingestion_tool",
     "TFExecutionTool",
-    "create_tf_execution_tool"
 ]

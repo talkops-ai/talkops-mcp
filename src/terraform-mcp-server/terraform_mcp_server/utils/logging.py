@@ -15,7 +15,7 @@ from loguru import logger
 import sys
 from enum import Enum
 from loguru import logger
-from mcp.server.fastmcp import Context
+from fastmcp import Context
 from typing import Any
 
 class LogLevel(Enum):

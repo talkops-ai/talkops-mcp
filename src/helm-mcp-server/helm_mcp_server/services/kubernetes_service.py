@@ -3,7 +3,7 @@
 import asyncio
 import subprocess
 import json
-from typing import Optional, List, Dict, Any
+from typing import Any, Optional, List, Dict, cast
 from helm_mcp_server.config import ServerConfig
 from helm_mcp_server.exceptions import KubernetesOperationError
 from helm_mcp_server.utils.helm_helper import is_helm_installed, check_for_dangerous_patterns
@@ -56,12 +56,12 @@ class KubernetesService:
             loop = asyncio.get_event_loop()
             api, version_api = await loop.run_in_executor(None, self._get_api_clients)
             
-            version = await loop.run_in_executor(None, version_api.get_code)
+            version = await loop.run_in_executor(None, version_api.get_code)  # type: ignore[union-attr]
             nodes = await loop.run_in_executor(None, api.list_node)
             namespaces = await loop.run_in_executor(None, api.list_namespace)
             
             info = {
-                'kubernetes_version': version.git_version,
+                'kubernetes_version': version.git_version,  # type: ignore[union-attr]
                 'node_count': len(nodes.items),
                 'nodes': [n.metadata.name for n in nodes.items],
                 'namespace_count': len(namespaces.items),
@@ -149,14 +149,15 @@ class KubernetesService:
             contexts, active_context = result
             
             current_context_name = None
-            if active_context:
+            if active_context and isinstance(active_context, dict):
                 current_context_name = active_context.get('name')
             
             # Format contexts for response
             formatted_contexts = []
             for context in contexts:
-                context_name = context.get('name', 'unknown')
-                context_info = context.get('context', {})
+                ctx_dict = cast(Dict[str, Any], context)
+                context_name = ctx_dict.get('name', 'unknown')
+                context_info = ctx_dict.get('context', {})
                 
                 formatted_contexts.append({
                     'name': context_name,
@@ -250,15 +251,16 @@ class KubernetesService:
             # Find the context we want to switch to
             target_context = None
             for ctx in contexts:
-                if ctx.get('name') == context_name:
-                    target_context = ctx
+                ctx_dict = cast(Dict[str, Any], ctx)
+                if ctx_dict.get('name') == context_name:
+                    target_context = ctx_dict
                     break
             
             if not target_context:
-                available_contexts = [ctx.get('name') for ctx in contexts]
+                available_contexts = [cast(Dict[str, Any], c).get('name', '') for c in contexts]
                 raise KubernetesOperationError(
                     f'Context "{context_name}" not found. '
-                    f'Available contexts: {", ".join(available_contexts)}'
+                    f'Available contexts: {", ".join(str(n) for n in available_contexts)}'
                 )
             
             # Load the specified context (returns None, just loads the config)
@@ -383,8 +385,8 @@ class KubernetesService:
             api, version_api = await loop.run_in_executor(None, self._get_api_clients)
             
             # Get cluster version
-            version = await loop.run_in_executor(None, version_api.get_code)
-            cluster_version = version.git_version
+            version = await loop.run_in_executor(None, version_api.get_code)  # type: ignore[union-attr]
+            cluster_version = version.git_version  # type: ignore[union-attr]
             
             # Check API version if specified
             api_version_ok = True

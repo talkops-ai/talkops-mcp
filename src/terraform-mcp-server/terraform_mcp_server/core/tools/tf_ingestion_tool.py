@@ -26,7 +26,7 @@ from terraform_mcp_server.config import Config
 from terraform_mcp_server.utils.logging import get_logger
 from terraform_mcp_server.utils.errors import ConfigurationError
 from terraform_mcp_server.ingestion_orchestrator import IngestionOrchestrator
-from mcp.server.fastmcp import Context
+from fastmcp import Context
 from terraform_mcp_server.utils.logging import log_with_request_id, LogLevel
 
 logger = get_logger(__name__)

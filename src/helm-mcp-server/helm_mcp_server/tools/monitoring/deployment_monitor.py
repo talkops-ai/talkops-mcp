@@ -19,11 +19,17 @@ class MonitoringTools(BaseTool):
             namespace: str = Field(default='default', description='Kubernetes namespace'),
             max_wait_seconds: int = Field(default=60, description='Maximum time to wait in seconds'),
             check_interval: int = Field(default=5, description='Interval between checks in seconds'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Monitor deployment health asynchronously.
+            """Monitor deployment health after a Helm install/upgrade.
             
-            Polls pod status until ready or timeout.
+            Uses multi-layer health checking:
+            - Helm release status (catches hook/manifest failures immediately)
+            - Deployment/StatefulSet rollout status (replica counts + conditions)
+            - Pod container diagnostics (CrashLoopBackOff, ImagePullBackOff, etc.)
+            
+            Returns structured status with an 'issues' array for diagnosis.
+            Status will be one of: 'ready', 'failed', or 'timeout'.
             
             Args:
                 release_name: Release name to monitor
@@ -32,10 +38,11 @@ class MonitoringTools(BaseTool):
                 check_interval: Interval between checks in seconds
             
             Returns:
-                Monitoring result with deployment status
+                Monitoring result with deployment status, workload snapshots,
+                pod summary, and any issues found
             
             Raises:
-                HelmOperationError: If monitoring fails or timeout
+                HelmOperationError: If monitoring infrastructure fails
             """
             await ctx.info(
                 f"Starting deployment monitoring for '{release_name}'",
@@ -46,7 +53,7 @@ class MonitoringTools(BaseTool):
                 }
             )
             
-            await ctx.debug( f'Checking pod status every {check_interval} seconds')
+            await ctx.debug(f'Checking deployment health every {check_interval} seconds')
             
             try:
                 result = await self.helm_service.monitor_deployment_health(
@@ -56,36 +63,55 @@ class MonitoringTools(BaseTool):
                     check_interval=check_interval,
                 )
                 
-                await ctx.info(
-                    f"Deployment '{release_name}' is ready",
-                    extra={
-                        'release_name': release_name,
-                        'pod_count': result.get('pod_count', 0),
-                        'ready_pods': result.get('ready_pods', 0),
-                        'duration_seconds': result.get('duration_seconds', 0)
-                    }
-                )
+                status = result.get('status', 'unknown')
+                issues = result.get('issues', [])
+                pod_summary = result.get('pod_summary', {})
+                deployments = result.get('deployments', [])
+                
+                if status == 'ready':
+                    await ctx.info(
+                        f"Deployment '{release_name}' is ready",
+                        extra={
+                            'release_name': release_name,
+                            'duration_seconds': result.get('duration_seconds', 0),
+                            'pod_summary': pod_summary,
+                            'deployment_count': len(deployments),
+                        }
+                    )
+                
+                elif status == 'failed':
+                    error_issues = [i for i in issues if i.get('severity') == 'error']
+                    await ctx.error(
+                        f"Deployment '{release_name}' has failed",
+                        extra={
+                            'release_name': release_name,
+                            'duration_seconds': result.get('duration_seconds', 0),
+                            'issue_count': len(error_issues),
+                            'issues': error_issues,
+                        }
+                    )
+                
+                elif status == 'timeout':
+                    await ctx.warning(
+                        f"Deployment '{release_name}' did not become ready within {max_wait_seconds}s",
+                        extra={
+                            'release_name': release_name,
+                            'max_wait_seconds': max_wait_seconds,
+                            'pod_summary': pod_summary,
+                            'issues': issues,
+                        }
+                    )
                 
                 return result
             
             except HelmOperationError as e:
-                if 'not ready after' in str(e):
-                    await ctx.warning(
-                        f"Deployment '{release_name}' did not become ready within timeout",
-                        extra={
-                            'release_name': release_name,
-                            'max_wait_seconds': max_wait_seconds,
-                            'error': str(e)
-                        }
-                    )
-                else:
-                    await ctx.error(
-                        f"Monitoring failed: {str(e)}",
-                        extra={
-                            'release_name': release_name,
-                            'error': str(e)
-                        }
-                    )
+                await ctx.error(
+                    f"Monitoring infrastructure error: {str(e)}",
+                    extra={
+                        'release_name': release_name,
+                        'error': str(e)
+                    }
+                )
                 raise
             except Exception as e:
                 await ctx.error(
@@ -101,7 +127,7 @@ class MonitoringTools(BaseTool):
         async def helm_get_release_status(
             release_name: str = Field(..., description='Release name'),
             namespace: str = Field(default='default', description='Kubernetes namespace'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Get current status of a Helm release.
             
@@ -155,4 +181,3 @@ class MonitoringTools(BaseTool):
                     }
                 )
                 raise HelmOperationError(f'Failed to get release status: {str(e)}')
-

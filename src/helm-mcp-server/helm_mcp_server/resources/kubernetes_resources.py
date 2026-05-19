@@ -2,7 +2,7 @@
 
 import json
 from typing import List
-from mcp.types import Resource, TextContent
+from mcp.types import Resource
 from helm_mcp_server.exceptions import HelmResourceError
 from helm_mcp_server.resources.base import BaseResource
 
@@ -43,21 +43,13 @@ class KubernetesResources(BaseResource):
                 
                 return [
                     Resource(
-                        uri=f"kubernetes://namespaces/{ns}",
+                        uri=f"kubernetes://namespaces/{ns}",  # type: ignore[arg-type]
                         name=f"Namespace: {ns}",
                         description=f"Kubernetes namespace {ns}",
                         mimeType="application/json",
-                        contents=[
-                            TextContent(
-                                type="text",
-                                text=json.dumps({"name": ns}, indent=2),
-                                mimeType="application/json"
-                            )
-                        ]
                     )
                     for ns in namespaces
                 ]
             except Exception as e:
                 # Return empty list on error
                 return []
-

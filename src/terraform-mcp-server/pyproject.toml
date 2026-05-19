@@ -1,16 +1,13 @@
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "terraform-mcp-server"
 version = "0.1.0"
-description = "Add your description here"
+description = "MCP Server for Terraform Knowledge Graph — vector search, document ingestion, and secure command execution"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fastmcp",
     "beautifulsoup4>=4.13.4",
-    "dotenv>=0.9.9",
+    "python-dotenv>=1.0.0",
     "langchain>=0.3.26",
     "langchain-community>=0.3.27",
     "langchain-core>=0.3.70",
@@ -21,20 +18,24 @@ dependencies = [
     "langgraph-prebuilt>=0.5.2",
     "loguru>=0.7.3",
     "markdown>=3.8.2",
-    "mcp[cli]>=1.12.1",
     "neo4j-graphrag[openai]>=1.8.0",
     "pdfminer-six>=20250506",
     "pydantic>=2.11.7",
     "pypdf>=5.8.0",
     "pypdf2>=3.0.1",
-    "pytest>=8.4.1",
-    "pytest-asyncio>=1.1.0",
     "unstructured>=0.18.9",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.4.1", "pytest-asyncio>=1.1.0"]
+
 [project.scripts]
+terraform-mcp-server = "terraform_mcp_server.main:main"
 agents-mcp-server = "terraform_mcp_server.__main__:main"
 
-[tool.setuptools.packages.find]
-include = ["terraform_mcp_server*"]
-exclude = ["neo4j_data*", "tests*", "examples*"]
+[dependency-groups]
+dev = ["pytest>=8.4.1", "pytest-asyncio>=1.1.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

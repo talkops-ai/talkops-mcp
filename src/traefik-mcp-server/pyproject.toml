@@ -1,15 +1,38 @@
 [project]
-name = "traefik-mcp-server"
+name = "talkops-traefik-mcp-server"
 version = "0.1.0"
-description = "MCP Server for Traefik traffic management — routing, middleware, mirroring, anomaly detection, and NGINX migration"
+description = "A Model Context Protocol (MCP) server for Traefik traffic management — routing, middleware, mirroring, and NGINX migration."
 readme = "README.md"
+license = {text = "Apache-2.0"}
 requires-python = ">=3.12"
+authors = [
+    {name = "TalkOps", email = "contact@talkops.ai"},
+]
+keywords = ["mcp", "traefik", "traffic-management", "routing", "kubernetes", "devops", "ai", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "fastmcp",
     "kubernetes",
     "pyyaml",
-    "pydantic"
+    "pydantic",
 ]
+
+[project.urls]
+Homepage = "https://talkops.ai"
+Repository = "https://github.com/talkops-ai/talkops-mcp"
+Documentation = "https://github.com/talkops-ai/talkops-mcp/tree/main/src/traefik-mcp-server"
+Issues = "https://github.com/talkops-ai/talkops-mcp/issues"
+Changelog = "https://github.com/talkops-ai/talkops-mcp/releases"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -23,3 +46,9 @@ dev = ["pytest>=8"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["traefik_mcp_server"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

@@ -1376,16 +1376,34 @@ class HelmService:
         except Exception as e:
             raise HelmOperationError(f'Failed to get release status: {str(e)}')
     
+    # Terminal container waiting states that indicate the deployment will NOT recover on its own
+    TERMINAL_CONTAINER_STATES = frozenset({
+        'CrashLoopBackOff',
+        'ImagePullBackOff',
+        'ErrImagePull',
+        'CreateContainerConfigError',
+        'InvalidImageName',
+        'CreateContainerError',
+    })
+
     async def monitor_deployment_health(
         self,
         release_name: str,
         namespace: str = 'default',
-        max_wait_seconds: int = 180,
+        max_wait_seconds: int = 60,
         check_interval: int = 5,
     ) -> Dict[str, Any]:
-        """Monitor deployment health asynchronously.
+        """Monitor deployment health with production-grade checks.
         
-        Polls pod status until ready or timeout.
+        Uses a multi-layer approach mirroring real Kubernetes operations:
+        1. Helm release status gate — catches hook/manifest failures immediately.
+        2. Deployment/StatefulSet rollout status — checks .status.conditions and
+           replica counts, the same way kubectl rollout status works.
+        3. Pod container diagnostics — detects terminal states (CrashLoopBackOff,
+           ImagePullBackOff, etc.) for early failure exit.
+        
+        Always returns a structured result with an issues array so the calling
+        agent can reason about what went wrong and take corrective action.
         
         Args:
             release_name: Release name to monitor
@@ -1394,80 +1412,471 @@ class HelmService:
             check_interval: Interval between checks in seconds
         
         Returns:
-            Monitoring result with deployment status
+            Structured monitoring result:
+            {
+                'status': 'ready' | 'failed' | 'timeout',
+                'release_name': str,
+                'namespace': str,
+                'duration_seconds': int,
+                'helm_status': str,
+                'deployments': [...],
+                'pod_summary': {...},
+                'issues': [...]
+            }
         
         Raises:
-            HelmOperationError: If monitoring fails or timeout
+            HelmOperationError: If monitoring itself fails (not deployment failure)
         """
         try:
             import time
             from kubernetes import client, config as k8s_config
             
-            # Load Kubernetes config
-            def load_k8s_config():
+            # --- Initialise K8s API clients ---
+            def load_k8s_clients():
                 try:
                     k8s_config.load_incluster_config()
                 except Exception:
                     k8s_config.load_kube_config()
-                return client.CoreV1Api()
+                return client.CoreV1Api(), client.AppsV1Api()
             
-            # Run config loading in executor
             loop = asyncio.get_event_loop()
-            v1 = await loop.run_in_executor(None, load_k8s_config)
+            v1, apps_v1 = await loop.run_in_executor(None, load_k8s_clients)
             
             start_time = time.time()
             
-            while time.time() - start_time < max_wait_seconds:
-                # Get pods for this release - run in executor
-                def get_pods(selector):
-                    return v1.list_namespaced_pod(namespace, label_selector=selector)
-                
-                pods = await loop.run_in_executor(
-                    None,
-                    get_pods,
-                    f'app.kubernetes.io/instance={release_name}'
+            # ================================================================
+            # Layer 1: Helm Release Status Gate
+            # ================================================================
+            helm_status = await self._get_helm_release_status_quick(release_name, namespace)
+            if helm_status in ('failed', 'pending-rollback', 'uninstalling'):
+                return self._build_monitor_result(
+                    status='failed',
+                    release_name=release_name,
+                    namespace=namespace,
+                    duration=int(time.time() - start_time),
+                    helm_status=helm_status,
+                    issues=[{
+                        'severity': 'error',
+                        'resource': f'release/{release_name}',
+                        'reason': f'HelmRelease{helm_status.replace("-", " ").title().replace(" ", "")}',
+                        'message': f'Helm release is in "{helm_status}" state. '
+                                   f'Check helm history {release_name} -n {namespace} for details.'
+                    }]
                 )
+            
+            # ================================================================
+            # Polling Loop — Layers 2 & 3
+            # ================================================================
+            label_selectors = [
+                f'app.kubernetes.io/instance={release_name}',
+                f'release={release_name}',
+                f'app.kubernetes.io/managed-by=Helm,app.kubernetes.io/name={release_name}',
+            ]
+            
+            
+            # Initialize with defaults — overwritten each iteration but ensures
+            # the variables are always bound for the post-loop timeout path.
+            deployment_snapshots: List[Dict[str, Any]] = []
+            pod_summary: Dict[str, int] = {'total': 0, 'running': 0, 'pending': 0, 'failed': 0, 'succeeded': 0}
+            issues: List[Dict[str, str]] = []
+            
+            while time.time() - start_time < max_wait_seconds:
+                issues = []
+                deployment_snapshots = []
+                pod_summary = {'total': 0, 'running': 0, 'pending': 0, 'failed': 0, 'succeeded': 0}
                 
-                if len(pods.items) == 0:
-                    # Try alternative label selector
+                # ============================================================
+                # Layer 2: Deployment & StatefulSet Rollout Status
+                # ============================================================
+                workloads_found = False
+                all_workloads_ready = True
+                
+                for selector in label_selectors:
+                    # Query Deployments
+                    deployments = await loop.run_in_executor(
+                        None,
+                        lambda sel=selector: apps_v1.list_namespaced_deployment(
+                            namespace, label_selector=sel
+                        )
+                    )
+                    
+                    # Query StatefulSets
+                    statefulsets = await loop.run_in_executor(
+                        None,
+                        lambda sel=selector: apps_v1.list_namespaced_stateful_set(
+                            namespace, label_selector=sel
+                        )
+                    )
+                    
+                    if deployments.items or statefulsets.items:
+                        workloads_found = True
+                        
+                        # Process Deployments
+                        for dep in deployments.items:
+                            snapshot, dep_issues, dep_ready = self._evaluate_deployment(dep)
+                            deployment_snapshots.append(snapshot)
+                            issues.extend(dep_issues)
+                            if not dep_ready:
+                                all_workloads_ready = False
+                        
+                        # Process StatefulSets
+                        for sts in statefulsets.items:
+                            snapshot, sts_issues, sts_ready = self._evaluate_statefulset(sts)
+                            deployment_snapshots.append(snapshot)
+                            issues.extend(sts_issues)
+                            if not sts_ready:
+                                all_workloads_ready = False
+                        
+                        break  # Found workloads with this selector, stop trying others
+                
+                # ============================================================
+                # Layer 3: Pod Container Diagnostics
+                # ============================================================
+                pods = None
+                for selector in label_selectors:
                     pods = await loop.run_in_executor(
                         None,
-                        get_pods,
-                        f'release={release_name}'
+                        lambda sel=selector: v1.list_namespaced_pod(
+                            namespace, label_selector=sel
+                        )
+                    )
+                    if pods.items:
+                        break
+                
+                if pods and pods.items:
+                    for pod in pods.items:
+                        phase = (pod.status.phase or 'Unknown').lower()
+                        pod_summary['total'] += 1
+                        if phase == 'running':
+                            pod_summary['running'] += 1
+                        elif phase == 'pending':
+                            pod_summary['pending'] += 1
+                        elif phase == 'failed':
+                            pod_summary['failed'] += 1
+                        elif phase == 'succeeded':
+                            pod_summary['succeeded'] += 1
+                        
+                        # Check container statuses for terminal failures
+                        pod_issues = self._check_pod_containers(pod)
+                        issues.extend(pod_issues)
+                
+                # ============================================================
+                # Decision: ready / failed / continue waiting
+                # ============================================================
+                terminal_issues = [i for i in issues if i['severity'] == 'error']
+                
+                if terminal_issues:
+                    # Terminal failure detected — exit early, don't waste time
+                    return self._build_monitor_result(
+                        status='failed',
+                        release_name=release_name,
+                        namespace=namespace,
+                        duration=int(time.time() - start_time),
+                        helm_status=helm_status,
+                        deployments=deployment_snapshots,
+                        pod_summary=pod_summary,
+                        issues=issues,
                     )
                 
-                if len(pods.items) > 0:
-                    # Check if all pods are ready
-                    ready_pods = sum(
-                        1 for pod in pods.items
-                        if pod.status.phase == 'Running' and
-                        all(condition.status == 'True' and condition.type == 'Ready'
-                            for condition in pod.status.conditions or [])
+                if workloads_found and all_workloads_ready and pod_summary['total'] > 0:
+                    # All workloads report ready replica counts matching desired
+                    return self._build_monitor_result(
+                        status='ready',
+                        release_name=release_name,
+                        namespace=namespace,
+                        duration=int(time.time() - start_time),
+                        helm_status=helm_status,
+                        deployments=deployment_snapshots,
+                        pod_summary=pod_summary,
+                        issues=issues,
                     )
-                    
-                    all_ready = ready_pods == len(pods.items)
-                    
-                    if all_ready:
-                        duration = int(time.time() - start_time)
-                        return {
-                            'status': 'ready',
-                            'release_name': release_name,
-                            'namespace': namespace,
-                            'pod_count': len(pods.items),
-                            'ready_pods': ready_pods,
-                            'duration_seconds': duration
-                        }
                 
-                # Wait before next check
+                # If no workloads found yet (pods may not have labels, or CRDs),
+                # fall back to pure pod readiness check
+                if not workloads_found and pods and pods.items:
+                    all_pods_ready = all(
+                        self._is_pod_ready(pod) for pod in pods.items
+                    )
+                    if all_pods_ready and pod_summary['total'] > 0:
+                        return self._build_monitor_result(
+                            status='ready',
+                            release_name=release_name,
+                            namespace=namespace,
+                            duration=int(time.time() - start_time),
+                            helm_status=helm_status,
+                            deployments=deployment_snapshots,
+                            pod_summary=pod_summary,
+                            issues=issues,
+                        )
+                
                 await asyncio.sleep(check_interval)
             
-            # Timeout
-            raise HelmOperationError(
-                f'Deployment not ready after {max_wait_seconds}s'
+            # ================================================================
+            # Timeout — return structured result (NOT an exception)
+            # ================================================================
+            return self._build_monitor_result(
+                status='timeout',
+                release_name=release_name,
+                namespace=namespace,
+                duration=int(time.time() - start_time),
+                helm_status=helm_status,
+                deployments=deployment_snapshots,
+                pod_summary=pod_summary,
+                issues=issues if issues else [{
+                    'severity': 'warning',
+                    'resource': f'release/{release_name}',
+                    'reason': 'Timeout',
+                    'message': f'Deployment did not become ready within {max_wait_seconds}s'
+                }],
             )
         
         except HelmOperationError:
             raise
         except Exception as e:
             raise HelmOperationError(f'Deployment monitoring failed: {str(e)}')
+    
+    # ------------------------------------------------------------------
+    # Private helpers for monitor_deployment_health
+    # ------------------------------------------------------------------
+    
+    async def _get_helm_release_status_quick(
+        self, release_name: str, namespace: str
+    ) -> str:
+        """Get the Helm release status string (deployed, failed, etc.)."""
+        try:
+            cmd = [
+                'helm', 'status', release_name,
+                '-n', namespace, '-o', 'json'
+            ]
+            result = await self._run_helm_command(cmd)
+            data = json.loads(result) if result else {}
+            return data.get('info', {}).get('status', 'unknown')
+        except Exception:
+            return 'unknown'
+    
+    @staticmethod
+    def _build_monitor_result(
+        *,
+        status: str,
+        release_name: str,
+        namespace: str,
+        duration: int,
+        helm_status: str,
+        deployments: Optional[List[Dict[str, Any]]] = None,
+        pod_summary: Optional[Dict[str, int]] = None,
+        issues: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """Build a consistent monitoring result dict."""
+        return {
+            'status': status,
+            'release_name': release_name,
+            'namespace': namespace,
+            'duration_seconds': duration,
+            'helm_status': helm_status,
+            'deployments': deployments or [],
+            'pod_summary': pod_summary or {},
+            'issues': issues or [],
+        }
+    
+    @staticmethod
+    def _evaluate_deployment(dep) -> tuple:
+        """Evaluate a Deployment's rollout status.
+        
+        Returns:
+            (snapshot_dict, issues_list, is_ready_bool)
+        """
+        spec_replicas = dep.spec.replicas or 1
+        status = dep.status
+        updated = status.updated_replicas or 0
+        ready = status.ready_replicas or 0
+        available = status.available_replicas or 0
+        unavailable = status.unavailable_replicas or 0
+        
+        # Check conditions
+        conditions = []
+        issues = []
+        rollout_complete = False
+        
+        for cond in (status.conditions or []):
+            conditions.append({
+                'type': cond.type,
+                'status': cond.status,
+                'reason': cond.reason or '',
+                'message': cond.message or '',
+            })
+            
+            # ProgressDeadlineExceeded = terminal failure
+            if (cond.type == 'Progressing' and
+                    cond.status == 'False' and
+                    cond.reason == 'ProgressDeadlineExceeded'):
+                issues.append({
+                    'severity': 'error',
+                    'resource': f'deployment/{dep.metadata.name}',
+                    'reason': 'ProgressDeadlineExceeded',
+                    'message': cond.message or 'Deployment exceeded its progress deadline',
+                })
+            
+            # NewReplicaSetAvailable = rollout done
+            if (cond.type == 'Progressing' and
+                    cond.status == 'True' and
+                    cond.reason == 'NewReplicaSetAvailable'):
+                rollout_complete = True
+        
+        # Numeric readiness: all replicas updated, ready, and available
+        numerically_ready = (
+            updated >= spec_replicas and
+            ready >= spec_replicas and
+            available >= spec_replicas and
+            unavailable == 0
+        )
+        
+        is_ready = (rollout_complete or numerically_ready) and not issues
+        
+        snapshot = {
+            'name': dep.metadata.name,
+            'kind': 'Deployment',
+            'replicas': spec_replicas,
+            'ready_replicas': ready,
+            'updated_replicas': updated,
+            'available_replicas': available,
+            'unavailable_replicas': unavailable,
+            'rollout_complete': is_ready,
+            'conditions': conditions,
+        }
+        
+        return snapshot, issues, is_ready
+    
+    @staticmethod
+    def _evaluate_statefulset(sts) -> tuple:
+        """Evaluate a StatefulSet's rollout status.
+        
+        Returns:
+            (snapshot_dict, issues_list, is_ready_bool)
+        """
+        spec_replicas = sts.spec.replicas or 1
+        status = sts.status
+        ready = status.ready_replicas or 0
+        updated = status.updated_replicas or 0
+        current = status.current_replicas or 0
+        
+        issues = []
+        conditions = []
+        
+        for cond in (status.conditions or []):
+            conditions.append({
+                'type': cond.type,
+                'status': cond.status,
+                'reason': cond.reason or '',
+                'message': cond.message or '',
+            })
+        
+        # StatefulSet is ready when all replicas are updated and ready
+        is_ready = (
+            updated >= spec_replicas and
+            ready >= spec_replicas and
+            current >= spec_replicas
+        )
+        
+        # Check for partition-based rolling update
+        update_strategy = sts.spec.update_strategy
+        if update_strategy and update_strategy.type == 'RollingUpdate':
+            partition = (
+                update_strategy.rolling_update.partition
+                if update_strategy.rolling_update else 0
+            ) or 0
+            if partition > 0:
+                # With partition, only replicas >= partition are updated
+                expected_updated = spec_replicas - partition
+                is_ready = updated >= expected_updated and ready >= spec_replicas
+        
+        snapshot = {
+            'name': sts.metadata.name,
+            'kind': 'StatefulSet',
+            'replicas': spec_replicas,
+            'ready_replicas': ready,
+            'updated_replicas': updated,
+            'current_replicas': current,
+            'rollout_complete': is_ready,
+            'conditions': conditions,
+        }
+        
+        return snapshot, issues, is_ready
+    
+    def _check_pod_containers(self, pod) -> List[Dict[str, str]]:
+        """Check all containers in a pod for terminal failure states.
+        
+        Returns list of issue dicts (empty if pod is healthy).
+        """
+        issues = []
+        pod_name = pod.metadata.name
+        
+        all_statuses = list(pod.status.container_statuses or [])
+        all_statuses.extend(pod.status.init_container_statuses or [])
+        
+        for cs in all_statuses:
+            # Check waiting state
+            if cs.state and cs.state.waiting:
+                reason = cs.state.waiting.reason or ''
+                if reason in self.TERMINAL_CONTAINER_STATES:
+                    issues.append({
+                        'severity': 'error',
+                        'resource': f'pod/{pod_name}/container/{cs.name}',
+                        'reason': reason,
+                        'message': cs.state.waiting.message or f'Container "{cs.name}" is in {reason} state',
+                    })
+            
+            # Check terminated with OOMKilled + high restart count
+            if cs.state and cs.state.terminated:
+                term_reason = cs.state.terminated.reason or ''
+                if term_reason == 'OOMKilled' and (cs.restart_count or 0) >= 3:
+                    issues.append({
+                        'severity': 'error',
+                        'resource': f'pod/{pod_name}/container/{cs.name}',
+                        'reason': 'OOMKilledRecurring',
+                        'message': (
+                            f'Container "{cs.name}" has been OOMKilled '
+                            f'{cs.restart_count} times. Increase memory limits.'
+                        ),
+                    })
+            
+            # High restart count even without terminal state = warning
+            if (cs.restart_count or 0) >= 5 and not issues:
+                last_reason = ''
+                if cs.last_state and cs.last_state.terminated:
+                    last_reason = cs.last_state.terminated.reason or 'Unknown'
+                issues.append({
+                    'severity': 'warning',
+                    'resource': f'pod/{pod_name}/container/{cs.name}',
+                    'reason': 'HighRestartCount',
+                    'message': (
+                        f'Container "{cs.name}" has restarted {cs.restart_count} times. '
+                        f'Last termination reason: {last_reason or "unknown"}'
+                    ),
+                })
+        
+        # Check pod-level conditions for scheduling failures
+        for cond in (pod.status.conditions or []):
+            if cond.type == 'PodScheduled' and cond.status == 'False':
+                issues.append({
+                    'severity': 'error',
+                    'resource': f'pod/{pod_name}',
+                    'reason': cond.reason or 'SchedulingFailed',
+                    'message': cond.message or 'Pod could not be scheduled',
+                })
+        
+        return issues
+    
+    @staticmethod
+    def _is_pod_ready(pod) -> bool:
+        """Check if a single pod is fully ready (Running + Ready condition True)."""
+        if pod.status.phase != 'Running':
+            return False
+        conditions = pod.status.conditions or []
+        if not conditions:
+            return False  # No conditions = not ready (fixes the all()-on-empty bug)
+        return any(
+            c.type == 'Ready' and c.status == 'True'
+            for c in conditions
+        )
+
 

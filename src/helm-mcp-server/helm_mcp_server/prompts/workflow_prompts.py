@@ -1,7 +1,8 @@
 """Workflow-related prompts including the Helm Workflow Guide."""
 
+from typing import List
 from pathlib import Path
-from mcp.types import Prompt, PromptMessage, TextContent
+from mcp.types import PromptMessage, TextContent
 from helm_mcp_server.prompts.base import BasePrompt
 
 
@@ -23,47 +24,36 @@ class WorkflowPrompts(BasePrompt):
     def register(self, mcp_instance) -> None:
         """Register prompts with FastMCP."""
         
-        @mcp_instance.prompt()
-        def helm_workflow_guide() -> Prompt:
-            """Comprehensive Helm MCP Server Workflow Guide.
-            
-            This prompt provides the complete workflow guide for using the Helm MCP Server,
-            including tools reference, resources reference, prompts reference, workflow diagrams,
-            detailed workflow steps, and best practices.
-            """
+        @mcp_instance.prompt(
+            name="helm-workflow-guide",
+            description="Comprehensive Helm MCP Server Workflow Guide with tools, resources, prompts reference, and best practices",
+        )
+        def helm_workflow_guide() -> List[PromptMessage]:
+            """Comprehensive Helm MCP Server Workflow Guide."""
             workflow_content = _load_workflow_guide()
             
-            return Prompt(
-                name="helm-workflow-guide",
-                description="Comprehensive Helm MCP Server Workflow Guide with tools, resources, prompts reference, and best practices",
-                arguments=[],  # No arguments required
-                messages=[
-                    PromptMessage(
-                        role="user",
-                        content=TextContent(
-                            type="text",
-                            text=workflow_content
-                        )
+            return [
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text=workflow_content
                     )
-                ]
-            )
+                )
+            ]
         
-        @mcp_instance.prompt()
-        def helm_quick_start() -> Prompt:
-            """Quick start guide for common Helm operations.
-            
-            This prompt provides quick reference workflows for the most common Helm operations.
-            """
-            return Prompt(
-                name="helm-quick-start",
-                description="Quick start guide for common Helm operations",
-                arguments=[],
-                messages=[
-                    PromptMessage(
-                        role="user",
-                        content=TextContent(
-                            type="text",
-                            text="""# Helm MCP Server Quick Start
+        @mcp_instance.prompt(
+            name="helm-quick-start",
+            description="Quick start guide for common Helm operations",
+        )
+        def helm_quick_start() -> List[PromptMessage]:
+            """Quick start guide for common Helm operations."""
+            return [
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text="""# Helm MCP Server Quick Start
 
 ## Common Workflows
 
@@ -184,8 +174,7 @@ Step 2: Uninstall
 - `helm_upgrade_guide` - Upgrade guide for specific charts
 - `helm_rollback_procedures` - Rollback step-by-step guide
 - `helm_workflow_guide` - Complete workflow documentation"""
-                        )
                     )
-                ]
-            )
+                )
+            ]
 

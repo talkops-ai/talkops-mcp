@@ -18,7 +18,7 @@ class ChartDiscoveryTools(BaseTool):
             query: str = Field(..., description='Chart name or keyword'),
             repository: str = Field(default='bitnami', description='Helm repository name'),
             limit: int = Field(default=10, ge=1, le=50, description='Maximum results'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Union[List[Dict], str]:
             """Search for Helm charts.
             
@@ -97,7 +97,7 @@ class ChartDiscoveryTools(BaseTool):
         async def helm_get_chart_info(
             chart_name: str = Field(..., description='Chart name'),
             repository: str = Field(default='bitnami'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict:
             """Get detailed chart information.
             
@@ -168,7 +168,7 @@ class ChartDiscoveryTools(BaseTool):
             chart_name: str = Field(..., description='Chart name'),
             repository: str = Field(default='bitnami', description='Helm repository name'),
             version: Optional[str] = Field(default=None, description='Specific chart version'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict:
             """Get the values schema (validation rules) for a Helm chart.
             
@@ -225,7 +225,7 @@ class ChartDiscoveryTools(BaseTool):
         async def helm_ensure_repository(
             repo_name: str = Field(..., description='Repository name'),
             repo_url: Optional[str] = Field(default=None, description='Repository URL (if None, will try to get from known repos)'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Ensure a Helm repository exists, adding it if necessary.
             

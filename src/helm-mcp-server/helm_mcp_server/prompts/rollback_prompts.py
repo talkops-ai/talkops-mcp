@@ -1,6 +1,7 @@
 """Rollback-related prompts."""
 
-from mcp.types import Prompt, PromptArgument, PromptMessage, TextContent
+from typing import List
+from mcp.types import PromptMessage, TextContent
 from helm_mcp_server.prompts.base import BasePrompt
 
 
@@ -10,29 +11,22 @@ class RollbackPrompts(BasePrompt):
     def register(self, mcp_instance) -> None:
         """Register prompts with FastMCP."""
         
-        @mcp_instance.prompt()
-        def helm_rollback_procedures(release_name: str) -> Prompt:
+        @mcp_instance.prompt(
+            name="helm-rollback-procedures",
+            description="Step-by-step rollback procedures for Helm releases",
+        )
+        def helm_rollback_procedures(release_name: str) -> List[PromptMessage]:
             """Step-by-step rollback procedures for Helm releases.
             
             Arguments:
                 release_name: Name of the Helm release to rollback
             """
-            return Prompt(
-                name="helm-rollback-procedures",
-                description=f"Step-by-step rollback procedures for release: {release_name}",
-                arguments=[
-                    PromptArgument(
-                        name="release_name",
-                        description="Name of the Helm release to rollback",
-                        required=True
-                    )
-                ],
-                messages=[
-                    PromptMessage(
-                        role="user",
-                        content=TextContent(
-                            type="text",
-                            text=f"""# Helm Rollback Procedures: {release_name}
+            return [
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text=f"""# Helm Rollback Procedures: {release_name}
 
 ## When to Rollback
 
@@ -214,8 +208,6 @@ To avoid needing rollbacks:
 - Have rollback plan ready
 - Monitor closely after upgrades
 - Keep backups current"""
-                        )
                     )
-                ]
-            )
-
+                )
+            ]
