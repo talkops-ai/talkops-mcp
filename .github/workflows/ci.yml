@@ -61,7 +61,6 @@ jobs:
             "helm-mcp-server"
             "argocd-mcp-server"
             "argo-rollout-mcp-server"
-            "kargo-mcp-server"
             "traefik-mcp-server"
           )
 

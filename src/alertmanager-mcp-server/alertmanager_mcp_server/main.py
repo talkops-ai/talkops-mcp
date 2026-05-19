@@ -1,5 +1,4 @@
 """Application entry point."""
-import asyncio
 import sys
 from pathlib import Path
 
@@ -11,7 +10,6 @@ from alertmanager_mcp_server.server.bootstrap import ServerBootstrap
 
 
 def main():
-    service = None
     try:
         mcp, config, service = ServerBootstrap.initialize()
         # Run FastMCP server with the configured transport
@@ -21,10 +19,8 @@ def main():
             mcp.run()
     except KeyboardInterrupt:
         pass
-    finally:
-        # Graceful shutdown: close all HTTP clients
-        if service is not None:
-            asyncio.get_event_loop().run_until_complete(service.close())
+    except Exception:
+        raise
 
 
 def cli():
