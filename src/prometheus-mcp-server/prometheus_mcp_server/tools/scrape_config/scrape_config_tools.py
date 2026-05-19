@@ -58,6 +58,16 @@ class ScrapeConfigTools(BaseTool):
             metric_relabelings: Optional[List[Dict[str, Any]]] = Field(
                 default=None, description="Metric relabelings to apply to the endpoint"
             ),
+            auto_discover: bool = Field(
+                default=True,
+                description=(
+                    "Auto-discover the target Service's labels and ports "
+                    "from the Kubernetes API. When True (default), the tool "
+                    "reads the actual Service to build a correct selector "
+                    "and port configuration. Set to False to use the "
+                    "provided port_name and a simple {app: service_name} selector."
+                ),
+            ),
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Generate and apply a ServiceMonitor CRD for Prometheus Operator.
@@ -67,8 +77,15 @@ class ScrapeConfigTools(BaseTool):
 
             **WARNING: Creates a ServiceMonitor CRD in the Kubernetes cluster.**
 
+            By default, auto-discovers the target Service's metadata labels and
+            port names from the Kubernetes API so the generated ServiceMonitor
+            correctly matches any labeling convention (Helm, Kustomize, etc.).
+            If the Service is not found, falls back to a simple ``{app: service_name}``
+            selector with a warning.
+
             Returns:
-            - {\"applied\": str, \"namespace\": str, \"manifest_yaml\": str, \"notes\": str}
+            - {\"applied\": str, \"namespace\": str, \"manifest_yaml\": str, \"notes\": str,
+               \"auto_discovered\": bool, \"discovered_details\": dict | None}
 
             Prerequisites:
             - Prometheus Operator must be installed in the cluster
@@ -87,6 +104,70 @@ class ScrapeConfigTools(BaseTool):
 
                 name = monitor_name or f"{service_name}-monitor"
 
+                # ── Auto-discovery: read the real K8s Service ────────────
+                discovered = None
+                selector_labels: Dict[str, str] = {"app": service_name}
+                effective_port = port_name
+                discovery_notes: List[str] = []
+
+                if auto_discover:
+                    discovered = await kubernetes_service.discover_service_details(
+                        namespace, service_name
+                    )
+
+                if discovered:
+                    # Use the service's metadata labels as the selector.
+                    # Strip Helm housekeeping labels that shouldn't be used
+                    # as selectors (they change on upgrades and are not stable).
+                    svc_labels = dict(discovered["labels"])
+                    _HELM_NOISE = {
+                        "helm.sh/chart",
+                        "app.kubernetes.io/managed-by",
+                        "app.kubernetes.io/version",
+                    }
+                    for key in _HELM_NOISE:
+                        svc_labels.pop(key, None)
+
+                    if svc_labels:
+                        selector_labels = svc_labels
+                        discovery_notes.append(
+                            f"Auto-discovered selector labels from Service/{service_name}: "
+                            f"{selector_labels}"
+                        )
+                    else:
+                        discovery_notes.append(
+                            f"Service/{service_name} has no usable labels after "
+                            "filtering Helm noise; falling back to {{app: service_name}}"
+                        )
+
+                    # Auto-detect the best metrics port
+                    metrics_port = discovered.get("metrics_port")
+                    if metrics_port and metrics_port.get("name"):
+                        effective_port = metrics_port["name"]
+                        discovery_notes.append(
+                            f"Auto-discovered metrics port: "
+                            f"{effective_port} (:{metrics_port.get('port')})"
+                        )
+                    else:
+                        discovery_notes.append(
+                            f"No well-known metrics port detected; "
+                            f"using provided port_name='{port_name}'"
+                        )
+                elif auto_discover:
+                    discovery_notes.append(
+                        f"Service/{service_name} not found in namespace {namespace}; "
+                        f"falling back to default selector {{app: {service_name}}}"
+                    )
+
+                # ── Build the manifest ───────────────────────────────────
+                endpoint: Dict[str, Any] = {
+                    "port": effective_port,
+                    "path": path,
+                    "interval": interval,
+                }
+                if metric_relabelings:
+                    endpoint["metricRelabelings"] = coerce_list(metric_relabelings)
+
                 manifest = {
                     "apiVersion": "monitoring.coreos.com/v1",
                     "kind": "ServiceMonitor",
@@ -97,16 +178,9 @@ class ScrapeConfigTools(BaseTool):
                     },
                     "spec": {
                         "selector": {
-                            "matchLabels": {"app": service_name},
+                            "matchLabels": selector_labels,
                         },
-                        "endpoints": [
-                            {
-                                "port": port_name,
-                                "path": path,
-                                "interval": interval,
-                                **({"metricRelabelings": coerce_list(metric_relabelings)} if metric_relabelings else {})
-                            }
-                        ],
+                        "endpoints": [endpoint],
                     },
                 }
 
@@ -115,11 +189,18 @@ class ScrapeConfigTools(BaseTool):
                 import yaml
                 manifest_yaml = yaml.dump(manifest, default_flow_style=False)
 
+                notes_str = (
+                    f"ServiceMonitor for {service_name} applied to {namespace}. "
+                    + " | ".join(discovery_notes)
+                )
+
                 return {
                     "applied": f"ServiceMonitor/{name}",
                     "namespace": namespace,
                     "manifest_yaml": manifest_yaml,
-                    "notes": f"ServiceMonitor for {service_name} applied to {namespace}",
+                    "notes": notes_str,
+                    "auto_discovered": discovered is not None,
+                    "discovered_details": discovered,
                 }
             except Exception as e:
                 raise PrometheusOperationError(f"ServiceMonitor apply failed: {e}")

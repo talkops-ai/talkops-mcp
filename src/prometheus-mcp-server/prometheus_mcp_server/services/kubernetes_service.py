@@ -1,7 +1,10 @@
 """Kubernetes operations service for Prometheus MCP server."""
 
 import asyncio
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from kubernetes import client as k8s_client, config as k8s_config
 from kubernetes.client.exceptions import ApiException
@@ -42,6 +45,91 @@ class KubernetesService:
             self._initialized = True
         except Exception as e:
             raise RuntimeError(f"Kubernetes client initialization failed: {e}")
+
+    # ── Service introspection (generic auto-discovery) ────────────────
+
+    # Well-known port names that indicate a Prometheus metrics port.
+    _METRICS_PORT_NAMES: List[str] = [
+        "metrics", "prometheus", "http-metrics", "prom-metrics",
+        "monitoring", "metric", "prometheus-metrics",
+    ]
+
+    def _pick_metrics_port(self, ports: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Select the most likely metrics port from a Service's port list.
+
+        Preference order:
+        1. Port whose name matches a well-known metrics port name.
+        2. Port whose number is a common metrics port (9090, 9100, 8080, 8082, 2112).
+        3. None — caller should fall back to user-provided default.
+        """
+        # 1) Name match
+        for p in ports:
+            if p.get("name", "").lower() in self._METRICS_PORT_NAMES:
+                return p
+        # 2) Common metrics port numbers
+        common_ports = {9090, 9100, 8080, 8082, 2112, 9091, 9093, 9115}
+        for p in ports:
+            if p.get("port") in common_ports:
+                return p
+        return None
+
+    def _sync_discover_service(self, namespace: str, service_name: str) -> Optional[Dict[str, Any]]:
+        """Read a K8s Service and extract its labels, selector, and ports.
+
+        Returns None if the service is not found.
+        """
+        try:
+            svc = self._core.read_namespaced_service(service_name, namespace)
+        except ApiException as e:
+            if e.status == 404:
+                return None
+            raise
+
+        # Extract metadata labels (ServiceMonitor selector matches on these)
+        meta_labels: Dict[str, str] = dict(svc.metadata.labels or {})
+
+        # Extract pod selector labels
+        pod_selector: Dict[str, str] = dict(svc.spec.selector or {})
+
+        # Extract ports
+        ports: List[Dict[str, Any]] = []
+        for p in (svc.spec.ports or []):
+            ports.append({
+                "name": p.name or "",
+                "port": p.port,
+                "target_port": str(p.target_port) if p.target_port else "",
+                "protocol": p.protocol or "TCP",
+            })
+
+        # Auto-pick the best metrics port
+        metrics_port = self._pick_metrics_port(ports)
+
+        return {
+            "name": svc.metadata.name,
+            "namespace": svc.metadata.namespace,
+            "labels": meta_labels,
+            "selector": pod_selector,
+            "ports": ports,
+            "metrics_port": metrics_port,
+        }
+
+    async def discover_service_details(
+        self, namespace: str, service_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """Read a K8s Service by name and return its labels, selector, and port info.
+
+        This enables generic auto-discovery for ServiceMonitor generation.
+        Works for any service regardless of labeling convention (Helm, Kustomize,
+        hand-crafted, etc.).
+
+        Returns:
+            Dict with keys: name, namespace, labels, selector, ports, metrics_port
+            — or None if the service does not exist.
+        """
+        self._ensure_initialized()
+        return await asyncio.to_thread(
+            self._sync_discover_service, namespace, service_name
+        )
 
     def _sync_apply_deployment(self, namespace: str, manifest: Dict[str, Any]) -> None:
         """Synchronous deployment apply (runs in thread)."""
