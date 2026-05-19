@@ -1,6 +1,6 @@
 [project]
 name = "talkops-helm-mcp-server"
-version = "0.2.0"
+version = "0.3.0"
 description = "A Model Context Protocol (MCP) server for managing Kubernetes workloads via Helm."
 readme = "README.md"
 license = {text = "Apache-2.0"}
