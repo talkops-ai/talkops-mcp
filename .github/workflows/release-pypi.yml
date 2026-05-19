@@ -174,6 +174,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Full history for changelog generation
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -181,40 +183,183 @@ jobs:
           name: dist-${{ needs.meta.outputs.server_name }}
           path: dist/
 
+      - name: Generate release notes
+        id: notes
+        env:
+          SERVER_NAME: ${{ needs.meta.outputs.server_name }}
+          SERVER_DIR: ${{ needs.meta.outputs.server_dir }}
+          PYPI_NAME: ${{ needs.meta.outputs.pypi_name }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # ── Extract metadata from pyproject.toml ──
+          TOML="${SERVER_DIR}/pyproject.toml"
+          DESCRIPTION=$(grep '^description' "$TOML" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          PYTHON_REQ=$(grep 'requires-python' "$TOML" | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo ">=3.12")
+          LICENSE=$(grep -A1 '^\[project\]' "$TOML" | grep 'license' | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "Apache-2.0")
+
+          # ── Extract dependencies ──
+          DEPS=$(sed -n '/^dependencies/,/^\[/p' "$TOML" | grep '"' | sed 's/.*"\(.*\)".*/\1/' | head -10)
+          DEPS_LIST=""
+          while IFS= read -r dep; do
+            [ -z "$dep" ] && continue
+            # Extract just the package name (before any version specifier)
+            PKG_NAME=$(echo "$dep" | sed 's/[><=!;].*//' | xargs)
+            DEPS_LIST="${DEPS_LIST}\n| \`${PKG_NAME}\` | \`${dep}\` |"
+          done <<< "$DEPS"
+
+          # ── Count available MCP tools ──
+          TOOL_COUNT=0
+          if [ -d "${SERVER_DIR}" ]; then
+            TOOL_COUNT=$(grep -r '^\s*async def [a-z]' "${SERVER_DIR}" --include="*_tools.py" 2>/dev/null \
+              | grep -v '__\|_register\|setup\|_helper\|_build\|_parse\|_validate\|_format\|_coerce\|_ensure' \
+              | wc -l | xargs || echo "0")
+          fi
+
+          # ── Extract environment variables from Dockerfile ──
+          ENV_TABLE=""
+          DOCKERFILE="${SERVER_DIR}/Dockerfile"
+          if [ -f "$DOCKERFILE" ]; then
+            # Get ENV lines after the "Application" comment block (skip build-stage ENVs)
+            ENV_VARS=$(awk '/^ENV MCP_SERVER_NAME/,0' "$DOCKERFILE" | grep '^ENV ' | grep -v 'UV_\|PIP_\|PATH=' | sed 's/ENV //' | sed 's/ *\\//')
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              VAR_NAME=$(echo "$line" | cut -d'=' -f1)
+              VAR_DEFAULT=$(echo "$line" | cut -d'=' -f2-)
+              ENV_TABLE="${ENV_TABLE}\n| \`${VAR_NAME}\` | \`${VAR_DEFAULT}\` |"
+            done <<< "$ENV_VARS"
+          fi
+
+          # ── Generate artifact checksums ──
+          CHECKSUMS=""
+          for f in dist/*; do
+            HASH=$(sha256sum "$f" | cut -d' ' -f1)
+            FNAME=$(basename "$f")
+            CHECKSUMS="${CHECKSUMS}\n| \`${FNAME}\` | \`${HASH:0:16}…\` |"
+          done
+
+          # ── Determine previous tag for changelog ──
+          PREV_TAG=$(git tag --list "${SERVER_NAME}/v*" --sort=-version:refname | grep -v "v${VERSION}" | head -1 || true)
+          CHANGELOG=""
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log --oneline "${PREV_TAG}..HEAD" -- "${SERVER_DIR}" 2>/dev/null | head -15)
+            if [ -n "$COMMITS" ]; then
+              CHANGELOG="### 📝 Changes since \`${PREV_TAG}\`\n\n"
+              while IFS= read -r commit; do
+                [ -z "$commit" ] && continue
+                CHANGELOG="${CHANGELOG}- ${commit}\n"
+              done <<< "$COMMITS"
+            fi
+          fi
+
+          # ── Compose the release body ──
+          cat > /tmp/release_body.md << RELEASE_EOF
+          ## 📦 ${PYPI_NAME} v${VERSION}
+
+          > ${DESCRIPTION}
+
+          ---
+
+          ### ⚡ Quick Start
+
+          \`\`\`bash
+          # Install via pip
+          pip install ${PYPI_NAME}==${VERSION}
+
+          # Install via uv (recommended)
+          uv pip install ${PYPI_NAME}==${VERSION}
+
+          # Run instantly without installing
+          uvx ${PYPI_NAME}
+          \`\`\`
+
+          ---
+
+          ### 🔌 MCP Client Configuration
+
+          **Claude Desktop / Cursor / Windsurf** — add to your \`mcp.json\`:
+          \`\`\`json
+          {
+            "mcpServers": {
+              "${SERVER_NAME}": {
+                "command": "uvx",
+                "args": ["${PYPI_NAME}"]
+              }
+            }
+          }
+          \`\`\`
+
+          **HTTP Mode** (for remote agents / multi-tenant setups):
+          \`\`\`bash
+          MCP_TRANSPORT=http PORT=8767 ${SERVER_NAME}
+          \`\`\`
+
+          ---
+
+          ### 🛠 Available Tools
+
+          This server exposes **${TOOL_COUNT}** MCP tools. See the [full documentation](https://github.com/talkops-ai/talkops-mcp/tree/main/src/${SERVER_NAME}#tools) for details.
+
+          ---
+
+          ### ⚙️ Environment Variables
+
+          | Variable | Default |
+          |----------|---------|$(echo -e "${ENV_TABLE}")
+
+          ---
+
+          $(echo -e "${CHANGELOG}")
+
+          ### 📋 Package Details
+
+          | | |
+          |---|---|
+          | **PyPI** | [\`${PYPI_NAME}\`](https://pypi.org/project/${PYPI_NAME}/${VERSION}/) |
+          | **Version** | \`${VERSION}\` |
+          | **Python** | \`${PYTHON_REQ}\` |
+          | **License** | ${LICENSE} |
+          | **Transport** | stdio (default), HTTP, SSE |
+
+          <details>
+          <summary>📦 Dependencies</summary>
+
+          | Package | Requirement |
+          |---------|-------------|$(echo -e "${DEPS_LIST}")
+
+          </details>
+
+          <details>
+          <summary>🔒 Artifact Checksums (SHA-256)</summary>
+
+          | File | SHA-256 (truncated) |
+          |------|---------------------|$(echo -e "${CHECKSUMS}")
+
+          </details>
+
+          ---
+
+          ### 🔗 Links
+
+          - 📦 [PyPI Package](https://pypi.org/project/${PYPI_NAME}/${VERSION}/)
+          - 📖 [Documentation](https://github.com/talkops-ai/talkops-mcp/tree/main/src/${SERVER_NAME})
+          - 🐳 [Docker Image](https://github.com/talkops-ai/talkops-mcp/tree/main/src/${SERVER_NAME}/Dockerfile)
+          - 🐛 [Report an Issue](https://github.com/talkops-ai/talkops-mcp/issues/new?labels=${SERVER_NAME}&title=[${SERVER_NAME}]+v${VERSION}:+)
+          RELEASE_EOF
+
+          # Remove leading whitespace from heredoc indentation
+          sed -i 's/^          //' /tmp/release_body.md
+
+          echo "✅ Release notes generated"
+          cat /tmp/release_body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.meta.outputs.server_name }}/v${{ needs.meta.outputs.version }}
           name: "${{ needs.meta.outputs.server_name }} v${{ needs.meta.outputs.version }}"
-          body: |
-            ## 📦 ${{ needs.meta.outputs.server_name }} v${{ needs.meta.outputs.version }}
-
-            ### Install
-
-            ```bash
-            # pip
-            pip install ${{ needs.meta.outputs.pypi_name }}==${{ needs.meta.outputs.version }}
-
-            # uv
-            uv pip install ${{ needs.meta.outputs.pypi_name }}==${{ needs.meta.outputs.version }}
-
-            # uvx (run without installing)
-            uvx ${{ needs.meta.outputs.pypi_name }}
-            ```
-
-            ### Run
-
-            ```bash
-            # stdio mode (default — for MCP clients)
-            ${{ needs.meta.outputs.server_name }}
-
-            # HTTP mode
-            MCP_TRANSPORT=http ${{ needs.meta.outputs.server_name }}
-            ```
-
-            ### Links
-            - [PyPI](https://pypi.org/project/${{ needs.meta.outputs.pypi_name }}/${{ needs.meta.outputs.version }}/)
-            - [Documentation](https://github.com/talkops-ai/talkops-mcp/tree/main/src/${{ needs.meta.outputs.server_name }})
+          body_path: /tmp/release_body.md
           files: dist/*
           draft: false
           prerelease: false
