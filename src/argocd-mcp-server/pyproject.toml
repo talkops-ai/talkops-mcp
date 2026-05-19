@@ -1,6 +1,6 @@
 [project]
 name = "talkops-argocd-mcp-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Model Context Protocol (MCP) server for managing Kubernetes applications and resources via ArgoCD using GitOps principles."
 readme = "README.md"
 license = {text = "Apache-2.0"}
