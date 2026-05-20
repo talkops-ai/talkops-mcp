@@ -1,0 +1,137 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TalkOps MCP Server — CI Pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+# Runs on: PRs + pushes to main
+# Detects which servers changed, runs tests + build validation only for those
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: "🔍 CI"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Step 1: Detect which servers changed ───────────────────────────────
+  detect-changes:
+    name: "🔎 Detect Changes"
+    runs-on: ubuntu-latest
+    outputs:
+      servers: ${{ steps.changes.outputs.servers }}
+      has_changes: ${{ steps.changes.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for diff
+
+      - name: Detect changed servers
+        id: changes
+        run: |
+          # Compare against base branch (PR) or previous commit (push)
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+
+          # Get list of changed directories under src/
+          CHANGED_DIRS=$(git diff --name-only "$BASE" HEAD -- src/ \
+            | cut -d/ -f1-2 \
+            | sort -u \
+            | grep '^src/' \
+            | sed 's|^src/||')
+
+          # Filter to only publishable servers (exclude agents-mcp-server, terraform-mcp-server)
+          PUBLISHABLE_SERVERS=(
+            "prometheus-mcp-server"
+            "alertmanager-mcp-server"
+            "helm-mcp-server"
+            "argocd-mcp-server"
+            "argo-rollout-mcp-server"
+            "traefik-mcp-server"
+          )
+
+          SERVERS="[]"
+          for DIR in $CHANGED_DIRS; do
+            for PUB in "${PUBLISHABLE_SERVERS[@]}"; do
+              if [ "$DIR" = "$PUB" ]; then
+                SERVERS=$(echo "$SERVERS" | jq -c ". + [\"$DIR\"]")
+              fi
+            done
+          done
+
+          echo "servers=${SERVERS}" >> "$GITHUB_OUTPUT"
+
+          if [ "$SERVERS" = "[]" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️  No publishable server changes detected"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "🔄 Changed servers: ${SERVERS}"
+          fi
+
+  # ── Step 2: Test + Build matrix ────────────────────────────────────────
+  test-build:
+    name: "🧪 ${{ matrix.server }}"
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        server: ${{ fromJSON(needs.detect-changes.outputs.servers) }}
+    defaults:
+      run:
+        working-directory: src/${{ matrix.server }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Lint (pyright)
+        run: |
+          if uv run pyright --version 2>/dev/null; then
+            uv run pyright .
+          else
+            echo "⚠️  pyright not in dev dependencies — skipping"
+          fi
+        continue-on-error: true
+
+      - name: Test
+        run: |
+          if [ -d "tests" ] && [ "$(find tests -name 'test_*.py' -o -name '*_test.py' | head -1)" ]; then
+            uv run pytest tests/ -v --tb=short
+          else
+            echo "⚠️  No tests found — skipping"
+          fi
+
+      - name: Build validation
+        run: |
+          uv build
+          echo "📦 Build artifacts:"
+          ls -lh dist/
+          echo "✅ Build successful"

@@ -11,32 +11,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import click
+"""Package entry point for `python -m terraform_mcp_server`."""
 
-from terraform_mcp_server.server import main as server_main
-
-
-@click.command()
-@click.option(
-    '--host',
-    'host',
-    default='localhost',
-    help='Host on which the server is started or the client connects to',
-)
-@click.option(
-    '--port',
-    'port',
-    default=8000,
-    help='Port on which the server is started or the client connects to',
-)
-@click.option(
-    '--transport',
-    'transport',
-    default='sse',
-    help='MCP Transport',
-)
-def main(host, port, transport) -> None:
-    server_main(host, port, transport)
+import sys
+from terraform_mcp_server.main import main
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

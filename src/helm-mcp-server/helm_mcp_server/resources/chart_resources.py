@@ -3,7 +3,7 @@
 import json
 import asyncio
 from typing import List, Optional
-from mcp.types import Resource, TextContent
+from mcp.types import Resource
 from helm_mcp_server.exceptions import HelmResourceError, HelmResourceNotFoundError, HelmOperationError
 from helm_mcp_server.resources.base import BaseResource
 
@@ -30,19 +30,13 @@ class ChartResources(BaseResource):
                 
                 return [
                     Resource(
-                        uri=f"helm://charts/{chart.get('repository', 'bitnami')}/{chart.get('name', 'unknown')}",
+                        uri=f"helm://charts/{chart.get('repository', 'bitnami')}/{chart.get('name', 'unknown')}",  # type: ignore[arg-type]
                         name=f"Chart: {chart.get('name', 'unknown')}",
                         description=f"Helm chart {chart.get('name', 'unknown')} from {chart.get('repository', 'bitnami')} repository",
                         mimeType="application/json",
-                        contents=[
-                            TextContent(
-                                type="text",
-                                text=json.dumps(chart, indent=2),
-                                mimeType="application/json"
-                            )
-                        ]
                     )
                     for chart in charts
+                    if isinstance(chart, dict)  # guard against str return
                 ]
             except Exception as e:
                 # Return empty list on error
@@ -121,4 +115,3 @@ class ChartResources(BaseResource):
                 raise
             except Exception as e:
                 raise HelmResourceError(f"Failed to get chart README: {str(e)}")
-

@@ -2,7 +2,7 @@
 
 import json
 from typing import List, Optional
-from mcp.types import Resource, TextContent
+from mcp.types import Resource
 from helm_mcp_server.exceptions import HelmResourceError, HelmResourceNotFoundError
 from helm_mcp_server.resources.base import BaseResource
 
@@ -29,17 +29,10 @@ class HelmResources(BaseResource):
 
             return [
                 Resource(
-                    uri=f"helm://releases/{rel['name']}",
+                    uri=f"helm://releases/{rel['name']}",  # type: ignore[arg-type]
                     name=f"Release: {rel['name']}",
                     description=f"Helm release {rel['name']} in namespace {rel.get('namespace', 'default')}",
                     mimeType="application/json",
-                    contents=[
-                        TextContent(
-                            type="text",
-                            text=json.dumps(rel, indent=2),
-                            mimeType="application/json"
-                        )
-                    ]
                 )
                 for rel in releases
             ]
@@ -87,4 +80,3 @@ class HelmResources(BaseResource):
                 raise
             except Exception as e:
                 raise HelmResourceNotFoundError(f"Release not found: {release_name}")
-

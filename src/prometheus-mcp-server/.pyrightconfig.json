@@ -1,0 +1,22 @@
+{
+    "include": [
+        "prometheus_mcp_server",
+        "tests",
+        "scripts"
+    ],
+    "exclude": [
+        "**/__pycache__",
+        ".venv",
+        "build",
+        "dist",
+        "docs",
+        "reference"
+    ],
+    "extraPaths": [
+        "."
+    ],
+    "venvPath": ".",
+    "venv": ".venv",
+    "pythonVersion": "3.12",
+    "typeCheckingMode": "basic"
+}

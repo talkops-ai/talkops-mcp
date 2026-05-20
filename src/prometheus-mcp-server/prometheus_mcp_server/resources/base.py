@@ -1,0 +1,19 @@
+"""Base class for all resources."""
+
+from abc import ABC, abstractmethod
+from typing import Any, Dict
+
+from prometheus_mcp_server.services.prometheus_service import PrometheusService
+
+
+class BaseResource(ABC):
+    """Abstract base class for all resources."""
+
+    prometheus_service: PrometheusService
+
+    def __init__(self, service_locator: Dict[str, Any]):
+        self.prometheus_service = service_locator.get('prometheus_service')  # type: ignore[assignment]
+
+    @abstractmethod
+    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
+        pass

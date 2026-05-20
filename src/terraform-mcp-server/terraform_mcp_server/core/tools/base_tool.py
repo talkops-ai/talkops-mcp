@@ -27,7 +27,7 @@ from typing import Dict, Any, Optional, Type, Union
 from dataclasses import asdict
 
 from pydantic import BaseModel, ValidationError
-from mcp.server.fastmcp import FastMCP, Context
+from fastmcp import FastMCP, Context
 
 logger = logging.getLogger(__name__)
 

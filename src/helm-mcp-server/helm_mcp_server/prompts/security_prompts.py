@@ -1,6 +1,7 @@
 """Security-related prompts."""
 
-from mcp.types import Prompt, PromptMessage, TextContent
+from typing import List
+from mcp.types import PromptMessage, TextContent
 from helm_mcp_server.prompts.base import BasePrompt
 
 
@@ -10,22 +11,21 @@ class SecurityPrompts(BasePrompt):
     def register(self, mcp_instance) -> None:
         """Register prompts with FastMCP."""
         
-        @mcp_instance.prompt()
-        def helm_security_checklist() -> Prompt:
+        @mcp_instance.prompt(
+            name="helm-security-checklist",
+            description="Security considerations for Helm deployments",
+        )
+        def helm_security_checklist() -> List[PromptMessage]:
             """Security considerations for Helm deployments.
             
             This prompt provides a comprehensive security checklist for Helm chart deployments.
             """
-            return Prompt(
-                name="helm-security-checklist",
-                description="Security considerations for Helm deployments",
-                arguments=[],
-                messages=[
-                    PromptMessage(
-                        role="user",
-                        content=TextContent(
-                            type="text",
-                            text="""# Helm Security Checklist
+            return [
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text="""# Helm Security Checklist
 
 ## Pre-Deployment Security
 
@@ -128,8 +128,6 @@ class SecurityPrompts(BasePrompt):
 - ❌ Not updating dependencies
 - ❌ Ignoring security advisories
 - ❌ Over-privileged service accounts"""
-                        )
                     )
-                ]
-            )
-
+                )
+            ]

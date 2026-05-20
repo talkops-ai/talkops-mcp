@@ -28,6 +28,21 @@ The vision for TalkOps MCP Servers is to offer a **modular, extensible, and unif
 
 ---
 
+## Installation
+
+Every TalkOps MCP server can be installed in **three ways**:
+
+| Method | Command | Best for |
+|--------|---------|----------|
+| **pip** | `pip install talkops-<server-name>` | Quick local setup |
+| **uv** | `uv pip install talkops-<server-name>` | Fast, modern Python |
+| **uvx** | `uvx talkops-<server-name>` | Run without installing |
+| **Docker** | `docker run talkopsai/<server-name>:latest` | Production / HTTP mode |
+
+After installation, each server provides a CLI command (e.g., `prometheus-mcp-server`) that runs in **stdio mode** by default or **HTTP mode** with `MCP_TRANSPORT=http`.
+
+---
+
 ## Available MCP Servers
 
 Each table lists MCP servers by DevOps domain. Use **Quick Install** for the recommended setup (Docker preferred; CLI if no Docker), **README** for full documentation, and **Config** for MCP client configuration in that server's README.
@@ -37,22 +52,31 @@ Each table lists MCP servers by DevOps domain. Use **Quick Install** for the rec
 
 | Server Name | Description | Quick Install | README | Config | Video |
 |-------------|-------------|---------------|--------|--------|-------|
-| [Helm MCP Server](src/helm-mcp-server) | Search charts, install/upgrade/rollback releases, validate manifests, monitor deployments. Full Helm lifecycle with dry-run and multi-cluster support. | `docker run -p 8765:8765 -v ~/.kube/config:/app/.kube/config:ro talkopsai/helm-mcp-server:latest` | [README](src/helm-mcp-server/README.md) | [Config](src/helm-mcp-server/README.md#quick-start-with-docker-recommended) | [▶ Watch](https://youtu.be/efU7TatQCqI?si=YYZC9BvBqmeq93_x) |
+| [Helm MCP Server](src/helm-mcp-server) | Search charts, install/upgrade/rollback releases, validate manifests, monitor deployments. Full Helm lifecycle with dry-run and multi-cluster support. | `pip install talkops-helm-mcp-server`<br>or<br>`docker run -p 8765:8765 -v ~/.kube/config:/app/.kube/config:ro talkopsai/helm-mcp-server:latest` | [README](src/helm-mcp-server/README.md) | [Config](src/helm-mcp-server/README.md#quick-start-with-docker-recommended) | [▶ Watch](https://youtu.be/efU7TatQCqI?si=YYZC9BvBqmeq93_x) |
 
 <a id="cicd--gitops"></a>
 ### 🚀 CI/CD & GitOps
 
 | Server Name | Description | Quick Install | README | Config | Video |
 |-------------|-------------|---------------|--------|--------|-------|
-| [ArgoCD MCP Server](src/argocd-mcp-server) | Manage ArgoCD applications, sync deployments, onboard repositories, create projects, debug with guided workflows. GitOps with credential isolation. | `docker run -p 8770:8770 -e ARGOCD_SERVER_URL=... -e ARGOCD_AUTH_TOKEN=... -e MCP_ALLOW_WRITE=true talkopsai/argocd-mcp-server:latest` | [README](src/argocd-mcp-server/README.md) | [Config](src/argocd-mcp-server/README.md#configuration) | [▶ Overview](https://youtu.be/5V0wo4jkUtQ)<br>[▶ Demo](https://youtu.be/gfMLUK9YcGc) |
-| [Argo Rollout MCP Server](src/argo-rollout-mcp-server) | Convert K8s Deployments to Argo Rollouts, orchestrate canary/blue-green deployments, promote/pause/abort, integrate AnalysisTemplates. Zero-YAML onboarding with built-in playbooks. | `docker run -p 8768:8768 -v ~/.kube:/app/.kube:ro -e K8S_KUBECONFIG=/app/.kube/config talkopsai/argo-rollout-mcp-server:latest` | [README](src/argo-rollout-mcp-server/README.md) | [Config](src/argo-rollout-mcp-server/README.md#quick-start-with-docker-recommended) | [▶ Quick Walk](https://youtu.be/tPd6i7F8_e4?si=4jJjZzLyb6DD6lDL)<br>[▶ Migration](https://youtu.be/Kb0VNf6uGAs?si=bOGqnETYwDYHLapN)<br>[▶ Canary](https://youtu.be/E7riLSKC8Tg?si=VmD0pecfA19ryE9E)<br>[▶ Blue-Green](https://youtu.be/mb_gUr6KmYE?si=swU-irIyR3UyOZZn)<br>[▶ A/B Testing](https://youtu.be/yEXinOu2718?si=s2FWRNjFcG3W7Myp) |
+| [ArgoCD MCP Server](src/argocd-mcp-server) | Manage ArgoCD applications, sync deployments, onboard repositories, create projects, debug with guided workflows. GitOps with credential isolation. | `pip install talkops-argocd-mcp-server`<br>or<br>`docker run -p 8770:8770 -e ARGOCD_SERVER_URL=... -e ARGOCD_AUTH_TOKEN=... -e MCP_ALLOW_WRITE=true talkopsai/argocd-mcp-server:latest` | [README](src/argocd-mcp-server/README.md) | [Config](src/argocd-mcp-server/README.md#configuration) | [▶ Overview](https://youtu.be/5V0wo4jkUtQ)<br>[▶ Demo](https://youtu.be/gfMLUK9YcGc) |
+| [Argo Rollout MCP Server](src/argo-rollout-mcp-server) | Convert K8s Deployments to Argo Rollouts, orchestrate canary/blue-green deployments, promote/pause/abort, integrate AnalysisTemplates. Zero-YAML onboarding with built-in playbooks. | `pip install talkops-argo-rollout-mcp-server`<br>or<br>`docker run -p 8768:8768 -v ~/.kube:/app/.kube:ro -e K8S_KUBECONFIG=/app/.kube/config talkopsai/argo-rollout-mcp-server:latest` | [README](src/argo-rollout-mcp-server/README.md) | [Config](src/argo-rollout-mcp-server/README.md#quick-start-with-docker-recommended) | [▶ Quick Walk](https://youtu.be/tPd6i7F8_e4?si=4jJjZzLyb6DD6lDL)<br>[▶ Migration](https://youtu.be/Kb0VNf6uGAs?si=bOGqnETYwDYHLapN)<br>[▶ Canary](https://youtu.be/E7riLSKC8Tg?si=VmD0pecfA19ryE9E)<br>[▶ Blue-Green](https://youtu.be/mb_gUr6KmYE?si=swU-irIyR3UyOZZn)<br>[▶ A/B Testing](https://youtu.be/yEXinOu2718?si=s2FWRNjFcG3W7Myp) |
+| [Kargo MCP Server](src/kargo-mcp-server) | Continuous promotion orchestration for Kubernetes with Kargo. Manage stages, promotions, freight, and warehouses. | `docker run talkopsai/kargo-mcp-server:latest` | [README](src/kargo-mcp-server/README.md) | [Config](src/kargo-mcp-server/README.md#configuration) | — |
+
+<a id="observability--monitoring"></a>
+### 📊 Observability & Monitoring
+
+| Server Name | Description | Quick Install | README | Config | Video |
+|-------------|-------------|---------------|--------|--------|-------|
+| [Prometheus MCP Server](src/prometheus-mcp-server) | AI-native Prometheus observability — query metrics, manage alerting rules, analyze cardinality, deploy exporters, configure ServiceMonitors and Probes. | `pip install talkops-prometheus-mcp-server`<br>or<br>`docker run -p 8767:8767 talkopsai/prometheus-mcp-server:latest` | [README](src/prometheus-mcp-server/README.md) | [Config](src/prometheus-mcp-server/README.md#configuration) | — |
+| [Alertmanager MCP Server](src/alertmanager-mcp-server) | AI-native alert management — list/silence/route alerts, audit routing, manage silences with safety guardrails. | `pip install talkops-alertmanager-mcp-server`<br>or<br>`docker run -p 8769:8769 talkopsai/alertmanager-mcp-server:latest` | [README](src/alertmanager-mcp-server/README.md) | [Config](src/alertmanager-mcp-server/README.md#configuration) | — |
 
 <a id="integration--traffic"></a>
 ### 📡 Integration & Traffic
 
 | Server Name | Description | Quick Install | README | Config | Video |
 |-------------|-------------|---------------|--------|--------|-------|
-| [Traefik MCP Server](src/traefik-mcp-server) | Manage K8s traffic via Traefik: weighted canary routing, traffic mirroring, NGINX-to-Traefik migration, rate limit and circuit breaker middlewares. Works with Argo Rollouts for progressive delivery. | `docker run -p 8769:8769 -v ~/.kube/config:/app/.kube/config:ro talkopsai/traefik-mcp-server:latest` | [README](src/traefik-mcp-server/README.md) | [Config](src/traefik-mcp-server/README.md#quick-start-with-docker-recommended) | — |
+| [Traefik MCP Server](src/traefik-mcp-server) | Manage K8s traffic via Traefik: weighted canary routing, traffic mirroring, NGINX-to-Traefik migration, rate limit and circuit breaker middlewares. Works with Argo Rollouts for progressive delivery. | `pip install talkops-traefik-mcp-server`<br>or<br>`docker run -p 8769:8769 -v ~/.kube/config:/app/.kube/config:ro talkopsai/traefik-mcp-server:latest` | [README](src/traefik-mcp-server/README.md) | [Config](src/traefik-mcp-server/README.md#quick-start-with-docker-recommended) | — |
 
 <a id="cloud-orchestration--infrastructure"></a>
 ### 🏗️ Cloud Orchestration & Infrastructure
@@ -67,6 +91,7 @@ Each table lists MCP servers by DevOps domain. Use **Quick Install** for the rec
 | Server Name | Description | Quick Install | README | Config | Video |
 |-------------|-------------|---------------|--------|--------|-------|
 | [Agents Central Registry](src/agents-mcp-server) | Discovery hub for Google A2A agents and MCP servers. Natural language queries, capability matching, real-time registry updates. | `cd src/agents-mcp-server && uv pip install -e . && uv run -m agents_mcp_server` | [README](src/agents-mcp-server/README.md) | [Config](src/agents-mcp-server/README.md#mcp-client-configuration) | — |
+
 
 ---
 

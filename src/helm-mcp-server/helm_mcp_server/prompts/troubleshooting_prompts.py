@@ -1,6 +1,7 @@
 """Troubleshooting-related prompts."""
 
-from mcp.types import Prompt, PromptArgument, PromptMessage, TextContent
+from typing import List
+from mcp.types import PromptMessage, TextContent
 from helm_mcp_server.prompts.base import BasePrompt
 
 
@@ -10,8 +11,11 @@ class TroubleshootingPrompts(BasePrompt):
     def register(self, mcp_instance) -> None:
         """Register prompts with FastMCP."""
         
-        @mcp_instance.prompt()
-        def helm_troubleshooting_guide(error_type: str) -> Prompt:
+        @mcp_instance.prompt(
+            name="helm-troubleshooting-guide",
+            description="Troubleshooting guide for common Helm issues",
+        )
+        def helm_troubleshooting_guide(error_type: str) -> List[PromptMessage]:
             """Troubleshooting guide for common Helm issues.
             
             Arguments:
@@ -143,21 +147,9 @@ No specific guide found for '{error_type}'.
 For more specific guidance, try one of the above error types."""
             )
             
-            return Prompt(
-                name="helm-troubleshooting-guide",
-                description="Troubleshooting guide for common Helm issues",
-                arguments=[
-                    PromptArgument(
-                        name="error_type",
-                        description="Type of error encountered (e.g., pod-crashloop, pending, connection, image-pull, helm-error)",
-                        required=True
-                    )
-                ],
-                messages=[
-                    PromptMessage(
-                        role="user",
-                        content=TextContent(type="text", text=content)
-                    )
-                ]
-            )
-
+            return [
+                PromptMessage(
+                    role="user",
+                    content=TextContent(type="text", text=content)
+                )
+            ]

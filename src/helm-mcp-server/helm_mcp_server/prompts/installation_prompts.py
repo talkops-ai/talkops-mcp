@@ -1,6 +1,7 @@
 """Installation-related prompts."""
 
-from mcp.types import Prompt, PromptMessage, TextContent
+from typing import List
+from mcp.types import PromptMessage, TextContent
 from helm_mcp_server.prompts.base import BasePrompt
 
 
@@ -10,22 +11,21 @@ class InstallationPrompts(BasePrompt):
     def register(self, mcp_instance) -> None:
         """Register prompts with FastMCP."""
         
-        @mcp_instance.prompt()
-        def helm_installation_guidelines() -> Prompt:
+        @mcp_instance.prompt(
+            name="helm-installation-guidelines",
+            description="Best practices for Helm chart installation",
+        )
+        def helm_installation_guidelines() -> List[PromptMessage]:
             """Helm installation guidelines and best practices.
             
             This prompt provides guidelines for safe Helm chart installation.
             """
-            return Prompt(
-                name="helm-installation-guidelines",
-                description="Best practices for Helm chart installation",
-                arguments=[],  # No arguments required
-                messages=[
-                    PromptMessage(
-                        role="user",
-                        content=TextContent(
-                            type="text",
-                            text="""# Helm Installation Best Practices
+            return [
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text="""# Helm Installation Best Practices
 
 ## Pre-Installation Checklist
 - [ ] Verify cluster connectivity and permissions
@@ -64,8 +64,6 @@ class InstallationPrompts(BasePrompt):
 - Set up monitoring and alerts
 - Document the installation
 - Create runbook for maintenance"""
-                        )
                     )
-                ]
-            )
-
+                )
+            ]

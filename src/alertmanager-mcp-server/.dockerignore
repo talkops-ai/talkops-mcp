@@ -1,0 +1,50 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# IDE and Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Tests and Coverage
+.tox/
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Project specific
+tests/
+reference/
+docs/
+logs/
+*.log

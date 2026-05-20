@@ -23,7 +23,7 @@ class ChartManagementTools(BaseTool):
             dry_run: bool = Field(default=False, description='Perform dry-run without installing'),
             skip_crds: bool = Field(default=False, description='Skip CRD installation (useful when CRDs already exist)'),
             extra_args: Optional[List[str]] = Field(default=None, description='Extra CLI flags to pass to helm install (e.g., --set-string)'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Install a Helm chart to Kubernetes cluster.
             
@@ -254,7 +254,7 @@ class ChartManagementTools(BaseTool):
             namespace: str = Field(default='default', description='Kubernetes namespace'),
             values: dict = Field(default_factory=dict, description='Chart values dictionary (will be written to temp file)'),
             extra_args: Optional[List[str]] = Field(default=None, description='Extra CLI flags to pass to helm upgrade (e.g., --version, --set-string)'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Upgrade an existing Helm release.
             
@@ -315,7 +315,7 @@ class ChartManagementTools(BaseTool):
             release_name: str = Field(..., min_length=1, description='Release name to rollback'),
             namespace: str = Field(default='default', description='Kubernetes namespace'),
             revision: Optional[int] = Field(default=None, description='Specific revision number (if None, rolls back to previous)'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Rollback a Helm release to a previous revision.
             
@@ -375,7 +375,7 @@ class ChartManagementTools(BaseTool):
         async def helm_uninstall_release(
             release_name: str = Field(..., min_length=1, description='Release name to uninstall'),
             namespace: str = Field(default='default', description='Kubernetes namespace'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Uninstall a Helm release.
             
@@ -434,7 +434,7 @@ class ChartManagementTools(BaseTool):
             skip_crds: bool = Field(default=False, description='Skip CRD installation (useful when CRDs already exist)'),
             extra_args: Optional[List[str]] = Field(default=None, description='Extra CLI flags to pass to helm install (e.g., --set-string)'),
             include_full: bool = Field(default=False, description='Include full Helm output (default: False to save tokens, only summary included)'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Perform a dry-run of Helm installation (preview without installing).
             
