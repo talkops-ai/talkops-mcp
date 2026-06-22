@@ -61,5 +61,6 @@ testpaths = ["tests"]
 
 [tool.pyright]
 exclude = [
-    "reference"
+    "reference",
+    ".venv"
 ]
