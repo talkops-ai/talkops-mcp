@@ -12,6 +12,7 @@ on:
     tags:
       # Matches tags like: prometheus-mcp-server/v0.1.0, helm-mcp-server/v0.2.0
       - "*/v*"
+  workflow_dispatch:
 
 # Cancel in-flight runs for the same tag
 concurrency:
