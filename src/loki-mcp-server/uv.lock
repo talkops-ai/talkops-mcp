@@ -1154,7 +1154,7 @@ wheels = [
 
 [[package]]
 name = "talkops-loki-mcp-server"
-version = "0.1.7"
+version = "0.1.12"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },

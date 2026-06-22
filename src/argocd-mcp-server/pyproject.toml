@@ -38,8 +38,8 @@ Changelog = "https://github.com/talkops-ai/talkops-mcp/releases"
 [project.scripts]
 argocd-mcp-server = "argocd_mcp_server.main:cli"
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = []
 
 [build-system]
 requires = ["hatchling"]

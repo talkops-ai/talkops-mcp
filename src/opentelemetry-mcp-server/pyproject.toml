@@ -49,8 +49,8 @@ Changelog = "https://github.com/talkops-ai/talkops-mcp/releases"
 [project.scripts]
 opentelemetry-mcp-server = "opentelemetry_mcp_server.main:cli"
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pyright>=1.1.409",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",

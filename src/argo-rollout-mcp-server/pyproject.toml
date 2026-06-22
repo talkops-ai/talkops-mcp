@@ -38,8 +38,8 @@ Changelog = "https://github.com/talkops-ai/talkops-mcp/releases"
 [project.scripts]
 argo-rollout-mcp-server = "argo_rollout_mcp_server.main:cli"
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
 ]
