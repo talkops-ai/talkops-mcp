@@ -39,7 +39,7 @@ coverage.xml
 .mypy_cache/
 
 # Logs
-logs/
+/logs/
 *.log
 
 # Docker

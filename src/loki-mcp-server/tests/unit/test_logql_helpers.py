@@ -32,7 +32,7 @@ class TestValidateStreamSelector:
         validate_stream_selector('rate({app="checkout"} [5m])')
 
     def test_no_braces_raises(self):
-        with pytest.raises(LokiValidationError, match="must contain a"):
+        with pytest.raises(LokiValidationError, match="MUST be wrapped in curly braces"):
             validate_stream_selector('rate(app="checkout" [5m])')
 
     def test_unbalanced_braces_raises(self):
