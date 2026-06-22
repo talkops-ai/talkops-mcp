@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger-ui
+  namespace: tempo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger-ui
+  template:
+    metadata:
+      labels:
+        app: jaeger-ui
+    spec:
+      volumes:
+      - name: config
+        configMap:
+          name: tempo-query-config
+      containers:
+      - name: tempo-query-plugin
+        image: grafana/tempo-query:latest
+        command: ["/tempo-query"]
+        args:
+          - "--config=/conf/tempo-query.yaml"
+        volumeMounts:
+        - name: config
+          mountPath: /conf
+      - name: jaeger-ui
+        image: jaegertracing/jaeger-query:latest
+        env:
+        - name: SPAN_STORAGE_TYPE
+          value: grpc
+        - name: GRPC_STORAGE_SERVER
+          value: 127.0.0.1:7777
+        ports:
+        - containerPort: 16686
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-ui
+  namespace: tempo
+spec:
+  selector:
+    app: jaeger-ui
+  ports:
+  - port: 16686
+    targetPort: 16686
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-query-config
+  namespace: tempo
+data:
+  tempo-query.yaml: |
+    backend: "tempo-query-frontend.tempo.svc.cluster.local:3200"

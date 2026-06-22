@@ -1,0 +1,12 @@
+{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {"service_name": "api-gateway"},
+        "value": [1700000000, "42.5"]
+      }
+    ]
+  }
+}

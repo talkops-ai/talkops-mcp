@@ -1,7 +1,11 @@
 """Middleware setup for FastMCP server."""
 
+import json
+import logging
 from collections.abc import Sequence
 from typing import Any
+
+import yaml
 
 from fastmcp import FastMCP
 from fastmcp.server.middleware.logging import StructuredLoggingMiddleware
@@ -23,56 +27,94 @@ from mcp.types import GetPromptResult
 from argo_rollout_mcp_server.config import ServerConfig
 
 
-class RequestResponseTransformationMiddleware(Middleware):
-    """Middleware for transforming requests and responses.
-    
-    This middleware allows you to modify data before it reaches tools
-    or after it leaves them. Example use cases:
-    - Sanitizing input data
-    - Adding metadata to responses
-    - Normalizing data formats
-    - Adding request IDs or correlation IDs
-    
+logger = logging.getLogger(__name__)
+
+
+class JsonCoercionMiddleware(Middleware):
+    """Coerce stringified JSON/YAML arguments into native Python objects.
+
+    LLM agents frequently send ``dict`` and ``list`` tool parameters as
+    JSON or YAML **strings** instead of native objects.  Pydantic rejects
+    these strings, causing the first 2-3 tool calls to fail before the
+    agent discovers the correct format.
+
+    This middleware intercepts ``tools/call`` requests and attempts to
+    parse any string argument that looks like a JSON object/array or YAML
+    mapping/sequence into the corresponding Python type **before**
+    FastMCP's validation layer runs.
+
+    Parse order: ``json.loads`` (fast) → ``yaml.safe_load`` (structured
+    config).  Only ``dict`` and ``list`` results are kept; scalar parses
+    are discarded to avoid false-positive coercions of plain strings.
+
     Following FastMCP middleware patterns from:
     https://gofastmcp.com/servers/middleware
     """
-    
+
+    # Characters that hint the string is structured data.
+    _STRUCTURAL_CHARS = frozenset("{[")
+
+    # ── helpers ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _try_parse(value: str) -> Any:
+        """Try JSON then YAML; return parsed obj or the original string."""
+        # Fast path: JSON
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, (dict, list)):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Slow path: YAML (only when structural chars are present)
+        try:
+            parsed = yaml.safe_load(value)
+            if isinstance(parsed, (dict, list)):
+                return parsed
+        except yaml.YAMLError:
+            pass
+
+        return value
+
+    # ── middleware hooks ───────────────────────────────────────────────
+
     async def on_call_tool(
         self,
         context: MiddlewareContext[Any],
         call_next: CallNext[Any, ToolResult],
     ) -> ToolResult:
-        """Transform tool call requests and responses."""
-        # Transform request if needed (before execution)
-        # Example: You could modify context.message.params here
-        
-        # Execute the tool
-        result = await call_next(context)
-        
-        # Transform response if needed (after execution)
-        # Example: You could modify result here
-        
-        return result
-    
+        """Coerce stringified JSON/YAML arguments before tool execution."""
+        arguments = getattr(context.message, "arguments", None)
+        if arguments and isinstance(arguments, dict):
+            for key, value in list(arguments.items()):
+                if isinstance(value, str) and value and value[0] in self._STRUCTURAL_CHARS:
+                    coerced = self._try_parse(value)
+                    if coerced is not value:
+                        logger.debug(
+                            "JsonCoercionMiddleware: coerced arg '%s' from str → %s",
+                            key,
+                            type(coerced).__name__,
+                        )
+                        arguments[key] = coerced
+
+        return await call_next(context)
+
     async def on_read_resource(
         self,
         context: MiddlewareContext[Any],
         call_next: CallNext[Any, Sequence[ReadResourceContents]],
     ) -> Sequence[ReadResourceContents]:
-        """Transform resource read requests and responses."""
-        result = await call_next(context)
-        # Transform resource response if needed
-        return result
-    
+        """Pass-through for resource reads (no coercion needed)."""
+        return await call_next(context)
+
     async def on_get_prompt(
         self,
         context: MiddlewareContext[Any],
         call_next: CallNext[Any, GetPromptResult],
     ) -> GetPromptResult:
-        """Transform prompt get requests and responses."""
-        result = await call_next(context)
-        # Transform prompt response if needed
-        return result
+        """Pass-through for prompt gets (no coercion needed)."""
+        return await call_next(context)
 
 
 def setup_middleware(mcp: FastMCP, config: ServerConfig) -> None:
@@ -80,7 +122,7 @@ def setup_middleware(mcp: FastMCP, config: ServerConfig) -> None:
     
     Middleware order matters - they execute in the order added:
     1. Error Handling - catches and transforms errors first
-    2. Request/Response Transformation - modifies data before/after execution
+    2. JSON Coercion - coerces stringified JSON/YAML arguments
     3. Caching - checks cache before execution  
     4. Logging - tracks all operations
     5. Timing - measures performance
@@ -96,8 +138,8 @@ def setup_middleware(mcp: FastMCP, config: ServerConfig) -> None:
         transform_errors=True,
     ))
     
-    # 2. Request/Response Transformation - Modify data before it reaches tools or after it leaves
-    mcp.add_middleware(RequestResponseTransformationMiddleware())
+    # 2. JSON Coercion - Parse stringified JSON/YAML before Pydantic validation
+    mcp.add_middleware(JsonCoercionMiddleware())
     
     # 3. Caching - Store frequently requested data to improve performance
     # Caches tools/list, resources/list, prompts/list, tools/call, resources/read, prompts/get

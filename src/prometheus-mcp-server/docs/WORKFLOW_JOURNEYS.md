@@ -245,6 +245,7 @@ An AI assistant needs to help a user query Prometheus metrics safely, respecting
 | 3 | Validate query syntax | **Tool**: `prom_validate_promql(backend_id="default", query="rate(...)")` | Returns `{valid: true/false, error: ...}` |
 | 4 | Run instant query | **Tool**: `prom_query_instant(backend_id="default", query="rate(...)")` | Point-in-time vector result |
 | 5 | Run range query | **Tool**: `prom_query_range(backend_id="default", query="rate(...)", start=<unix>, end=<unix>)` | Auto-computes step, downsamples to ~200 pts |
+| 5.1 | Run A2UI chart query | **Tool**: `prom_query_a2ui_chart(..., title="CPU", chart_type="line", y_axis_label="Cores")` | Returns data natively formatted for A2UI dynamic components |
 | 6 | Calculate Latency (Histograms) | **Tool**: `prom_query_range` | Calculate average duration: `sum(rate(duration_sum[5m])) / sum(rate(duration_count[5m]))` |
 
 ### Auto-Step Computation

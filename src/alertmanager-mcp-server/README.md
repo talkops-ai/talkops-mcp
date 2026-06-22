@@ -167,13 +167,13 @@
 
 ```bash
 docker run --rm -it \
-  -p 8768:8768 \
+  -p 8769:8769 \
   -e ALERTMANAGER_BASE_URL=http://host.docker.internal:9093 \
   -e MCP_TRANSPORT=http \
   talkopsai/alertmanager-mcp-server:latest
 ```
 
-The server is now listening on `http://localhost:8768/mcp`.
+The server is now listening on `http://localhost:8769/mcp`.
 
 Point your MCP client at it:
 
@@ -181,7 +181,7 @@ Point your MCP client at it:
 {
   "mcpServers": {
     "alertmanager": {
-      "url": "http://localhost:8768/mcp",
+      "url": "http://localhost:8769/mcp",
       "description": "MCP Server for Alertmanager alert triage, silence management, and routing"
     }
   }
@@ -239,7 +239,7 @@ All configuration is via environment variables (loaded from `.env` via python-do
 | `MCP_SERVER_VERSION` | `0.1.0` | Server version string |
 | `MCP_TRANSPORT` | `stdio` | Transport mode: `http`, `sse`, `streamable-http`, or `stdio` |
 | `MCP_HOST` | `0.0.0.0` | Host address for HTTP server |
-| `MCP_PORT` | `8768` | Port for HTTP server |
+| `MCP_PORT` | `8769` | Port for HTTP server |
 | `MCP_PATH` | `/mcp` | MCP endpoint path |
 | `MCP_LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `MCP_LOG_FORMAT` | `json` | Log format: `json` or `text` |
@@ -468,7 +468,7 @@ If you're considering something bigger, open an issue first so we can align on t
 
 <details>
 <summary><b>Which MCP clients work with this?</b></summary>
-Any MCP-compatible client including Claude Desktop, Cline, Cursor, and custom clients. Connect via <code>http://localhost:8768/mcp</code> for HTTP transport, or configure stdio for direct process communication.
+Any MCP-compatible client including Claude Desktop, Cline, Cursor, and custom clients. Connect via <code>http://localhost:8769/mcp</code> for HTTP transport, or configure stdio for direct process communication.
 </details>
 
 <details>

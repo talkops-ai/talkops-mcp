@@ -1343,6 +1343,46 @@ class HelmService:
             if notes and len(notes) > 500:
                 notes = notes[:500] + '... (truncated)'
             
+            # Fetch user values (what was overridden/chosen)
+            user_values = {}
+            try:
+                values_cmd = ['helm', 'get', 'values', release_name, '-n', namespace, '-o', 'json']
+                values_result = await self._run_helm_command(values_cmd)
+                if values_result:
+                    # Sometimes helm returns null or empty string, fallback to empty dict
+                    user_values = json.loads(values_result) or {}
+            except Exception:
+                pass
+
+            # Attempt to deduce the exact chart URL
+            chart_url = None
+            if chart_name:
+                try:
+                    repo_cmd = ['helm', 'repo', 'list', '-o', 'json']
+                    repo_result = await self._run_helm_command(repo_cmd)
+                    repos = json.loads(repo_result) if repo_result else []
+                    
+                    search_cmd = ['helm', 'search', 'repo', chart_name, '-o', 'json']
+                    search_result = await self._run_helm_command(search_cmd)
+                    charts = json.loads(search_result) if search_result else []
+                    
+                    for c in charts:
+                        c_name = c.get('name', '')
+                        c_version = c.get('version', '')
+                        if c_name.endswith(f"/{chart_name}"):
+                            repo_name = c_name.split('/')[0]
+                            for r in repos:
+                                if r.get('name') == repo_name:
+                                    if not chart_version or c_version == chart_version:
+                                        chart_url = r.get('url')
+                                        break
+                                    elif not chart_url:
+                                        chart_url = r.get('url')
+                            if chart_url and c_version == chart_version:
+                                break
+                except Exception:
+                    pass
+
             # Build filtered response with only essential fields
             filtered_status = {
                 'name': full_status.get('name'),
@@ -1351,10 +1391,12 @@ class HelmService:
                 'status': info.get('status', 'unknown'),
                 'chart': chart_name,
                 'chart_version': chart_version,
+                'chart_url': chart_url,
                 'app_version': app_version,
                 'description': info.get('description', ''),
                 'first_deployed': info.get('first_deployed'),
                 'last_deployed': info.get('last_deployed'),
+                'user_values': user_values,
                 'resource_summary': resource_summary,
                 'resources': resource_details if resource_details else None,
                 'total_resources': total_resources,

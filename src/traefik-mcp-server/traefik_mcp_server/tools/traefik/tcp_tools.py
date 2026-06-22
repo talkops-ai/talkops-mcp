@@ -3,6 +3,7 @@
 from typing import Dict, Any, Optional, List, Literal
 from pydantic import Field
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 
 from traefik_mcp_server.tools.base import BaseTool
 from traefik_mcp_server.exceptions.custom import (
@@ -20,7 +21,15 @@ class TraefikTCPTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register TCP tools with FastMCP."""
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Manage TCP Routing",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def traefik_manage_tcp_routing(
             route_name: str = Field(..., min_length=1, description="IngressRouteTCP name"),
             action: Literal["create", "delete"] = Field(
@@ -58,25 +67,16 @@ class TraefikTCPTools(BaseTool):
             ),
             ctx: Optional[Context] = None,
         ) -> Dict[str, Any]:
-            """Manage TCP routing (IngressRouteTCP) for non-HTTP services.
+            """Manage Traefik TCP routing (IngressRouteTCP) for non-HTTP services.
 
-            Use for PostgreSQL, Redis, MQTT, or other TCP protocols.
+            Use for routing non-HTTP traffic like PostgreSQL, Redis, or MQTT.
             Requires Traefik with IngressRouteTCP CRD installed.
 
-            Args:
-                route_name: IngressRouteTCP name
-                action: create | delete
-                namespace: Kubernetes namespace
-                service_name: Backend service (required for create)
-                service_port: Backend port (default 5432)
-                entry_points: TCP entry points
-                sni_match: HostSNI match (* for catch-all)
-                tls_passthrough: Forward TLS to backend
-                tls_secret_name: TLS secret for termination
-                middlewares: MiddlewareTCP names
-
             Returns:
-                Creation or deletion result
+            - JSON dict with {"status": str, "route_name": str, ...}
+
+            When NOT to use:
+            - For HTTP/HTTPS services → use traefik_manage_simple_route.
             """
             assert self.traefik_service is not None
             assert ctx is not None
@@ -128,7 +128,15 @@ class TraefikTCPTools(BaseTool):
             else:
                 raise ValueError(f"Invalid action: {action}. Use 'create' or 'delete'.")
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Configure TCP Middleware",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def traefik_configure_tcp_middleware(
             middleware_name: str = Field(..., min_length=1, description="MiddlewareTCP name"),
             action: Literal["create", "delete"] = Field(
@@ -146,19 +154,18 @@ class TraefikTCPTools(BaseTool):
             ),
             ctx: Optional[Context] = None,
         ) -> Dict[str, Any]:
-            """Create, update, or delete a MiddlewareTCP for TCP IP restriction (ipAllowList).
+            """Create, update, or delete a MiddlewareTCP for TCP IP restriction.
 
-            Restrict which client IPs can connect to TCP services (e.g. databases).
+            Use to restrict which client IPs can connect to TCP services via
+            ipAllowList (the only supported TCP middleware).
 
-            Args:
-                middleware_name: MiddlewareTCP name
-                action: create or delete
-                middleware_type: ip_allowlist (only supported)
-                namespace: Kubernetes namespace
-                source_ranges: JSON array of allowed IPs/CIDRs
+            **WARNING: Incorrect allowed IPs can block all access.**
 
             Returns:
-                Creation or deletion result
+            - JSON dict with {"status": str, "middleware_name": str, ...}
+
+            When NOT to use:
+            - For HTTP IP whitelisting → use traefik_manage_middleware.
             """
             assert self.traefik_service is not None
             assert ctx is not None

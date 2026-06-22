@@ -1,0 +1,24 @@
+{
+  "apiVersion": "opentelemetry.io/v1beta1",
+  "kind": "OpenTelemetryCollector",
+  "metadata": {
+    "name": "my-collector",
+    "namespace": "observability",
+    "labels": {
+      "app.kubernetes.io/managed-by": "opentelemetry-operator",
+      "app.kubernetes.io/name": "my-collector"
+    },
+    "annotations": {}
+  },
+  "spec": {
+    "mode": "daemonset",
+    "image": "otel/opentelemetry-collector-contrib:0.102.0",
+    "config": "\nreceivers:\n  otlp:\n    protocols:\n      grpc:\n        endpoint: 0.0.0.0:4317\n      http:\n        endpoint: 0.0.0.0:4318\n  filelog:\n    include:\n      - /var/log/pods/*/*/*.log\n    exclude:\n      - /var/log/pods/*/otel-collector/*.log\n    storage: file_storage\n    operators:\n      - type: regex_parser\n        regex: '^(?P<time>[^ ]+) (?P<stream>stdout|stderr) (?P<logtag>[^ ]*) (?P<log>.*)$'\n\nprocessors:\n  memory_limiter:\n    check_interval: 1s\n    limit_percentage: 80\n    spike_limit_percentage: 25\n  k8sattributes:\n    extract:\n      metadata:\n        - k8s.pod.name\n        - k8s.namespace.name\n        - k8s.deployment.name\n      labels:\n        - tag_name: app\n          key: app.kubernetes.io/name\n    pod_association:\n      - sources:\n          - from: resource_attribute\n            name: k8s.pod.ip\n  resourcedetection:\n    detectors: [env, gcp]\n  batch:\n    send_batch_size: 8192\n    timeout: 5s\n  tail_sampling:\n    decision_wait: 10s\n    num_traces: 50000\n    policies:\n      - name: error-sampling\n        type: status_code\n        status_code:\n          status_codes: [ERROR]\n      - name: slow-traces\n        type: latency\n        latency:\n          threshold_ms: 5000\n\nconnectors:\n  spanmetrics:\n    histogram:\n      explicit:\n        buckets: [2, 4, 6, 8, 10, 50, 100, 200, 400, 800, 1000, 5000]\n    dimensions:\n      - name: http.method\n      - name: http.status_code\n      - name: service.name\n    metrics_flush_interval: 15s\n\nexporters:\n  otlp:\n    endpoint: tempo:4317\n    tls:\n      insecure: true\n\nextensions:\n  file_storage:\n    directory: /var/lib/otelcol/storage\n\nservice:\n  extensions: [file_storage]\n  pipelines:\n    traces:\n      receivers: [otlp]\n      processors: [memory_limiter, k8sattributes, tail_sampling, batch]\n      exporters: [spanmetrics, otlp]\n    metrics:\n      receivers: [otlp, spanmetrics]\n      processors: [memory_limiter, k8sattributes, batch]\n      exporters: [otlp]\n    logs:\n      receivers: [filelog]\n      processors: [memory_limiter, k8sattributes, resourcedetection, batch]\n      exporters: [otlp]\n",
+    "replicas": 3
+  },
+  "status": {
+    "replicas": 3,
+    "readyReplicas": 3,
+    "phase": "Running"
+  }
+}

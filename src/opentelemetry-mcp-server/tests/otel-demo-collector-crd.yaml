@@ -1,0 +1,128 @@
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-demo-collector
+  namespace: otel-demo
+  labels:
+    app.kubernetes.io/name: otel-demo-collector
+    app.kubernetes.io/part-of: otel-demo
+spec:
+  mode: daemonset
+  config:
+    connectors:
+      spanmetrics:
+        dimensions:
+          - name: http.method
+          - name: http.status_code
+          - name: rpc.method
+          - name: rpc.service
+        histogram:
+          explicit:
+            buckets: [2ms, 4ms, 6ms, 8ms, 10ms, 50ms, 100ms, 200ms, 400ms, 800ms, 1s, 1400ms, 2s, 5s, 10s, 15s]
+
+    exporters:
+      debug: {}
+      opensearch:
+        http:
+          endpoint: http://opensearch:9200
+          tls:
+            insecure: true
+        logs_index: otel-logs
+      otlp/jaeger:
+        endpoint: jaeger:4317
+        tls:
+          insecure: true
+      otlphttp/prometheus:
+        endpoint: http://prometheus:9090/api/v1/otlp
+        tls:
+          insecure: true
+
+    extensions:
+      health_check:
+        endpoint: "0.0.0.0:13133"
+
+    processors:
+      batch: {}
+      k8sattributes:
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.node.name
+            - k8s.pod.start_time
+            - k8s.deployment.name
+            - k8s.replicaset.name
+            - k8s.daemonset.name
+            - k8s.container.name
+            - container.image.tag
+            - container.image.name
+            - service.name
+            - service.version
+        filter:
+          node_from_env_var: K8S_NODE_NAME
+        passthrough: false
+        pod_association:
+          - sources:
+            - from: resource_attribute
+              name: k8s.pod.ip
+          - sources:
+            - from: resource_attribute
+              name: k8s.pod.uid
+          - sources:
+            - from: connection
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      resource:
+        attributes:
+          - action: insert
+            from_attribute: k8s.pod.uid
+            key: service.instance.id
+      resourcedetection:
+        detectors:
+          - env
+          - system
+      transform:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            statements:
+              - set(span.attributes["http.route"], "/api/cart") where IsMatch(span.attributes["http.target"], "\\/api\\/cart")
+
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"
+      filelog:
+        include:
+          - /var/log/pods/otel-demo_*/*/*.log
+        exclude:
+          - /var/log/pods/otel-demo_otel-collector*/*/*.log
+        include_file_path: true
+        include_file_name: false
+        operators:
+          - id: container-parser
+            type: container
+        storage: file_storage
+
+    service:
+      extensions:
+        - health_check
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resourcedetection, resource, transform, batch]
+          exporters: [otlp/jaeger, spanmetrics]
+        metrics:
+          receivers: [otlp, spanmetrics]
+          processors: [memory_limiter, k8sattributes, resourcedetection, resource, batch]
+          exporters: [otlphttp/prometheus]
+        logs:
+          receivers: [otlp, filelog]
+          processors: [memory_limiter, k8sattributes, resourcedetection, resource, batch]
+          exporters: [opensearch, debug]

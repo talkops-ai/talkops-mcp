@@ -29,6 +29,8 @@ class InstantQueryResult(BasePrometheusModel):
     result: List[InstantSample] = Field(default_factory=list)
     eval_time_seconds: Optional[float] = None
     sample_count: Optional[int] = None
+    truncated: bool = False
+    truncated_at: Optional[int] = None
 
 
 class RangeSeries(BasePrometheusModel):
@@ -54,6 +56,8 @@ class RangeQueryResult(BasePrometheusModel):
 
     series: List[RangeSeries] = Field(default_factory=list)
     downsampling: DownsamplingMetadata = Field(default_factory=DownsamplingMetadata)
+    truncated: bool = False
+    truncated_at: Optional[int] = None
 
 
 class LabelTopologyResult(BasePrometheusModel):

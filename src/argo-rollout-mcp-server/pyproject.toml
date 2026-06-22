@@ -1,6 +1,6 @@
 [project]
 name = "talkops-argo-rollout-mcp-server"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Model Context Protocol (MCP) server for Argo Rollouts progressive delivery — canary, blue-green, and rolling update strategies."
 readme = "README.md"
 license = {text = "Apache-2.0"}

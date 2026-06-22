@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import Field
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 
 from traefik_mcp_server.tools.base import BaseTool
 from traefik_mcp_server.exceptions.custom import (
@@ -20,7 +21,15 @@ class TrafficRoutingTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register tools with FastMCP."""
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Manage Weighted Routing",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def traefik_manage_weighted_routing(
             route_name: str = Field(..., min_length=1, description="Route name"),
             action: Literal["create", "update", "delete", "ensure_backend"] = Field(
@@ -57,7 +66,26 @@ class TrafficRoutingTools(BaseTool):
             ),
             ctx: Optional[Context] = None,
         ) -> Dict[str, Any]:
-            """Weighted canary routing: create (route+TraefikService), update weights, delete, or ensure_backend."""
+            """Create, update, delete, or ensure backend for a Traefik weighted route.
+
+            Use this tool to manage advanced Traefik routing with weighted
+            split (TraefikService) for canary deployments or A/B testing.
+            
+            Actions:
+            - create: Creates IngressRoute + TraefikService (Weighted Round Robin).
+            - ensure_backend: Creates only the TraefikService (WRR backend).
+            - update: Updates weights in existing TraefikService.
+            - delete: Deletes route (use clean_all=True to remove backends).
+
+            **WARNING: Mutates live traffic routing which may cause downtime.**
+
+            Returns:
+            - JSON dict with {"status": str, "route_name": str, ...}
+
+            When NOT to use:
+            - For simple routes without weight split → use traefik_manage_simple_route.
+            - To disable traffic mirroring → use traefik_manage_traffic_mirroring.
+            """
             assert self.traefik_service is not None
             assert ctx is not None
 
@@ -145,7 +173,15 @@ class TrafficRoutingTools(BaseTool):
             except Exception as e:
                 raise TraefikOperationError(f"Route deletion failed: {str(e)}")
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Manage Simple Route",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def traefik_manage_simple_route(
             action: Literal["create", "delete"] = Field(
                 ...,
@@ -165,10 +201,26 @@ class TrafficRoutingTools(BaseTool):
             tls_secret_name: Optional[str] = Field(default=None, description="create only: TLS secret if tls_enabled"),
             ctx: Optional[Context] = None,
         ) -> Dict[str, Any]:
-            """Simple IngressRoute (no TraefikService/WRR): create/update in place, or delete.
+            """Create, update, or delete a simple Traefik IngressRoute.
 
-            create: same route_name patches in place. delete: use instead of traefik_manage_weighted_routing(delete)
-            when there is no companion TraefikService.
+            Use this tool to manage standard routing to Kubernetes Services
+            without TraefikService weighted round robin.
+
+            Actions:
+            - create: Upserts IngressRoute with direct K8s Service refs.
+            - delete: Removes the IngressRoute.
+
+            **WARNING: Mutates live traffic routing which may cause downtime.**
+
+            Args:
+                routes: List of dicts, e.g., [{"match": "PathPrefix(`/`)", "service_name": "app", "service_port": 80}]
+
+            Returns:
+            - JSON dict with {"status": str, "route_name": str, ...}
+
+            When NOT to use:
+            - For weighted canary split → use traefik_manage_weighted_routing.
+            - If a companion TraefikService exists → use traefik_manage_weighted_routing(delete).
             """
             assert self.traefik_service is not None
             assert ctx is not None

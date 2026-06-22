@@ -225,8 +225,14 @@ class PrometheusService:
         query: str,
         ts: Optional[float] = None,
         timeout: Optional[str] = None,
+        max_samples: int = 500,
     ) -> InstantQueryResult:
-        """Execute a PromQL instant query."""
+        """Execute a PromQL instant query.
+
+        Args:
+            max_samples: Cap on returned samples to avoid oversized MCP responses.
+                         Excess samples are dropped and flagged via `truncated=True`.
+        """
         params: Dict[str, Any] = {"query": query}
         if ts is not None:
             params["time"] = ts
@@ -244,6 +250,11 @@ class PrometheusService:
         r_type = payload.get("resultType", "vector")
         raw_result = payload.get("result", [])
 
+        total_count = len(raw_result)
+        truncated: bool = max_samples > 0 and total_count > max_samples
+        if truncated:
+            raw_result = raw_result[:max_samples]
+
         samples: List[InstantSample] = []
         for item in raw_result:
             samples.append(
@@ -257,7 +268,9 @@ class PrometheusService:
             resultType=r_type,
             result=samples,
             eval_time_seconds=eval_time,
-            sample_count=len(samples),
+            sample_count=total_count,
+            truncated=truncated,
+            truncated_at=max_samples if truncated else None,
         )
 
     async def range_query(
@@ -342,7 +355,7 @@ class PrometheusService:
             return ValidatePromQLResult(valid=True, warnings=[str(e)])
 
     async def explore_label_topology(
-        self, backend_id: str, metric_name: str
+        self, backend_id: str, metric_name: str, max_values_per_label: int = 100
     ) -> LabelTopologyResult:
         """Discover label names and values for a given metric."""
         # Get label names for the specific metric using series match
@@ -366,7 +379,10 @@ class PrometheusService:
                 )
                 lv_data = self._parse_json(resp, f"label values for {name}")
                 if lv_data.get("status") == "success":
-                    label_values[name] = lv_data.get("data", [])
+                    values = lv_data.get("data", [])
+                    if max_values_per_label > 0:
+                        values = values[:max_values_per_label]
+                    label_values[name] = values
             except Exception:
                 continue
 

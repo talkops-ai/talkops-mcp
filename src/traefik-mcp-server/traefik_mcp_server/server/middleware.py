@@ -1,4 +1,6 @@
 """Middleware setup for FastMCP server."""
+import json
+import yaml
 
 from collections.abc import Sequence
 from typing import Any
@@ -23,56 +25,53 @@ from mcp.types import GetPromptResult
 from traefik_mcp_server.config import ServerConfig
 
 
-class RequestResponseTransformationMiddleware(Middleware):
-    """Middleware for transforming requests and responses.
+class JsonCoercionMiddleware(Middleware):
+    """Middleware to coerce stringified JSON/YAML arguments into native objects.
     
-    This middleware allows you to modify data before it reaches tools
-    or after it leaves them. Example use cases:
-    - Sanitizing input data
-    - Adding metadata to responses
-    - Normalizing data formats
-    - Adding request IDs or correlation IDs
+    Agents often fail to send proper JSON objects for tool parameters defined as
+    `dict` or `list`, instead sending stringified JSON or YAML. Pydantic validation
+    fails immediately before the tool is even called.
     
-    Following FastMCP middleware patterns from:
-    https://gofastmcp.com/servers/middleware
+    This middleware intercepts the request BEFORE Pydantic validation and attempts
+    to parse any strings that look like JSON objects or arrays into actual Python
+    dicts/lists.
     """
     
+    def _try_parse(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+            
+        stripped = value.strip()
+        # Only attempt to parse things that look like objects or arrays
+        if not (
+            (stripped.startswith('{') and stripped.endswith('}')) or 
+            (stripped.startswith('[') and stripped.endswith(']'))
+        ):
+            return value
+            
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            try:
+                parsed = yaml.safe_load(stripped)
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except yaml.YAMLError:
+                pass
+                
+        return value
+
     async def on_call_tool(
         self,
         context: MiddlewareContext[Any],
         call_next: CallNext[Any, ToolResult],
     ) -> ToolResult:
-        """Transform tool call requests and responses."""
-        # Transform request if needed (before execution)
-        # Example: You could modify context.message.params here
-        
-        # Execute the tool
-        result = await call_next(context)
-        
-        # Transform response if needed (after execution)
-        # Example: You could modify result here
-        
-        return result
-    
-    async def on_read_resource(
-        self,
-        context: MiddlewareContext[Any],
-        call_next: CallNext[Any, Sequence[ReadResourceContents]],
-    ) -> Sequence[ReadResourceContents]:
-        """Transform resource read requests and responses."""
-        result = await call_next(context)
-        # Transform resource response if needed
-        return result
-    
-    async def on_get_prompt(
-        self,
-        context: MiddlewareContext[Any],
-        call_next: CallNext[Any, GetPromptResult],
-    ) -> GetPromptResult:
-        """Transform prompt get requests and responses."""
-        result = await call_next(context)
-        # Transform prompt response if needed
-        return result
+        """Coerce tool arguments before execution."""
+        if hasattr(context.message, 'arguments') and isinstance(context.message.arguments, dict):
+            for key, value in context.message.arguments.items():
+                context.message.arguments[key] = self._try_parse(value)
+                
+        return await call_next(context)
 
 
 def setup_middleware(mcp: FastMCP, config: ServerConfig) -> None:
@@ -97,7 +96,7 @@ def setup_middleware(mcp: FastMCP, config: ServerConfig) -> None:
     ))
     
     # 2. Request/Response Transformation - Modify data before it reaches tools or after it leaves
-    mcp.add_middleware(RequestResponseTransformationMiddleware())
+    mcp.add_middleware(JsonCoercionMiddleware())
     
     # 3. Caching - Store frequently requested data to improve performance
     # Caches tools/list, resources/list, prompts/list, tools/call, resources/read, prompts/get

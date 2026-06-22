@@ -60,9 +60,23 @@ After the user deploys the instrumented application:
 
 ## Phase 4: Configure Prometheus Scraping
 
-1. **Apply ServiceMonitor**:
+> **IMPORTANT**: Use the exact Kubernetes Service name, not the app name.
+> First run: `kubectl get svc -n {namespace}` to verify the real service name.
+> If Prometheus lives in a different namespace (e.g. `monitoring`), use `target_namespace`.
+
+1. **Apply ServiceMonitor** (same namespace):
    ```
    Tool: prom_apply_servicemonitor(namespace="{namespace}", service_name="{service_name}")
+   ```
+
+   **OR cross-namespace** (service in `{namespace}`, Prometheus in `monitoring`):
+   ```
+   Tool: prom_apply_servicemonitor(namespace="monitoring", service_name="{service_name}", target_namespace="{namespace}")
+   ```
+
+   **Cleanup stale monitors** if retrying:
+   ```
+   Tool: prom_delete_servicemonitor(monitor_name="{service_name}-monitor", namespace="monitoring")
    ```
 
 ---

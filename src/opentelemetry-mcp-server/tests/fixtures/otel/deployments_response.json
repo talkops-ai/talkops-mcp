@@ -1,0 +1,38 @@
+[
+  {
+    "name": "frontend-service",
+    "namespace": "default",
+    "labels": {
+      "app": "frontend"
+    },
+    "annotations": {
+      "instrumentation.opentelemetry.io/inject-nodejs": "true"
+    },
+    "replicas": 3,
+    "ready_replicas": 3,
+    "containers": [
+      {
+        "name": "app",
+        "image": "frontend:latest"
+      }
+    ]
+  },
+  {
+    "name": "backend-api",
+    "namespace": "default",
+    "labels": {
+      "app": "backend"
+    },
+    "annotations": {
+      "instrumentation.opentelemetry.io/inject-java": "my-custom-instrumentation"
+    },
+    "replicas": 2,
+    "ready_replicas": 2,
+    "containers": [
+      {
+        "name": "api",
+        "image": "backend:latest"
+      }
+    ]
+  }
+]

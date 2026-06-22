@@ -51,7 +51,9 @@ Load these resources for background context. They are read-only snapshots the ho
 - `prom_verify_exporter` — End-to-end health check for an exporter
 
 ### Scrape Configuration
-- `prom_apply_servicemonitor` — Generate and apply a ServiceMonitor CRD (MUTATES)
+- `prom_apply_servicemonitor` — Generate and apply a ServiceMonitor CRD; supports cross-namespace scraping via `target_namespace` param (MUTATES)
+- `prom_delete_servicemonitor` — Delete a ServiceMonitor CRD by name and namespace (DESTRUCTIVE, idempotent)
+- `prom_apply_probe` — Apply a Blackbox Probe CRD (MUTATES)
 - `prom_manage_file_sd` — Add/remove targets in file_sd_configs (MUTATES)
 
 ### FinOps & Cardinality Optimization
@@ -93,7 +95,10 @@ Load these resources for background context. They are read-only snapshots the ho
 2. `prom_recommend_instrumentation(workload_type=..., language=...)` → choose approach
 3. User deploys instrumented app
 4. `prom_test_endpoint(endpoint_url=...)` → validate /metrics
-5. `prom_apply_servicemonitor(service_name=...)` → wire to Prometheus
+5. `prom_apply_servicemonitor(service_name=..., namespace="monitoring", target_namespace="...")` → wire to Prometheus
+   - **Cross-namespace**: if the service is in namespace X but Prometheus is in Y, set `namespace=Y, target_namespace=X`
+   - **Find exact service name**: use `kubectl get svc -n <target_namespace>` first; auto-discovery depends on the exact K8s service name
+   - **Cleanup stale SMs**: use `prom_delete_servicemonitor` to remove incorrectly created ServiceMonitors before retrying
 6. `prom_query_instant(query="rate(http_requests_total[5m])")` → verify data flows
 
 ### Troubleshooting

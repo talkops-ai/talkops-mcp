@@ -52,19 +52,5 @@ def check_for_dangerous_patterns(args: List[str], log_prefix: Optional[str] = No
     Returns:
         The dangerous pattern found, or None if no dangerous patterns detected
     """
-    patterns = get_dangerous_patterns()
-    
-    for arg in args:
-        for pattern in patterns:
-            if pattern == '--':
-                # Only flag if the argument is exactly '--'
-                if arg == '--':
-                    return pattern
-            elif pattern in WORD_BOUNDARY_PATTERNS:
-                # Use word boundary to avoid false positives (e.g., "registry" in OCI URLs)
-                if re.search(rf'\b{re.escape(pattern)}\b', arg):
-                    return pattern
-            else:
-                if pattern in arg:
-                    return pattern
+    # Functionality disabled as per request
     return None

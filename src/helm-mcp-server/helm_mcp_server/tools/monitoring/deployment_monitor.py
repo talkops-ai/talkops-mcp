@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
+from mcp.types import ToolAnnotations
 from fastmcp import Context
 from helm_mcp_server.exceptions import HelmOperationError
 from helm_mcp_server.tools.base import BaseTool
@@ -13,36 +14,40 @@ class MonitoringTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register tools with FastMCP."""
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Monitor Helm Deployment Health",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def helm_monitor_deployment(
-            release_name: str = Field(..., description='Release name to monitor'),
+            release_name: str = Field(..., description='Release name to monitor (e.g., "my-postgres")'),
             namespace: str = Field(default='default', description='Kubernetes namespace'),
-            max_wait_seconds: int = Field(default=60, description='Maximum time to wait in seconds'),
-            check_interval: int = Field(default=5, description='Interval between checks in seconds'),
+            max_wait_seconds: int = Field(default=60, description='Maximum time to wait in seconds (default: 60)'),
+            check_interval: int = Field(default=5, description='Interval between checks in seconds (default: 5)'),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Monitor deployment health after a Helm install/upgrade.
-            
-            Uses multi-layer health checking:
-            - Helm release status (catches hook/manifest failures immediately)
-            - Deployment/StatefulSet rollout status (replica counts + conditions)
-            - Pod container diagnostics (CrashLoopBackOff, ImagePullBackOff, etc.)
-            
-            Returns structured status with an 'issues' array for diagnosis.
-            Status will be one of: 'ready', 'failed', or 'timeout'.
-            
-            Args:
-                release_name: Release name to monitor
-                namespace: Kubernetes namespace
-                max_wait_seconds: Maximum time to wait for deployment to be ready
-                check_interval: Interval between checks in seconds
-            
+            """Monitor deployment health after a Helm install or upgrade.
+
+            Use after helm_install_chart or helm_upgrade_release to verify
+            the deployment is healthy. Performs multi-layer health checking:
+            - Helm release status (catches hook/manifest failures)
+            - Deployment/StatefulSet rollout status (replica counts)
+            - Pod container diagnostics (CrashLoopBackOff, ImagePullBackOff)
+
+            Read-only — only observes cluster state.
+
             Returns:
-                Monitoring result with deployment status, workload snapshots,
-                pod summary, and any issues found
-            
-            Raises:
-                HelmOperationError: If monitoring infrastructure fails
+            - {"status": "ready"|"failed"|"timeout",
+               "duration_seconds": int, "deployments": [...],
+               "pod_summary": {...}, "issues": [{...}]}
+
+            When NOT to use:
+            - To get current release status → use helm_get_release_status.
+            - To install a release → use helm_install_chart.
             """
             await ctx.info(
                 f"Starting deployment monitoring for '{release_name}'",
@@ -123,23 +128,32 @@ class MonitoringTools(BaseTool):
                 )
                 raise HelmOperationError(f'Deployment monitoring failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Get Helm Release Status",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def helm_get_release_status(
-            release_name: str = Field(..., description='Release name'),
+            release_name: str = Field(..., description='Release name (e.g., "my-postgres")'),
             namespace: str = Field(default='default', description='Kubernetes namespace'),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Get current status of a Helm release.
-            
-            Args:
-                release_name: Release name
-                namespace: Kubernetes namespace
-            
+
+            Use to check if a release is deployed, failed, or pending.
+            Read-only — only queries cluster state.
+
             Returns:
-                Release status information
-            
-            Raises:
-                HelmOperationError: If status retrieval fails
+            - {"release_info": {"status": str, "revision": int,
+               "chart": str, "app_version": str, ...}}
+
+            When NOT to use:
+            - To monitor deployment health over time → use helm_monitor_deployment.
+            - To list all releases → use kubernetes_get_helm_releases.
             """
             await ctx.info(
                 f"Fetching status for release '{release_name}'",

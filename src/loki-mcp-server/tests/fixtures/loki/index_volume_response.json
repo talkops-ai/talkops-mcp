@@ -1,0 +1,1 @@
+{"status": "success", "data": {"volumes": [{"labels": {"app": "checkout"}, "volume": "15000000"}, {"labels": {"app": "payment-service"}, "volume": "8500000"}, {"labels": {"app": "frontend"}, "volume": "3200000"}]}}

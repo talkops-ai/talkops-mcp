@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
+from mcp.types import ToolAnnotations
 from fastmcp import Context
 from helm_mcp_server.exceptions import KubernetesOperationError
 from helm_mcp_server.tools.base import BaseTool
@@ -13,17 +14,30 @@ class KubernetesTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register tools with FastMCP."""
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Get Kubernetes Cluster Info",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def kubernetes_get_cluster_info(
             ctx: Context
         ) -> Dict[str, Any]:
-            """Get cluster information.
-            
+            """Get Kubernetes cluster information.
+
+            Use to verify cluster connectivity and view basic info
+            (version, node count, namespace count). Read-only.
+
             Returns:
-                Cluster information
-            
-            Raises:
-                KubernetesOperationError: If getting cluster info fails
+            - {"kubernetes_version": str, "node_count": int,
+               "namespace_count": int, "nodes": [...]}
+
+            When NOT to use:
+            - To list namespaces → use kubernetes_list_namespaces.
+            - To check prerequisites → use kubernetes_check_prerequisites.
             """
             await ctx.info( 'Fetching Kubernetes cluster information')
             
@@ -50,17 +64,28 @@ class KubernetesTools(BaseTool):
                 )
                 raise KubernetesOperationError(f'Failed to get cluster info: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="List Kubernetes Namespaces",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def kubernetes_list_namespaces(
             ctx: Context
         ) -> List[str]:
-            """List all Kubernetes namespaces.
-            
+            """List all Kubernetes namespaces in the current cluster.
+
+            Use to discover available namespaces before installing
+            or inspecting releases. Read-only.
+
             Returns:
-                List of namespace names
-            
-            Raises:
-                KubernetesOperationError: If listing fails
+            - List of namespace name strings: ["default", "kube-system", ...]
+
+            When NOT to use:
+            - To list Helm releases → use kubernetes_get_helm_releases.
             """
             await ctx.info( 'Listing Kubernetes namespaces')
             
@@ -86,21 +111,31 @@ class KubernetesTools(BaseTool):
                 )
                 raise KubernetesOperationError(f'Failed to list namespaces: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="List Helm Releases in Cluster",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def kubernetes_get_helm_releases(
             ctx: Context,
-            namespace: Optional[str] = Field(default=None, description='Optional namespace filter (if None, lists all namespaces)')
+            namespace: Optional[str] = Field(default=None, description='Namespace filter (omit to list all namespaces)')
         ) -> List[Dict[str, Any]]:
-            """List all Helm releases in cluster.
-            
-            Args:
-                namespace: Optional namespace filter (if None, lists all namespaces)
-            
+            """List all Helm releases in the cluster.
+
+            Use to discover what is already deployed before installing
+            new releases. Optionally filter by namespace. Read-only.
+
             Returns:
-                List of Helm release information
-            
-            Raises:
-                KubernetesOperationError: If listing fails
+            - List of release info dicts: [{"name": str, "namespace": str,
+              "chart": str, "status": str, "revision": int}, ...]
+
+            When NOT to use:
+            - To get detailed status of one release → use helm_get_release_status.
+            - To monitor a specific deployment → use helm_monitor_deployment.
             """
             if namespace:
                 await ctx.info( f"Listing Helm releases in namespace '{namespace}'")
@@ -136,23 +171,32 @@ class KubernetesTools(BaseTool):
                 )
                 raise KubernetesOperationError(f'Failed to get Helm releases: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Check Cluster Prerequisites",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def kubernetes_check_prerequisites(
             ctx: Context,
-            required_api_version: Optional[str] = Field(default=None, description='Required Kubernetes API version (e.g., v1.28.0)'),
-            required_resources: Optional[List[str]] = Field(default=None, description='List of required resource types (e.g., [Deployment, Service])')
+            required_api_version: Optional[str] = Field(default=None, description='Required Kubernetes API version (e.g., "v1.28.0")'),
+            required_resources: Optional[List[str]] = Field(default=None, description='Required resource types (e.g., ["Deployment", "Service", "Ingress"])')
         ) -> Dict[str, Any]:
-            """Check if cluster meets installation prerequisites.
-            
-            Args:
-                required_api_version: Required Kubernetes API version (e.g., 'v1.28.0')
-                required_resources: List of required resource types (e.g., ['Deployment', 'Service'])
-            
+            """Check if the cluster meets installation prerequisites.
+
+            Use before installing a chart that requires specific K8s
+            versions or CRD resource types. Read-only.
+
             Returns:
-                Prerequisites check result with status
-            
-            Raises:
-                KubernetesOperationError: If check fails
+            - {"all_prerequisites_met": bool, "cluster_version": str,
+               "api_version_check": {...}, "resource_check": {...}}
+
+            When NOT to use:
+            - To check chart dependencies → use helm_check_dependencies.
+            - To get cluster info → use kubernetes_get_cluster_info.
             """
             await ctx.info(
                 'Checking cluster prerequisites',
@@ -205,22 +249,30 @@ class KubernetesTools(BaseTool):
                 )
                 raise KubernetesOperationError(f'Prerequisites check failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="List Kubernetes Contexts",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            )
+        )
         async def kubernetes_list_contexts(
             ctx: Context
         ) -> Dict[str, Any]:
             """List all available Kubernetes contexts from kubeconfig.
-            
-            Equivalent to: kubectl config get-contexts
-            
+
+            Use to discover available clusters before switching context.
+            Equivalent to: kubectl config get-contexts. Read-only.
+
             Returns:
-                Dictionary containing:
-                - 'contexts': List of context information dicts
-                - 'current_context': Name of the currently active context
-                - 'total_contexts': Total number of available contexts
-            
-            Raises:
-                KubernetesOperationError: If listing contexts fails
+            - {"contexts": [{"name": str, "cluster": str, "user": str,
+               "namespace": str}], "current_context": str,
+               "total_contexts": int}
+
+            When NOT to use:
+            - To switch context → use kubernetes_set_context.
             """
             await ctx.info('Listing Kubernetes contexts')
             
@@ -253,30 +305,35 @@ class KubernetesTools(BaseTool):
                 )
                 raise KubernetesOperationError(f'Failed to list contexts: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Set Kubernetes Context",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            )
+        )
         async def kubernetes_set_context(
             ctx: Context,
-            context_name: str = Field(..., description='Name of the context to switch to')
+            context_name: str = Field(..., description='Name of the context to switch to (from kubernetes_list_contexts)')
         ) -> Dict[str, Any]:
-            """Set/switch to a specific Kubernetes context.
-            
-            This loads the specified context from kubeconfig for use in the application.
-            Note: This switches the context for the current application session only.
-            
-            Equivalent to: kubectl config use-context <context-name>
-            
-            Args:
-                context_name: Name of the context to switch to
-            
+            """Switch to a specific Kubernetes context.
+
+            Use to change the target cluster for subsequent operations.
+            Switches context for the current application session only.
+            Equivalent to: kubectl config use-context <context-name>.
+
+            **NOTE: This changes the active cluster for ALL subsequent
+            tool calls in this session.**
+
             Returns:
-                Dictionary containing:
-                - 'success': Boolean indicating if context was switched
-                - 'context_name': Name of the context switched to
-                - 'context_details': Dictionary with cluster, user, namespace info
-                - 'message': Status message
-            
-            Raises:
-                KubernetesOperationError: If context switching fails
+            - {"success": bool, "context_name": str,
+               "context_details": {"cluster": str, "user": str,
+               "namespace": str}, "message": str}
+
+            When NOT to use:
+            - To list available contexts → use kubernetes_list_contexts.
             """
             await ctx.info(
                 f"Switching to Kubernetes context '{context_name}'",
@@ -316,4 +373,3 @@ class KubernetesTools(BaseTool):
                     }
                 )
                 raise KubernetesOperationError(f'Failed to set context: {str(e)}')
-

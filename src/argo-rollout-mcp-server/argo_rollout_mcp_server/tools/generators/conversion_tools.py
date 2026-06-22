@@ -3,6 +3,7 @@
 import json
 from typing import Dict, Any, List, Optional
 from pydantic import Field
+from mcp.types import ToolAnnotations
 from fastmcp import Context
 
 from argo_rollout_mcp_server.tools.base import BaseTool
@@ -52,7 +53,15 @@ class GeneratorTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register generator tools with FastMCP."""
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Convert Deployment to Rollout",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def convert_deployment_to_rollout(
             deployment_yaml: Optional[str] = Field(default=None, description="Kubernetes Deployment YAML as string. If not provided, use deployment_name to auto-fetch. Not needed when mode='generate_services_only'."),
             deployment_name: Optional[str] = Field(default=None, description="Name of existing Deployment to fetch from cluster. Alternative to deployment_yaml. Not needed when mode='generate_services_only'."),
@@ -109,40 +118,22 @@ class GeneratorTools(BaseTool):
             ctx: Context = None
         ) -> str:
             """Convert a Kubernetes Deployment to an Argo Rollout.
-            
-            This tool bridges the gap between standard K8s Deployments (created by ArgoCD)
-            and Argo Rollouts for progressive delivery.
-            
-            You can either:
-            - Pass `deployment_yaml` directly as a string
-            - Pass `deployment_name` (+ optional `namespace`) to auto-fetch from the cluster
-            
-            Args:
-                deployment_yaml: Deployment YAML as string (not needed when mode='generate_services_only')
-                deployment_name: Deployment name to fetch from cluster (not needed when mode='generate_services_only')
-                namespace: Kubernetes namespace (for auto-fetch)
-                strategy: Deployment strategy ("canary" or "bluegreen")
-                mode: "full" (default) or "generate_services_only" — latter creates only Services, requires app_name
-                app_name: Required when mode='generate_services_only'
-                canary_steps: Custom canary steps (overrides defaults)
-                bluegreen_options: Blue-Green configuration overrides
-                migration_mode: Migration mode: 'direct' or 'workload_ref'
-                scale_down: For workload_ref mode: 'never', 'onsuccess', or 'progressively'
-                apply: If True, apply the Rollout CRD + Services directly to the cluster.
-                       If False, return YAML only.
-                service_port: Optional override port for new Services. If omitted, the tool
-                              auto-discovers the port from the existing Service that serves
-                              the Deployment (by matching its pod selector). Falls back to 80
-                              only if no Service is found and no port is specified.
-                selector_labels: Optional override for pod selector labels. Auto-inferred
-                                 from the existing Service selector if omitted.
-            
+
+            Bridges standard K8s Deployments and Argo Rollouts for
+            progressive delivery. Pass deployment_yaml directly or
+            deployment_name to auto-fetch from cluster.
+
+            Modes:
+            - full (default): Convert Deployment → Rollout.
+            - generate_services_only: Create prerequisite K8s Services only.
+
             Returns:
-                JSON string with converted Rollout YAML (and applied status if apply=True)
-            
-            Example:
-                Input: Deployment with replicas, containers, etc.
-                Output: Rollout with canary strategy and default steps
+            - JSON string with {"status": str, "rollout_yaml": str,
+              "next_action_hints": [...]}
+
+            When NOT to use:
+            - To create a new rollout from scratch → use argo_create_rollout.
+            - To validate before converting → use validate_deployment_ready.
             """
             # --- mode=generate_services_only: create Services only (parity with create_stable_canary_services) ---
             if mode == "generate_services_only":
@@ -412,41 +403,33 @@ class GeneratorTools(BaseTool):
                 await ctx.error(error_msg)
                 return json.dumps({"error": error_msg}, indent=2)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Validate Deployment Readiness",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def validate_deployment_ready(
             deployment_yaml: Optional[str] = Field(default=None, description="Kubernetes Deployment YAML as string. If not provided, use deployment_name to auto-fetch."),
             deployment_name: Optional[str] = Field(default=None, description="Name of existing Deployment to fetch from cluster. Alternative to deployment_yaml."),
             namespace: str = Field(default="default", description="Kubernetes namespace (used when fetching by deployment_name and for Service selector validation)"),
             ctx: Context = None
         ) -> str:
-            """Validate if a Deployment is ready to be converted to a Rollout.
-            
-            Unified pre-flight check combining structural and routing validation:
-            - Deployment: selector, template, containers, replicas, resource limits,
-              readiness/liveness probes, preStop, terminationGracePeriodSeconds
-            - Service: Fetches matching Service, validates selector compatibility
-              (no pod-template-hash or rollouts-pod-template-hash)
-            
-            You can either:
-            - Pass `deployment_yaml` directly as a string
-            - Pass `deployment_name` (+ optional `namespace`) to auto-fetch from the cluster
-            
-            Args:
-                deployment_yaml: Deployment YAML as string
-                deployment_name: Deployment name to fetch from cluster
-                namespace: Kubernetes namespace (for auto-fetch and Service discovery)
-            
+            """Validate if a Deployment is ready for Rollout conversion.
+
+            Pre-flight check combining structural and routing validation:
+            Deployment structure, selectors, containers, probes, and
+            Service selector compatibility. Read-only.
+
             Returns:
-                JSON string with validation report including:
-                - ready: boolean
-                - score: 0-100
-                - issues: list of blocking problems (structural + routing)
-                - warnings: list of recommendations
-                - deployment_checks: Deployment validation summary
-                - service_checks: Service selector compatibility summary
-            
-            Example:
-                Single call checks Deployment structure AND Service selector compatibility.
+            - JSON string with {"ready": bool, "score": int,
+              "issues": [...], "warnings": [...], "next_action_hints": [...]}
+
+            When NOT to use:
+            - To actually convert → use convert_deployment_to_rollout.
             """
             await ctx.info("Validating Deployment readiness for Rollout conversion (structural + Service selector)")
             
@@ -526,7 +509,15 @@ class GeneratorTools(BaseTool):
                 await ctx.error(error_msg)
                 return json.dumps({"error": error_msg}, indent=2)
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Create Stable/Canary Services",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def create_stable_canary_services(
             app_name: str = Field(..., description="Application name"),
             namespace: str = Field(default="default", description="Kubernetes namespace"),
@@ -536,26 +527,19 @@ class GeneratorTools(BaseTool):
             apply: bool = Field(default=False, description="If True, create Services directly in the cluster (no kubectl needed). If False, return YAML only."),
             ctx: Context = None
         ) -> str:
-            """[Advanced/Legacy] Generate stable and canary K8s Service YAML for Argo Rollouts.
-            
-            Creates two Service objects ({app_name}-stable and {app_name}-canary)
-            that Argo Rollouts requires for traffic routing. The Argo Rollouts
-            controller manages the pod selectors at runtime.
-            
-            Prefer `convert_deployment_to_rollout(mode='generate_services_only', app_name='...')`
-            for the same functionality. This tool is kept for advanced/legacy use cases.
-            
-            Args:
-                app_name: Application name
-                namespace: Kubernetes namespace
-                port: Service port number
-                target_port: Target port on pods (defaults to same as port)
-                selector_labels: Pod selector labels
-                apply: If True, apply Services directly to cluster (executor mode).
-                       If False (default), return YAML strings only (generator mode).
-            
+            """[Advanced/Legacy] Create stable and canary K8s Services.
+
+            Creates {app_name}-stable and {app_name}-canary Services
+            required by Argo Rollouts for traffic routing. Idempotent.
+
+            Prefer convert_deployment_to_rollout(mode='generate_services_only').
+
             Returns:
-                JSON string with stable and canary Service YAMLs
+            - JSON string with {"status": str, "stable_service_name": str,
+              "canary_service_name": str, "next_action_hints": [...]}
+
+            When NOT to use:
+            - For full conversion → use convert_deployment_to_rollout(apply=True).
             """
             await ctx.info(
                 f"{'Applying' if apply else 'Generating'} stable/canary Services for '{app_name}'",
@@ -623,7 +607,15 @@ class GeneratorTools(BaseTool):
                 await ctx.error(error_msg)
                 return json.dumps({"error": error_msg}, indent=2)
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Generate ArgoCD ignoreDifferences",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            )
+        )
         async def generate_argocd_ignore_differences(
             include_traefik_service: bool = Field(default=True, description="Include TraefikService weight paths"),
             include_rollout_status: bool = Field(default=True, description="Include Rollout status paths"),
@@ -643,26 +635,18 @@ class GeneratorTools(BaseTool):
             traefik_api_group: str = Field(default="traefik.io", description="Traefik API group (traefik.io or traefik.containo.us)"),
             ctx: Context = None
         ) -> str:
-            """Generate Argo CD ignoreDifferences snippet for Argo Rollouts + Traefik.
-            
-            When Argo Rollouts manages TraefikService weights during canary
-            progression, Argo CD will show these resources as OutOfSync.
-            This tool generates the ignoreDifferences configuration to
-            add to your Argo CD Application spec.
-            
-            Covers:
-            - TraefikService: /spec/weighted/services (weight mutations)
-            - Rollout: /status (phase, replica counts)
-            - AnalysisRun: /status (optional)
-            
-            Args:
-                include_traefik_service: Include TraefikService paths
-                include_rollout_status: Include Rollout status
-                include_analysis_run: Include AnalysisRun status
-                traefik_api_group: API group for Traefik resources
-            
+            """Generate ArgoCD ignoreDifferences YAML for Argo Rollouts + Traefik.
+
+            Generates the ignoreDifferences configuration to prevent
+            ArgoCD from showing Rollouts-managed resources as OutOfSync.
+            Read-only — does not apply anything.
+
             Returns:
-                JSON string with ignoreDifferences YAML snippet
+            - JSON string with {"ignore_differences_yaml": str,
+              "resources_covered": [...], "next_action_hints": [...]}
+
+            When NOT to use:
+            - To apply the config → manually add to ArgoCD Application spec.
             """
             await ctx.info(
                 "Generating Argo CD ignoreDifferences snippet",
@@ -710,7 +694,15 @@ class GeneratorTools(BaseTool):
                 await ctx.error(error_msg)
                 return json.dumps({"error": error_msg}, indent=2)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Convert Rollout to Deployment",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            )
+        )
         async def convert_rollout_to_deployment(
             rollout_yaml: Optional[str] = Field(default=None, description="Rollout YAML string to convert"),
             deployment_strategy: str = Field(default="RollingUpdate", description="Deployment strategy: 'RollingUpdate' or 'Recreate'"),
@@ -718,20 +710,18 @@ class GeneratorTools(BaseTool):
             max_unavailable: str = Field(default="25%", description="Max unavailable for RollingUpdate"),
             ctx: Context = None
         ) -> str:
-            """Convert an Argo Rollout YAML back to a standard Kubernetes Deployment.
-            
-            Reverse migration tool for abandoning Argo Rollouts or rolling back
-            to standard Deployments. Preserves template, replicas, selector,
-            and metadata while stripping Argo-specific fields.
-            
-            Args:
-                rollout_yaml: Argo Rollout YAML string
-                deployment_strategy: Standard Deployment strategy type
-                max_surge: Max surge for RollingUpdate strategy
-                max_unavailable: Max unavailable for RollingUpdate strategy
-            
+            """Convert an Argo Rollout YAML back to a standard K8s Deployment.
+
+            Reverse migration tool. Preserves template, replicas, and
+            metadata while stripping Argo-specific fields. Read-only —
+            generates YAML only.
+
             Returns:
-                JSON string with Deployment YAML
+            - JSON string with {"status": str, "deployment_yaml": str,
+              "next_action_hints": [...]}
+
+            When NOT to use:
+            - To convert Deployment → Rollout → use convert_deployment_to_rollout.
             """
             if not rollout_yaml:
                 return json.dumps({"error": "rollout_yaml is required"}, indent=2)

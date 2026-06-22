@@ -1,0 +1,147 @@
+{
+  "_metadata": {
+    "description": "OpenTelemetry language instrumentation support registry. Sourced from opentelemetry.io/docs/languages/ and the OTel Registry.",
+    "version": "2026-05",
+    "override_env_var": "OTEL_LANG_REGISTRY_PATH"
+  },
+  "languages": {
+    "java": {
+      "display_name": "Java",
+      "signal_support": {
+        "traces": "stable",
+        "metrics": "stable",
+        "logs": "stable"
+      },
+      "auto_instrumentation_available": true,
+      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:latest",
+      "ebpf_supported": true,
+      "annotation_key": "instrumentation.opentelemetry.io/inject-java",
+      "sdk_package": "io.opentelemetry:opentelemetry-api",
+      "frameworks": [
+        {"name": "Spring Boot", "min_version": "2.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Quarkus", "min_version": "2.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Micronaut", "min_version": "3.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Vert.x", "min_version": "4.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "JAX-RS", "min_version": "2.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "gRPC", "min_version": "1.6", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "JDBC", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Kafka Clients", "min_version": "0.11", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Servlet", "min_version": "2.2", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Netty", "min_version": "4.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"}
+      ]
+    },
+    "python": {
+      "display_name": "Python",
+      "signal_support": {
+        "traces": "stable",
+        "metrics": "stable",
+        "logs": "stable"
+      },
+      "auto_instrumentation_available": true,
+      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:latest",
+      "ebpf_supported": true,
+      "annotation_key": "instrumentation.opentelemetry.io/inject-python",
+      "sdk_package": "opentelemetry-api",
+      "frameworks": [
+        {"name": "FastAPI", "min_version": "0.58", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Django", "min_version": "1.10", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Flask", "min_version": "1.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "requests", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "httpx", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "SQLAlchemy", "min_version": "1.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "psycopg2", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Celery", "min_version": "4.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "grpcio", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "aiohttp", "auto_instrumented": true, "manual_available": true, "stability": "stable"}
+      ]
+    },
+    "nodejs": {
+      "display_name": "Node.js",
+      "signal_support": {
+        "traces": "stable",
+        "metrics": "stable",
+        "logs": "stable"
+      },
+      "auto_instrumentation_available": true,
+      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-nodejs:latest",
+      "ebpf_supported": true,
+      "annotation_key": "instrumentation.opentelemetry.io/inject-nodejs",
+      "sdk_package": "@opentelemetry/api",
+      "frameworks": [
+        {"name": "Express", "min_version": "4.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Fastify", "min_version": "3.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "NestJS", "min_version": "8.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Koa", "min_version": "2.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Hapi", "min_version": "17.0", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "MongoDB", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "pg (PostgreSQL)", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Redis (ioredis)", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "gRPC", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "AWS SDK", "auto_instrumented": true, "manual_available": true, "stability": "stable"}
+      ]
+    },
+    "dotnet": {
+      "display_name": ".NET",
+      "signal_support": {
+        "traces": "stable",
+        "metrics": "stable",
+        "logs": "stable"
+      },
+      "auto_instrumentation_available": true,
+      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-dotnet:latest",
+      "ebpf_supported": false,
+      "annotation_key": "instrumentation.opentelemetry.io/inject-dotnet",
+      "sdk_package": "OpenTelemetry",
+      "frameworks": [
+        {"name": "ASP.NET Core", "min_version": "3.1", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "HttpClient", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Entity Framework Core", "min_version": "3.1", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "gRPC .NET", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "SqlClient", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "MassTransit", "auto_instrumented": false, "manual_available": true, "stability": "beta"}
+      ]
+    },
+    "go": {
+      "display_name": "Go",
+      "signal_support": {
+        "traces": "stable",
+        "metrics": "stable",
+        "logs": "beta"
+      },
+      "auto_instrumentation_available": true,
+      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-go:latest",
+      "ebpf_supported": true,
+      "annotation_key": "instrumentation.opentelemetry.io/inject-go",
+      "sdk_package": "go.opentelemetry.io/otel",
+      "frameworks": [
+        {"name": "net/http", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Gin", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Echo", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "gRPC-Go", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "database/sql", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Gorilla Mux", "auto_instrumented": true, "manual_available": true, "stability": "stable"},
+        {"name": "Fiber", "auto_instrumented": false, "manual_available": true, "stability": "beta", "notes": "Community-maintained instrumentation"}
+      ]
+    },
+    "rust": {
+      "display_name": "Rust",
+      "signal_support": {
+        "traces": "beta",
+        "metrics": "alpha",
+        "logs": "alpha"
+      },
+      "auto_instrumentation_available": false,
+      "auto_instrumentation_image": null,
+      "ebpf_supported": true,
+      "annotation_key": null,
+      "sdk_package": "opentelemetry",
+      "frameworks": [
+        {"name": "Actix Web", "auto_instrumented": false, "manual_available": true, "stability": "beta"},
+        {"name": "Axum", "auto_instrumented": false, "manual_available": true, "stability": "beta"},
+        {"name": "Tonic (gRPC)", "auto_instrumented": false, "manual_available": true, "stability": "beta"},
+        {"name": "Hyper", "auto_instrumented": false, "manual_available": true, "stability": "beta"},
+        {"name": "Reqwest", "auto_instrumented": false, "manual_available": true, "stability": "beta"}
+      ]
+    }
+  }
+}

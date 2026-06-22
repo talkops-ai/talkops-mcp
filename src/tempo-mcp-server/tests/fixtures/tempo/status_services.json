@@ -1,0 +1,8 @@
+{
+  "ingester": "Running",
+  "querier": "Running",
+  "compactor": "Running",
+  "distributor": "Running",
+  "query-frontend": "Running",
+  "metrics-generator": "Running"
+}

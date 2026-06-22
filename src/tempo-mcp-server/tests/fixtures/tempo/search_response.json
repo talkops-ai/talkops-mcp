@@ -1,0 +1,26 @@
+{
+  "traces": [
+    {
+      "traceID": "1234567890abcdef1234567890abcdef",
+      "rootServiceName": "api-gateway",
+      "rootTraceName": "GET /users",
+      "startTimeUnixNano": "1700000000000000000",
+      "durationMs": 150,
+      "spanSets": [
+        {
+          "spans": [{"spanID": "span1", "startTimeUnixNano": "1700000000000000000"}],
+          "matched": 1
+        }
+      ]
+    },
+    {
+      "traceID": "abcdef1234567890abcdef1234567890",
+      "rootServiceName": "user-service",
+      "rootTraceName": "SELECT users",
+      "startTimeUnixNano": "1700000001000000000",
+      "durationMs": 85,
+      "spanSets": []
+    }
+  ],
+  "metrics": {"totalBlocks": 10}
+}
