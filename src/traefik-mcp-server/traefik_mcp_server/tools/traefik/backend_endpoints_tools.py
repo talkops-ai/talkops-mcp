@@ -4,6 +4,7 @@ from typing import Any, Dict, Literal, Optional
 
 from pydantic import Field
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 
 from traefik_mcp_server.tools.base import BaseTool
 from traefik_mcp_server.services.traefik_service import TRAEFIK_STICKY_SERVICE_ANNOTATION_KEYS
@@ -16,7 +17,15 @@ class TraefikBackendEndpointsTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register backend endpoint tools."""
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Manage Servers Transport",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def traefik_manage_servers_transport(
             action: Literal["create", "delete"] = Field(
                 ...,
@@ -38,10 +47,18 @@ class TraefikBackendEndpointsTools(BaseTool):
             ),
             ctx: Optional[Context] = None,
         ) -> Dict[str, Any]:
-            """Create/update or delete a Traefik ServersTransport (backend TLS/timeouts).
+            """Create, update, or delete a Traefik ServersTransport.
 
-            Link a Service with annotation ``traefik.ingress.kubernetes.io/service.serverstransport``:
-            ``<namespace>-<transport-name>@kubernetescrd``.
+            Manages backend connection settings like timeouts and TLS verification
+            for routing traffic to upstream services.
+
+            **WARNING: Affects all connections to linked backends.**
+
+            Returns:
+            - JSON dict with {"status": str, "name": str, ...}
+
+            When NOT to use:
+            - To configure frontend TLS/HTTPS → use traefik_manage_simple_route.
             """
             assert self.traefik_service is not None
             if action == "delete":
@@ -76,7 +93,15 @@ class TraefikBackendEndpointsTools(BaseTool):
             except Exception as e:
                 raise TraefikOperationError(f"create ServersTransport failed: {e}")
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Configure Service Affinity",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def traefik_configure_service_affinity(
             action: Literal["enable", "disable"] = Field(
                 ...,
@@ -102,9 +127,16 @@ class TraefikBackendEndpointsTools(BaseTool):
             ),
             ctx: Optional[Context] = None,
         ) -> Dict[str, Any]:
-            """Enable or disable Traefik sticky-session annotations on a Kubernetes Service.
+            """Enable or disable sticky sessions on a K8s Service.
 
-            Matches NGINX migration mapping (affinity cookie → Service annotations).
+            Configures Traefik annotations on a Service to enable sticky
+            sessions (session affinity) via cookies.
+
+            Returns:
+            - JSON dict with {"status": str, "service_name": str, ...}
+
+            When NOT to use:
+            - For weighted routing → use traefik_manage_weighted_routing.
             """
             assert self.traefik_service is not None
             prefix = "traefik.ingress.kubernetes.io/"

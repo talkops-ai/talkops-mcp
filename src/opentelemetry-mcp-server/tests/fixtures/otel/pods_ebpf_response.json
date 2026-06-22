@@ -1,0 +1,31 @@
+[
+  {
+    "name": "otel-ebpf-1234",
+    "namespace": "kube-system",
+    "node_name": "node-1",
+    "host_pid": true,
+    "containers": [
+      {
+        "name": "agent",
+        "security_context": {
+          "privileged": true,
+          "capabilities": [
+            "SYS_ADMIN",
+            "BPF",
+            "PERFMON"
+          ]
+        },
+        "volume_mounts": [
+          {
+            "mount_path": "/sys/kernel/debug"
+          }
+        ]
+      }
+    ],
+    "host_volumes": [
+      {
+        "host_path": "/sys/kernel/debug"
+      }
+    ]
+  }
+]

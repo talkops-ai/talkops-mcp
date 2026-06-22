@@ -1,0 +1,11 @@
+{
+  "service_found": true,
+  "service_name": "my-collector-collector",
+  "selector": {
+    "app.kubernetes.io/component": "opentelemetry-collector",
+    "app.kubernetes.io/instance": "observability.my-collector"
+  },
+  "ready_endpoints": 3,
+  "not_ready_endpoints": 0,
+  "warnings": []
+}

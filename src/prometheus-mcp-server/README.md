@@ -298,6 +298,7 @@ PROMETHEUS_BACKENDS='[
 | `prom_validate_promql` | Check PromQL syntax before executing. |
 | `prom_query_instant` | Execute a point-in-time PromQL query with counter enforcement. |
 | `prom_query_range` | Execute a time-range PromQL query with automatic downsampling. |
+| `prom_query_a2ui_chart` | Execute a time-range PromQL query and return data formatted for A2UI dynamic components. |
 | `prom_explore_labels` | Discover label names and top values for a given metric. |
 | `prom_suggest_promql` | Generate a PromQL expression from natural language intent. |
 

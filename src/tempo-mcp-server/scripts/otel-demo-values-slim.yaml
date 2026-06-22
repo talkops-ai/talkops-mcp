@@ -1,0 +1,43 @@
+default:
+  envOverrides:
+    - name: OTEL_RESOURCE_ATTRIBUTES
+      value: "service.namespace=otel-demo"
+
+components:
+  # Disable unnecessary components to save memory
+  accounting: { enabled: false }
+  checkout: { enabled: false }
+  currency: { enabled: false }
+  email: { enabled: false }
+  fraud-detection: { enabled: false }
+  frontend-proxy: { enabled: true }
+  image-provider: { enabled: false }
+  payment: { enabled: false }
+  product-reviews: { enabled: false }
+  quote: { enabled: false }
+  shipping: { enabled: false }
+  flagd: { enabled: false }
+  kafka: { enabled: false }
+  llm: { enabled: false }
+  postgresql: { enabled: true }
+
+  # Keep requested components + strict dependencies
+  ad: { enabled: true }
+  cart: { enabled: true }
+  recommendation: { enabled: true }
+  load-generator: { enabled: true }
+  frontend: { enabled: true }
+  valkey-cart: { enabled: true } # Replaces redis in new schema
+  product-catalog: { enabled: true }
+
+jaeger:
+  enabled: false
+opensearch:
+  enabled: false
+opentelemetry-collector:
+  enabled: false
+
+prometheus:
+  enabled: true
+grafana:
+  enabled: true

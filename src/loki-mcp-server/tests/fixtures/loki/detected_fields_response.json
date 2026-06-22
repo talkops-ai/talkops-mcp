@@ -1,0 +1,41 @@
+{
+  "fields": [
+    {
+      "label": "level",
+      "type": "string",
+      "cardinality": 4,
+      "parsers": ["json"]
+    },
+    {
+      "label": "status_code",
+      "type": "int",
+      "cardinality": 12,
+      "parsers": ["json"]
+    },
+    {
+      "label": "latency_ms",
+      "type": "float",
+      "cardinality": 450,
+      "parsers": ["json"]
+    },
+    {
+      "label": "method",
+      "type": "string",
+      "cardinality": 5,
+      "parsers": ["json"]
+    },
+    {
+      "label": "path",
+      "type": "string",
+      "cardinality": 128,
+      "parsers": ["json"]
+    },
+    {
+      "label": "caller",
+      "type": "string",
+      "cardinality": 23,
+      "parsers": ["logfmt"]
+    }
+  ],
+  "limit": 1000
+}

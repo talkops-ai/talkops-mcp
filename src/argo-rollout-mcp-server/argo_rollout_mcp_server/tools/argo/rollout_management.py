@@ -3,6 +3,7 @@
 import json
 from typing import Dict, Any, Optional, List, Literal
 from pydantic import Field
+from mcp.types import ToolAnnotations
 from fastmcp import Context
 
 from argo_rollout_mcp_server.tools.base import BaseTool
@@ -21,7 +22,15 @@ class RolloutManagementTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register tools with FastMCP."""
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Create Argo Rollout",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def argo_create_rollout(
             name: str = Field(..., min_length=1, description='Rollout name'),
             image: str = Field(..., min_length=1, description='Container image (e.g., nginx:1.19.0)'),
@@ -139,32 +148,22 @@ class RolloutManagementTools(BaseTool):
             ctx: Context = None
         ) -> Dict[str, Any]:
             """Create a new Argo Rollout for progressive delivery.
-            
-            Creates a Rollout resource with the specified strategy (canary, blue-green, or rolling).
-            For canary deployments, you can customize the rollout steps.
-            
-            Args:
-                name: Name of the rollout
-                image: Container image to deploy
-                namespace: Kubernetes namespace
-                replicas: Number of pod replicas
-                strategy: Deployment strategy (canary, bluegreen, rolling)
-                canary_steps: Optional custom canary steps
-            
+
+            Creates a Rollout resource with the specified strategy
+            (canary, blue-green, or rolling). Optionally auto-creates
+            prerequisite stable/canary (or active/preview) K8s Services.
+
             Returns:
-                Creation result with rollout details
-            
-            Raises:
-                RolloutStrategyError: If strategy configuration is invalid
-                ArgoRolloutError: If creation fails
-            
-            Example canary_steps:
-                Basic (setWeight + pause):
-                    [{"setWeight": 10}, {"pause": {"duration": "5m"}}, {"setWeight": 25}, {"pause": {}}, {"setWeight": 100}]
-                With setCanaryScale (requires traefik_service_name):
-                    [{"setCanaryScale": {"replicas": 1}}, {"setWeight": 20}, {"pause": {}}, {"setWeight": 100}]
-                With inline analysis step (templateName must reference existing AnalysisTemplate):
-                    [{"setWeight": 20}, {"analysis": {"templates": [{"templateName": "success-rate"}], "args": [{"name": "service-name", "value": "my-app"}]}}, {"setWeight": 100}]
+            - {"summary": str, "services_auto_created": [...],
+               "next_action_hints": [...]}
+
+            When NOT to use:
+            - To convert an existing Deployment → use convert_deployment_to_rollout.
+            - To update an existing rollout → use argo_update_rollout.
+
+            Common errors:
+            - Strategy validation failed: Check valid strategies (canary, bluegreen, rolling).
+            - traefik_service_name and gateway_api_config are mutually exclusive.
             """
             await ctx.info(
                 f"Creating Argo Rollout '{name}' with {strategy} strategy",
@@ -336,27 +335,36 @@ class RolloutManagementTools(BaseTool):
                 )
                 raise ArgoRolloutError(f'Rollout creation failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Delete Argo Rollout",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def argo_delete_rollout(
             name: str = Field(..., min_length=1, description='Rollout name'),
             namespace: str = Field(default='default', description='Kubernetes namespace'),
             clean_all: bool = Field(default=False, description='Delete associated services, analysis templates, and experiments'),
             ctx: Context = None
         ) -> Dict[str, Any]:
-            """Delete an Argo Rollout.
-            
-            Permanently deletes a rollout and all associated resources.
-            
-            Args:
-                name: Rollout name
-                namespace: Kubernetes namespace
-                clean_all: Whether to attempt deleting associated services, analysis templates, and experiments
-            
+            """Permanently delete an Argo Rollout.
+
+            **WARNING: DESTRUCTIVE — Cannot be undone. Set clean_all=True
+            to also remove associated Services, AnalysisTemplates, and
+            Experiments.**
+
             Returns:
-                Deletion result
-            
-            Raises:
-                RolloutNotFoundError: If rollout doesn't exist
+            - {"status": str, "next_action_hints": [...]}
+
+            When NOT to use:
+            - To abort a rollout without deleting → use argo_manage_rollout_lifecycle(action='abort').
+            - To delete an experiment → use argo_delete_experiment.
+
+            Common errors:
+            - RolloutNotFoundError: Rollout does not exist.
             """
             await ctx.warning(
                 f"Deleting rollout '{name}' from namespace '{namespace}' (clean_all={clean_all})",
@@ -395,7 +403,15 @@ class RolloutManagementTools(BaseTool):
                 await ctx.error(f"Failed to delete rollout: {str(e)}")
                 raise ArgoRolloutError(f'Deletion failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Update Argo Rollout",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def argo_update_rollout(
             name: str = Field(..., min_length=1, description="Rollout name"),
             update_type: UPDATE_ROLLOUT_TYPES = Field(
@@ -431,24 +447,25 @@ class RolloutManagementTools(BaseTool):
             ),
             ctx: Context = None,
         ) -> Dict[str, Any]:
-            """Update a rollout: image, strategy, traffic routing, or workloadRef scale-down.
+            """Update a rollout: image, strategy, traffic routing, or workloadRef.
 
-            Unified tool for patching rollout configuration. Use update_type to select the operation.
+            Unified tool for patching rollout configuration. Select the
+            operation via update_type: image, strategy, traffic_routing,
+            workload_ref, or fix_strategy.
 
-            Args:
-                name: Rollout name
-                update_type: image | strategy | traffic_routing | workload_ref
-                namespace: Kubernetes namespace
-                new_image: For image — new container image
-                container_name: For image — container name
-                traefik_service_name: For traffic_routing — TraefikService to link
-                clear_routing: For traffic_routing — remove trafficRouting
-                canary_service, stable_service, canary_steps, scale_down_delay_seconds: For strategy
-                service_port: For strategy — port for auto-created service
-                scale_down: For workload_ref — never | onsuccess | progressively
+            **WARNING: Changing image triggers a new progressive delivery
+            cycle. Changing strategy may restart the rollout.**
 
             Returns:
-                Update result
+            - {"message": str, "next_action_hints": [...]}
+
+            When NOT to use:
+            - To create a new rollout → use argo_create_rollout.
+            - To promote/abort → use argo_manage_rollout_lifecycle.
+
+            Common errors:
+            - update_type=image requires new_image parameter.
+            - traefik_service_name and gateway_api_config are mutually exclusive.
             """
             valid_types = ("image", "strategy", "traffic_routing", "workload_ref", "fix_strategy")
             if update_type not in valid_types:
@@ -613,7 +630,15 @@ class RolloutManagementTools(BaseTool):
 
             raise ValueError(f"Unhandled update_type: {update_type}")
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Create Argo Experiment",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def argo_create_experiment(
             name: str = Field(..., min_length=1, description='Experiment name'),
             templates: List[Dict[str, Any]] = Field(
@@ -637,31 +662,21 @@ class RolloutManagementTools(BaseTool):
             ),
             ctx: Context = None
         ) -> Dict[str, Any]:
-            """Create a standalone Argo Experiment.
-            
-            Experiments create ephemeral ReplicaSets for comparison/analysis.
-            Can run AnalysisRuns alongside templates to validate metrics.
-            
-            ⚠️  IMPORTANT: Weighted experiment traffic routing is NOT supported
-            with Traefik. Only SMI, ALB, and Istio support experiment traffic
-            routing. With Traefik, use experiments for metrics comparison only
-            (experiment-as-analysis-step pattern).
-            
-            Use cases:
-            - Run two versions side-by-side to compare metrics
-            - Validate canary metrics before shifting real traffic
-            - A/B testing for non-traffic metrics (CPU, memory, error rates)
-            
-            Args:
-                name: Experiment name
-                namespace: Kubernetes namespace
-                templates: Template specs (inline or reference)
-                duration: How long to run the experiment
-                analyses: AnalysisTemplate references
-                progress_deadline_seconds: Pod availability deadline
-            
+            """Create a standalone Argo Experiment for side-by-side comparison.
+
+            Experiments create ephemeral ReplicaSets with optional
+            AnalysisRuns for metrics validation.
+
+            ⚠️  Weighted experiment traffic routing is NOT supported
+            with Traefik — only SMI, ALB, and Istio. With Traefik,
+            use experiments for metrics comparison only.
+
             Returns:
-                Creation result with experiment details
+            - {"status": str, "templates": [...], "next_action_hints": [...]}
+
+            When NOT to use:
+            - To create a rollout → use argo_create_rollout.
+            - To configure analysis on a rollout → use argo_configure_analysis_template.
             """
             await ctx.info(
                 f"Creating Argo Experiment '{name}'",
@@ -725,22 +740,29 @@ class RolloutManagementTools(BaseTool):
                 await ctx.error(f"Failed to create experiment: {str(e)}")
                 raise ArgoRolloutError(f'Experiment creation failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Delete Argo Experiment",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def argo_delete_experiment(
             name: str = Field(..., min_length=1, description='Experiment name'),
             namespace: str = Field(default='default', description='Kubernetes namespace'),
             ctx: Context = None
         ) -> Dict[str, Any]:
-            """Delete an Argo Experiment.
-            
-            Permanently deletes an experiment and its associated ReplicaSets.
-            
-            Args:
-                name: Experiment name
-                namespace: Kubernetes namespace
-            
+            """Permanently delete an Argo Experiment and its ReplicaSets.
+
+            **WARNING: DESTRUCTIVE — Cannot be undone.**
+
             Returns:
-                Deletion result
+            - {"status": str, "next_action_hints": [...]}
+
+            When NOT to use:
+            - To delete a rollout → use argo_delete_rollout.
             """
             await ctx.info(
                 f"Deleting experiment '{name}'",
@@ -777,7 +799,15 @@ class RolloutManagementTools(BaseTool):
                 await ctx.error(f"Failed to delete experiment: {str(e)}")
                 raise ArgoRolloutError(f'Experiment deletion failed: {str(e)}')
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Manage Legacy Deployment",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def argo_manage_legacy_deployment(
             action: Literal["scale_cluster", "delete_cluster", "generate_scale_down_manifest"] = Field(
                 ...,
@@ -798,20 +828,21 @@ class RolloutManagementTools(BaseTool):
             ),
             ctx: Context = None,
         ):
-            """Manage legacy Deployment during workloadRef migration: scale, delete, or generate scale-down manifest.
+            """Manage a legacy Deployment during workloadRef migration.
 
-            Unified tool for Deployment lifecycle operations when migrating to Argo Rollouts.
+            Unified tool for Deployment lifecycle operations:
+            scale_cluster, delete_cluster, or generate_scale_down_manifest.
 
-            Args:
-                action: scale_cluster (direct scale), delete_cluster (direct delete),
-                    or generate_scale_down_manifest (GitOps — returns YAML with replicas: 0)
-                name: Deployment name (required for scale/delete; for generate, use with deployment_yaml or alone)
-                namespace: Kubernetes namespace
-                replicas: For scale_cluster — target count (e.g. 0)
-                deployment_yaml: For generate_scale_down_manifest — raw YAML for review-only workflow
+            **WARNING: scale_cluster and delete_cluster are DESTRUCTIVE —
+            they modify or remove live cluster resources.**
 
             Returns:
-                Action-specific result (scale/delete: dict; generate: JSON with deployment_yaml)
+            - scale_cluster / delete_cluster: {"message": str}
+            - generate_scale_down_manifest: JSON with deployment_yaml (replicas: 0)
+
+            When NOT to use:
+            - To convert Deployment to Rollout → use convert_deployment_to_rollout.
+            - To create a new rollout → use argo_create_rollout.
             """
             valid_actions = ("scale_cluster", "delete_cluster", "generate_scale_down_manifest")
             if action not in valid_actions:

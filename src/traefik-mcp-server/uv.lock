@@ -1233,8 +1233,8 @@ wheels = [
 ]
 
 [[package]]
-name = "traefik-mcp-server"
-version = "0.1.0"
+name = "talkops-traefik-mcp-server"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },

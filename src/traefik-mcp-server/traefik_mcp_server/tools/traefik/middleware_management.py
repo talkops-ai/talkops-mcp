@@ -4,6 +4,7 @@ import json
 from typing import Dict, Any, Optional, List, Literal, Union
 from pydantic import Field
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 
 from traefik_mcp_server.tools.base import BaseTool
 from traefik_mcp_server.exceptions.custom import (
@@ -21,7 +22,15 @@ class MiddlewareTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register tools with FastMCP."""
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Manage Traefik Middleware",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def traefik_manage_middleware(
             action: Literal["create", "delete"] = Field(
                 ...,
@@ -198,18 +207,21 @@ class MiddlewareTools(BaseTool):
             ),
             ctx: Optional[Context] = None,
         ) -> Union[Dict[str, Any], str]:
-            """Create, update, or delete Traefik middleware (unified CRUD).
+            """Create, update, or delete Traefik middleware resources.
 
-            action=create upserts by middleware_name. Required fields depend on middleware_type:
-            rate_limit: average, burst, period | circuit_breaker: trigger_type, threshold | strip_prefix: prefixes or regex_patterns
-            | redirect_scheme: optional redirect_permanent | inflight_req: inflight_amount
-            | headers: at least one CORS or custom header field | ip_allowlist/ip_denylist: source_ranges or source_ranges_csv
-            | forward_auth: forward_auth_address | buffering: max_request_body_bytes
-            | replace_path: replace_path_value | replace_path_regex: replace_path_regex_pattern (replacement optional)
-            | add_prefix: add_prefix_value
+            Unified CRUD for creating traffic policies (rate limits,
+            circuit breakers, header manipulation, auth, etc.).
 
-            NGINX auth-signin is not mapped to forwardAuth (handle redirects separately).
-            action=delete: delete the middleware by name.
+            **WARNING: May impact traffic access if applied incorrectly.**
+
+            Args:
+                middleware_type: Must match one of the literal values.
+
+            Returns:
+            - JSON dict with {"status": str, "middleware_name": str, ...}
+
+            When NOT to use:
+            - To attach middleware to a route → use traefik_manage_route_middlewares.
             """
             assert self.traefik_service is not None
             assert ctx is not None
@@ -576,7 +588,15 @@ class MiddlewareTools(BaseTool):
             else:
                 raise ValueError(f"Unknown middleware_type: {middleware_type!r}")
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Manage Traffic Mirroring",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def traefik_manage_traffic_mirroring(
             action: Literal["enable", "disable", "update"] = Field(
                 ...,
@@ -608,9 +628,23 @@ class MiddlewareTools(BaseTool):
             ),
             ctx: Optional[Context] = None,
         ) -> Dict[str, Any]:
-            """Traffic mirroring: enable shadow copy, disable (delete mirror), or update mirror percentage.
+            """Enable, update, or disable Traefik traffic mirroring.
 
-            For read-only anomaly hints use MCP resource ``traefik://anomalies/detected`` when available.
+            Shadow copy a percentage of traffic to a mirror service for
+            testing without affecting real users.
+
+            Actions:
+            - enable: creates mirror TraefikService.
+            - update: change mirror_percent.
+            - disable: deletes mirror.
+
+            **WARNING: Attaching to an IngressRoute replaces live WRR split.**
+
+            Returns:
+            - JSON dict with {"status": str, ...}
+
+            When NOT to use:
+            - For active canary deployments → use traefik_manage_weighted_routing.
             """
             assert self.traefik_service is not None
             assert ctx is not None
@@ -788,14 +822,22 @@ class MiddlewareTools(BaseTool):
                 await ctx.error(str(e))
                 raise TraefikOperationError(f"Failed to update mirroring: {str(e)}")
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Manage Route Middlewares",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def traefik_manage_route_middlewares(
             action: Literal["attach", "detach"] = Field(
                 ...,
                 description="Action: attach (add middlewares to route) | detach (remove middlewares from route)",
             ),
             route_name: str = Field(..., min_length=1, description="IngressRoute name"),
-            middleware_names: list = Field(
+            middleware_names: List[str] = Field(
                 ...,
                 description="List of Middleware names to attach or detach (same namespace as route)",
             ),
@@ -807,13 +849,16 @@ class MiddlewareTools(BaseTool):
             ),
             ctx: Optional[Context] = None,
         ) -> Dict[str, Any]:
-            """Attach or detach middlewares on an IngressRoute.
+            """Attach or detach Middlewares on an IngressRoute.
 
-            Required: action ("attach" | "detach"), route_name, middleware_names.
-            Optional: namespace (default "default"), traefik_version (default "v3"),
-            route_index (0-based rule index; omit to apply to all rules).
-            attach: add middlewares to the route (idempotent). detach: remove them
-            (e.g. after deleting a middleware or to fix "middleware does not exist").
+            Modifies an existing IngressRoute to add or remove references
+            to Middleware objects. Idempotent.
+
+            Returns:
+            - JSON dict with {"status": str, "message": str, ...}
+
+            When NOT to use:
+            - To create the actual middleware → use traefik_manage_middleware.
             """
             assert self.traefik_service is not None
             assert ctx is not None

@@ -1,0 +1,17 @@
+{
+  "items": [
+    {
+      "metadata": {
+        "name": "opentelemetry-operator-controller-manager-7d4f8b9c6-abc12",
+        "namespace": "opentelemetry-operator-system",
+        "labels": {
+          "app.kubernetes.io/name": "opentelemetry-operator",
+          "control-plane": "controller-manager"
+        }
+      },
+      "status": {
+        "phase": "Running"
+      }
+    }
+  ]
+}

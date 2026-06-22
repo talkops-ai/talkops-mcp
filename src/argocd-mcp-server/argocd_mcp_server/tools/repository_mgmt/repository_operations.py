@@ -3,6 +3,7 @@
 import os
 from typing import Dict, Any, Optional
 from pydantic import Field
+from mcp.types import ToolAnnotations
 from fastmcp import Context
 
 from argocd_mcp_server.tools.base import BaseTool
@@ -30,48 +31,42 @@ class RepositoryManagementTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register tools with FastMCP."""
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Onboard Repository via HTTPS",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def onboard_repository_https(
-            repo_url: str = Field(..., min_length=1, description='Repository URL (https://...)'),
+            repo_url: str = Field(..., min_length=1, description='Repository URL (must start with https://)'),
             repo_type: str = Field(default="git", description='Repository type: git, helm, or oci'),
             enable_lfs: bool = Field(default=False, description='Enable Git LFS support'),
             project: Optional[str] = Field(default=None, description='Project-scoped repository'),
             insecure: bool = Field(default=False, description='Skip TLS certificate verification'),
             force_http_basic_auth: bool = Field(default=False, description='Force HTTP basic authentication'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            Onboard a GitHub/GitLab repository using HTTPS authentication.
-            
-            🔒 SECURITY: Credentials are read from environment variables to prevent exposure to LLM.
-            Required environment variables:
-            - GIT_USERNAME: Git username (can be empty for token-only auth)
-            - GIT_PASSWORD: Git password or personal access token
-            
-            This tool registers a new Git repository with ArgoCD using username/password
-            or token-based authentication over HTTPS. Perfect for onboarding public or
-            private repositories with personal access tokens.
-            
-            Args:
-                repo_url: HTTPS repository URL (e.g., https://github.com/org/repo.git)
-                repo_type: Repository type (git, helm, oci)
-                enable_lfs: Enable Git LFS support for large files
-                project: Optional ArgoCD project to scope this repository to
-                insecure: Skip TLS certificate verification (for self-signed certs)
-                force_http_basic_auth: Force HTTP basic authentication
-            
+            """Onboard a Git repository using HTTPS authentication.
+
+            Registers a new repository with ArgoCD using username/password
+            or token-based authentication over HTTPS.
+
+            🔒 SECURITY: Credentials are read from environment variables
+            (GIT_USERNAME / GIT_PASSWORD) to prevent exposure to the LLM.
+
             Returns:
-                Repository onboarding result with connection state
-                
-            Examples:
-                # Set environment variables:
-                # export GIT_USERNAME=""  # Empty for token auth
-                # export GIT_PASSWORD="ghp_xxxxxxxxxxxx"
-                
-                # Then call:
-                onboard_repository_https(
-                    repo_url="https://github.com/myorg/myrepo.git"
-                )
+            - {"summary": str, "connection_state": {"status": str}, ...}
+
+            When NOT to use:
+            - For SSH authentication → use onboard_repository_ssh.
+            - To test connection first → use validate_repository_connection.
+
+            Common errors:
+            - Repository already exists: Use get_repository to view it.
+            - Authentication failed: Check GIT_PASSWORD env var.
             """
             await ctx.info(
                 f"Onboarding HTTPS repository: {repo_url}",
@@ -160,47 +155,43 @@ class RepositoryManagementTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Onboard Repository via SSH",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def onboard_repository_ssh(
-            repo_url: str = Field(..., min_length=1, description='Repository URL (ssh://git@... or git@...)'),
+            repo_url: str = Field(..., min_length=1, description='SSH repository URL (ssh://git@... or git@...)'),
             repo_type: str = Field(default="git", description='Repository type: git, helm, or oci'),
             enable_lfs: bool = Field(default=False, description='Enable Git LFS support'),
             project: Optional[str] = Field(default=None, description='Project-scoped repository'),
             insecure_ignore_host_key: bool = Field(default=False, description='Skip SSH host key verification'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            Onboard a GitHub/GitLab repository using SSH authentication.
-            
-            🔒 SECURITY: SSH private key is read from a file path to prevent exposure to LLM.
-            Optional environment variable:
-            - SSH_PRIVATE_KEY_PATH: Path to SSH private key file (default: ~/.ssh/id_rsa)
-            
-            This tool registers a new Git repository with ArgoCD using SSH key-based
-            authentication. Ideal for secure access to private repositories using
-            SSH deploy keys or user SSH keys.
-            
-            Args:
-                repo_url: SSH repository URL (e.g., git@github.com:org/repo.git or ssh://git@github.com/org/repo.git)
-                repo_type: Repository type (git, helm, oci)
-                enable_lfs: Enable Git LFS support for large files
-                project: Optional ArgoCD project to scope this repository to
-                insecure_ignore_host_key: Skip SSH host key verification (not recommended for production)
-            
+            """Onboard a Git repository using SSH key authentication.
+
+            Registers a new repository with ArgoCD using SSH deploy keys
+            or user SSH keys.
+
+            🔒 SECURITY: SSH private key is read from a file path
+            (SSH_PRIVATE_KEY_PATH env var, default: ~/.ssh/id_rsa)
+            to prevent exposure to the LLM.
+
             Returns:
-                Repository onboarding result with connection state
-                
-            Examples:
-                # Uses default SSH key (~/.ssh/id_rsa):
-                onboard_repository_ssh(
-                    repo_url="git@github.com:myorg/myrepo.git"
-                )
-                
-                # Or set custom key path:
-                # export SSH_PRIVATE_KEY_PATH="~/.ssh/deploy_key"
-                onboard_repository_ssh(
-                    repo_url="git@github.com:myorg/myrepo.git"
-                )
+            - {"summary": str, "connection_state": {"status": str}, ...}
+
+            When NOT to use:
+            - For HTTPS/token auth → use onboard_repository_https.
+            - To test connection first → use validate_repository_connection.
+
+            Common errors:
+            - Repository already exists: Use get_repository to view it.
+            - SSH key not found: Check SSH_PRIVATE_KEY_PATH env var.
+            - Host key verification failed: Set insecure_ignore_host_key=True.
             """
             await ctx.info(
                 f"Onboarding SSH repository: {repo_url}",
@@ -307,23 +298,31 @@ class RepositoryManagementTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="List ArgoCD Repositories",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def list_repositories(
             repo_filter: Optional[str] = Field(default=None, description='Optional URL filter to search repositories'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            List all Git repositories registered in ArgoCD.
-            
-            This tool retrieves all repositories currently registered with ArgoCD,
-            optionally filtered by repository URL. Useful for discovering what
-            repositories are available for creating applications.
-            
-            Args:
-                repo_filter: Optional URL filter to search for specific repositories
-            
+            """List all Git repositories registered in ArgoCD.
+
+            Use to discover available repositories before creating
+            applications. Optionally filter by URL. Read-only.
+
             Returns:
-                List of registered repositories with their configurations
+            - {"summary": str, "total": int,
+               "repositories": [{"url": str, "type": str, ...}]}
+
+            When NOT to use:
+            - To get details of one repo → use get_repository.
+            - To register a new repo → use onboard_repository_https.
             """
             await ctx.info(
                 "Listing ArgoCD repositories",
@@ -360,22 +359,31 @@ class RepositoryManagementTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Get Repository Details",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def get_repository(
-            repo_url: str = Field(..., min_length=1, description='Repository URL (must match exactly)'),
-            ctx: Context = None
+            repo_url: str = Field(..., min_length=1, description='Repository URL (must match exactly as registered)'),
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            Get detailed information about a specific repository.
-            
-            This tool retrieves detailed configuration and connection state
-            for a specific repository registered in ArgoCD.
-            
-            Args:
-                repo_url: Repository URL (must match the registered URL exactly)
-            
+            """Get detailed information about a specific registered repository.
+
+            Use to check connection state, authentication method, and
+            configuration for a repository. Read-only.
+
             Returns:
-                Repository details including connection state and configuration
+            - {"summary": str, "url": str, "type": str,
+               "connection_state": {"status": str}, ...}
+
+            When NOT to use:
+            - To list all repos → use list_repositories.
+            - To test connectivity → use validate_repository_connection.
             """
             await ctx.info(
                 f"Getting repository details: {repo_url}",
@@ -414,7 +422,15 @@ class RepositoryManagementTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Validate Repository Connection",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def validate_repository_connection(
             repo_url: str = Field(..., min_length=1, description='Repository URL to validate'),
             auth_method: str = Field(..., description='Authentication method: https_basic, https_token, or ssh_key'),
@@ -422,25 +438,19 @@ class RepositoryManagementTools(BaseTool):
             password: Optional[str] = Field(default=None, description='Password/token for HTTPS auth'),
             ssh_private_key: Optional[str] = Field(default=None, description='SSH private key for SSH auth'),
             insecure: bool = Field(default=False, description='Skip TLS/SSH host verification'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            Validate repository connection without actually onboarding it.
-            
-            This tool tests connectivity and authentication to a repository
-            without registering it in ArgoCD. Useful for troubleshooting
-            connection issues before onboarding.
-            
-            Args:
-                repo_url: Repository URL to validate
-                auth_method: Authentication method (https_basic, https_token, ssh_key)
-                username: Username for HTTPS authentication
-                password: Password or token for HTTPS authentication
-                ssh_private_key: SSH private key for SSH authentication
-                insecure: Skip TLS certificate or SSH host key verification
-            
+            """Validate repository connection without onboarding.
+
+            Use to test connectivity and authentication before registering
+            a repository with ArgoCD. Read-only — does not register
+            the repository.
+
             Returns:
-                Validation result indicating whether the connection is successful
+            - {"summary": str, "valid": bool, "error": str | null}
+
+            When NOT to use:
+            - To onboard the repo → use onboard_repository_https or onboard_repository_ssh.
             """
             await ctx.info(
                 f"Validating repository connection: {repo_url}",
@@ -528,23 +538,32 @@ class RepositoryManagementTools(BaseTool):
                     "summary": f"Repository validation failed: {error_msg}"
                 }
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Delete Repository",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def delete_repository(
-            repo_url: str = Field(..., min_length=1, description='Repository URL to delete'),
-            ctx: Context = None
+            repo_url: str = Field(..., min_length=1, description='Repository URL to delete (must match exactly)'),
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            Delete a repository from ArgoCD.
-            
-            This tool removes a repository registration from ArgoCD.
-            Note: This does not delete applications using this repository;
-            it only removes the repository credentials.
-            
-            Args:
-                repo_url: Repository URL to delete (must match exactly)
-            
+            """Delete a repository registration from ArgoCD.
+
+            Use when removing a repository's credentials from ArgoCD.
+
+            **WARNING: This does NOT delete applications using this
+            repository — they will fail to sync until the repository
+            is re-registered.**
+
             Returns:
-                Deletion result
+            - {"summary": str, "status": str}
+
+            When NOT to use:
+            - To delete an application → use delete_application.
             """
             await ctx.warning(
                 f"Deleting repository: {repo_url}",
@@ -579,7 +598,15 @@ class RepositoryManagementTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Generate Repository Secret Manifest",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            )
+        )
         async def generate_repository_secret_manifest(
             repo_url: str = Field(..., min_length=1, description='Repository URL'),
             auth_method: str = Field(..., description='Authentication method: https_basic, https_token, or ssh_key'),
@@ -587,48 +614,23 @@ class RepositoryManagementTools(BaseTool):
             password: Optional[str] = Field(default=None, description='Password/token for HTTPS auth'),
             ssh_private_key: Optional[str] = Field(default=None, description='SSH private key for SSH auth'),
             secret_name: Optional[str] = Field(default=None, description='Kubernetes secret name (auto-generated if not provided)'),
-            namespace: str = Field(default="argocd", description='Kubernetes namespace'),
+            namespace: str = Field(default="argocd", description='Kubernetes namespace (default: argocd)'),
             repo_type: str = Field(default="git", description='Repository type: git, helm, or oci'),
             enable_lfs: bool = Field(default=False, description='Enable Git LFS support'),
             project: Optional[str] = Field(default=None, description='Project-scoped repository'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            Generate a Kubernetes Secret manifest for declarative repository setup.
-            
-            This tool generates a Kubernetes Secret YAML manifest that can be applied
-            to register a repository with ArgoCD in a declarative GitOps manner.
-            The manifest can be committed to Git and applied via kubectl or GitOps tools.
-            
-            Args:
-                repo_url: Repository URL
-                auth_method: Authentication method (https_basic, https_token, ssh_key)
-                username: Username for HTTPS authentication
-                password: Password or token for HTTPS authentication
-                ssh_private_key: SSH private key for SSH authentication
-                secret_name: Kubernetes secret name (auto-generated if not provided)
-                namespace: Kubernetes namespace (default: argocd)
-                repo_type: Repository type (git, helm, oci)
-                enable_lfs: Enable Git LFS support
-                project: Optional ArgoCD project to scope this repository to
-            
+            """Generate a Kubernetes Secret manifest for declarative repository setup.
+
+            Generates a YAML manifest that can be applied via kubectl or
+            committed to Git for GitOps-managed repository registration.
+            Read-only — does not apply anything to the cluster.
+
             Returns:
-                Kubernetes Secret manifest (YAML-ready)
-                
-            Examples:
-                # Generate secret for HTTPS repository
-                generate_repository_secret_manifest(
-                    repo_url="https://github.com/myorg/myrepo.git",
-                    auth_method="https_token",
-                    password="ghp_xxxxxxxxxxxx"
-                )
-                
-                # Generate secret for SSH repository
-                generate_repository_secret_manifest(
-                    repo_url="git@github.com:myorg/myrepo.git",
-                    auth_method="ssh_key",
-                    ssh_private_key="<private key content>"
-                )
+            - {"summary": str, "secret_name": str, "manifest": str}
+
+            When NOT to use:
+            - To register via API → use onboard_repository_https or onboard_repository_ssh.
             """
             await ctx.info(
                 f"Generating Kubernetes Secret manifest for repository: {repo_url}",

@@ -1,0 +1,32 @@
+{
+  "scopes": [
+    {
+      "name": "resource",
+      "tags": [
+        {"name": "service.name"},
+        {"name": "k8s.namespace.name"},
+        {"name": "k8s.pod.name"},
+        {"name": "k8s.deployment.name"},
+        {"name": "deployment.environment"}
+      ]
+    },
+    {
+      "name": "span",
+      "tags": [
+        {"name": "http.method"},
+        {"name": "http.status_code"},
+        {"name": "http.url"},
+        {"name": "db.system"},
+        {"name": "db.statement"}
+      ]
+    },
+    {
+      "name": "intrinsic",
+      "tags": [
+        {"name": "duration"},
+        {"name": "name"},
+        {"name": "status"}
+      ]
+    }
+  ]
+}

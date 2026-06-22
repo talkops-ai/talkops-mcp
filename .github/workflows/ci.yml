@@ -62,6 +62,9 @@ jobs:
             "argocd-mcp-server"
             "argo-rollout-mcp-server"
             "traefik-mcp-server"
+            "opentelemetry-mcp-server"
+            "tempo-mcp-server"
+            "loki-mcp-server"
           )
 
           SERVERS="[]"

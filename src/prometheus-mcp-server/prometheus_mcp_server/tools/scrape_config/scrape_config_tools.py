@@ -35,16 +35,39 @@ class ScrapeConfigTools(BaseTool):
         )
         async def prom_apply_servicemonitor(
             service_name: str = Field(
-                ..., description="Service name to monitor"
+                ..., description="Service name to monitor (the actual K8s Service name)"
             ),
             namespace: str = Field(
-                default="default", description="Kubernetes namespace"
+                default="default",
+                description=(
+                    "Namespace where the ServiceMonitor CRD will be created. "
+                    "This is where Prometheus Operator looks for ServiceMonitors. "
+                    "Usually the same as the Prometheus namespace (e.g. 'monitoring'). "
+                    "If the target service is in a different namespace, set "
+                    "target_namespace instead of changing this."
+                ),
+            ),
+            target_namespace: Optional[str] = Field(
+                default=None,
+                description=(
+                    "Namespace where the target Service lives. Use when the service "
+                    "is in a different namespace than the ServiceMonitor itself "
+                    "(cross-namespace scraping). For example: ServiceMonitor in "
+                    "'monitoring', service in 'otel-demo' → set namespace='monitoring', "
+                    "target_namespace='otel-demo'. When omitted, the ServiceMonitor "
+                    "selects services in its own namespace."
+                ),
             ),
             monitor_name: Optional[str] = Field(
-                default=None, description="ServiceMonitor name"
+                default=None, description="ServiceMonitor name (auto-generated if omitted)"
             ),
             port_name: str = Field(
-                default="metrics", description="Port name to scrape"
+                default="metrics",
+                description=(
+                    "Port *name* (not number) to scrape, e.g. 'metrics', 'prometheus', "
+                    "'http-metrics'. Used as fallback when auto_discover=False or "
+                    "when no well-known port is found."
+                ),
             ),
             path: str = Field(
                 default="/metrics", description="Metrics path"
@@ -53,7 +76,7 @@ class ScrapeConfigTools(BaseTool):
                 default="30s", description="Scrape interval"
             ),
             labels: Optional[Dict[str, str]] = Field(
-                default=None, description="Extra labels for ServiceMonitor"
+                default=None, description="Extra labels for ServiceMonitor metadata"
             ),
             metric_relabelings: Optional[List[Dict[str, Any]]] = Field(
                 default=None, description="Metric relabelings to apply to the endpoint"
@@ -61,10 +84,10 @@ class ScrapeConfigTools(BaseTool):
             auto_discover: bool = Field(
                 default=True,
                 description=(
-                    "Auto-discover the target Service's labels and ports "
-                    "from the Kubernetes API. When True (default), the tool "
-                    "reads the actual Service to build a correct selector "
-                    "and port configuration. Set to False to use the "
+                    "Auto-discover the target Service's labels and ports from the "
+                    "Kubernetes API. When True (default), the tool reads the actual "
+                    "Service (in target_namespace or namespace) to build a correct "
+                    "selector and port configuration. Set to False to use the "
                     "provided port_name and a simple {app: service_name} selector."
                 ),
             ),
@@ -77,15 +100,30 @@ class ScrapeConfigTools(BaseTool):
 
             **WARNING: Creates a ServiceMonitor CRD in the Kubernetes cluster.**
 
+            Supports cross-namespace scraping via the `target_namespace` parameter.
+            When `target_namespace` differs from `namespace`, the generated
+            ServiceMonitor includes a ``spec.namespaceSelector`` so Prometheus can
+            discover services in the target namespace from the SM in `namespace`.
+
             By default, auto-discovers the target Service's metadata labels and
             port names from the Kubernetes API so the generated ServiceMonitor
             correctly matches any labeling convention (Helm, Kustomize, etc.).
             If the Service is not found, falls back to a simple ``{app: service_name}``
             selector with a warning.
 
+            **Cross-namespace example**:
+            ServiceMonitor in 'monitoring', service 'otel-demo-collector-collector'
+            in 'otel-demo':
+            >>> prom_apply_servicemonitor(
+            ...     service_name="otel-demo-collector-collector",
+            ...     namespace="monitoring",
+            ...     target_namespace="otel-demo",
+            ... )
+
             Returns:
-            - {\"applied\": str, \"namespace\": str, \"manifest_yaml\": str, \"notes\": str,
-               \"auto_discovered\": bool, \"discovered_details\": dict | None}
+            - {"applied": str, "namespace": str, "target_namespace": str,
+               "manifest_yaml": str, "notes": str,
+               "auto_discovered": bool, "discovered_details": dict | None}
 
             Prerequisites:
             - Prometheus Operator must be installed in the cluster
@@ -95,6 +133,10 @@ class ScrapeConfigTools(BaseTool):
 
             Common errors:
             - CRD not installed: Ensure Prometheus Operator is deployed.
+            - Service not found: Use the exact K8s Service name, not the app name.
+              Run `kubectl get svc -n <namespace>` to list available services.
+            - Target not appearing: Check that the port_name matches the K8s port
+              name on the Service (must be a named port, not a bare number).
             """
             try:
                 extra_labels = coerce_dict(labels) or {}
@@ -104,6 +146,9 @@ class ScrapeConfigTools(BaseTool):
 
                 name = monitor_name or f"{service_name}-monitor"
 
+                # Determine which namespace to look up the service in for discovery
+                discover_in_ns = target_namespace or namespace
+
                 # ── Auto-discovery: read the real K8s Service ────────────
                 discovered = None
                 selector_labels: Dict[str, str] = {"app": service_name}
@@ -112,7 +157,7 @@ class ScrapeConfigTools(BaseTool):
 
                 if auto_discover:
                     discovered = await kubernetes_service.discover_service_details(
-                        namespace, service_name
+                        discover_in_ns, service_name
                     )
 
                 if discovered:
@@ -124,6 +169,7 @@ class ScrapeConfigTools(BaseTool):
                         "helm.sh/chart",
                         "app.kubernetes.io/managed-by",
                         "app.kubernetes.io/version",
+                        "operator.opentelemetry.io/collector-service-type",
                     }
                     for key in _HELM_NOISE:
                         svc_labels.pop(key, None)
@@ -131,7 +177,8 @@ class ScrapeConfigTools(BaseTool):
                     if svc_labels:
                         selector_labels = svc_labels
                         discovery_notes.append(
-                            f"Auto-discovered selector labels from Service/{service_name}: "
+                            f"Auto-discovered selector labels from "
+                            f"Service/{service_name} in {discover_in_ns}: "
                             f"{selector_labels}"
                         )
                     else:
@@ -155,7 +202,7 @@ class ScrapeConfigTools(BaseTool):
                         )
                 elif auto_discover:
                     discovery_notes.append(
-                        f"Service/{service_name} not found in namespace {namespace}; "
+                        f"Service/{service_name} not found in namespace {discover_in_ns}; "
                         f"falling back to default selector {{app: {service_name}}}"
                     )
 
@@ -168,6 +215,22 @@ class ScrapeConfigTools(BaseTool):
                 if metric_relabelings:
                     endpoint["metricRelabelings"] = coerce_list(metric_relabelings)
 
+                spec: Dict[str, Any] = {
+                    "selector": {
+                        "matchLabels": selector_labels,
+                    },
+                    "endpoints": [endpoint],
+                }
+
+                # Add namespaceSelector for cross-namespace scraping
+                if target_namespace and target_namespace != namespace:
+                    spec["namespaceSelector"] = {
+                        "matchNames": [target_namespace]
+                    }
+                    discovery_notes.append(
+                        f"Cross-namespace scraping enabled: namespaceSelector targets '{target_namespace}'"
+                    )
+
                 manifest = {
                     "apiVersion": "monitoring.coreos.com/v1",
                     "kind": "ServiceMonitor",
@@ -176,12 +239,7 @@ class ScrapeConfigTools(BaseTool):
                         "namespace": namespace,
                         "labels": extra_labels,
                     },
-                    "spec": {
-                        "selector": {
-                            "matchLabels": selector_labels,
-                        },
-                        "endpoints": [endpoint],
-                    },
+                    "spec": spec,
                 }
 
                 await kubernetes_service.apply_servicemonitor(namespace, manifest)
@@ -197,6 +255,7 @@ class ScrapeConfigTools(BaseTool):
                 return {
                     "applied": f"ServiceMonitor/{name}",
                     "namespace": namespace,
+                    "target_namespace": discover_in_ns,
                     "manifest_yaml": manifest_yaml,
                     "notes": notes_str,
                     "auto_discovered": discovered is not None,
@@ -204,6 +263,56 @@ class ScrapeConfigTools(BaseTool):
                 }
             except Exception as e:
                 raise PrometheusOperationError(f"ServiceMonitor apply failed: {e}")
+
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Delete ServiceMonitor",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
+        async def prom_delete_servicemonitor(
+            monitor_name: str = Field(
+                ..., description="Name of the ServiceMonitor CRD to delete"
+            ),
+            namespace: str = Field(
+                default="monitoring", description="Namespace where the ServiceMonitor lives"
+            ),
+            ctx: Context = None,  # type: ignore[assignment]
+        ) -> Dict[str, Any]:
+            """Delete a ServiceMonitor CRD from the cluster.
+
+            Use this to remove stale or incorrectly configured ServiceMonitors.
+            MUTATES CLUSTER — deletes a K8s custom resource. Idempotent: safe
+            to call even if the resource does not exist.
+
+            **WARNING: Permanently deletes the ServiceMonitor from the cluster.**
+
+            Returns:
+            - {"deleted": str, "namespace": str, "status": "deleted" | "not_found"}
+
+            Common errors:
+            - Permission denied: Ensure the MCP server has RBAC rights to delete
+              ServiceMonitor CRDs in the target namespace.
+            """
+            try:
+                await kubernetes_service.delete_custom_resource(
+                    namespace=namespace,
+                    group="monitoring.coreos.com",
+                    version="v1",
+                    plural="servicemonitors",
+                    name=monitor_name,
+                )
+                return {
+                    "deleted": f"ServiceMonitor/{monitor_name}",
+                    "namespace": namespace,
+                    "status": "deleted",
+                }
+            except Exception as e:
+                # delete_custom_resource swallows 404 — only real errors reach here
+                raise PrometheusOperationError(f"ServiceMonitor delete failed: {e}")
 
         @mcp_instance.tool(
             annotations=ToolAnnotations(

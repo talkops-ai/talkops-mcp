@@ -399,6 +399,20 @@ class ServerConfig:
     http_keepalive_timeout: int = 5
     http_connect_timeout: int = 60
 
+    # Response size limits (bytes)
+    # Soft limit: Primary defense. Tools compact and truncate their own results
+    # to fit within this budget. Set conservatively because FastMCP serializes
+    # results twice (TextContent + structured_content), roughly doubling the
+    # wire payload (~2.2x). With label compaction, 40KB of compacted data
+    # carries significantly more information than 90KB of verbose JSON.
+    response_size_soft_limit: int = 40_000
+    # Hard limit: Safety net only. The ResponseLimitingMiddleware uses this
+    # as a last resort. Set generously high to avoid triggering on normally
+    # truncated results. When the old gap was only 10KB (90K soft / 100K hard),
+    # the hard limit fired routinely, stripping structuredContent and breaking
+    # MCP client-side outputSchema validation.
+    response_size_hard_limit: int = 200_000
+
     backends: List[BackendConfig] = field(default_factory=lambda: [BackendConfig()])
     kubernetes: KubernetesConfig = field(default_factory=KubernetesConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -462,6 +476,8 @@ class Config:
             http_timeout=int(os.getenv('MCP_HTTP_TIMEOUT', '300')),
             http_keepalive_timeout=int(os.getenv('MCP_HTTP_KEEPALIVE_TIMEOUT', '5')),
             http_connect_timeout=int(os.getenv('MCP_HTTP_CONNECT_TIMEOUT', '60')),
+            response_size_soft_limit=int(os.getenv('MCP_RESPONSE_SIZE_SOFT_LIMIT', '40000')),
+            response_size_hard_limit=int(os.getenv('MCP_RESPONSE_SIZE_HARD_LIMIT', '200000')),
             backends=backends,
             kubernetes=KubernetesConfig(
                 context_name=os.getenv('K8S_CONTEXT'),

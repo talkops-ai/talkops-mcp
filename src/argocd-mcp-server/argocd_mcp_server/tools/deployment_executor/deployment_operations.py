@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, Optional
 from pydantic import Field
+from mcp.types import ToolAnnotations
 from fastmcp import Context
 
 from argocd_mcp_server.tools.base import BaseTool
@@ -18,28 +19,42 @@ class DeploymentExecutorTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register tools with FastMCP."""
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Sync ArgoCD Application",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def sync_application(
             cluster_name: str = Field(..., min_length=1, description='Target cluster'),
             app_name: str = Field(..., min_length=1, description='Application name'),
-            revision: Optional[str] = Field(default=None, description='Specific Git revision to sync to'),
+            revision: Optional[str] = Field(default=None, description='Specific Git revision to sync to (e.g., "abc123", "v1.0.0")'),
             dry_run: bool = Field(default=False, description='Simulate sync without applying changes'),
             prune: bool = Field(default=True, description='Delete resources not in Git'),
             auto_policy: str = Field(default='apply', description='Auto-sync policy: apply, create, sync_only'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Sync application to desired state.
-            
-            Args:
-                cluster_name: Target cluster
-                app_name: Application name
-                revision: Specific Git revision to sync to
-                dry_run: Simulate sync without applying changes
-                prune: Delete resources not in Git
-                auto_policy: Auto-sync policy
-            
+            """Sync an ArgoCD application to its desired Git state.
+
+            Use when deploying changes from Git to the cluster. ArgoCD
+            compares the Git manifests with the live cluster state and
+            applies the differences.
+
+            **WARNING: This modifies live cluster resources. Pods may be
+            restarted, services reconfigured, or resources deleted (if
+            prune=True).**
+
             Returns:
-                Sync operation result
+            - {"summary": str, "status": str, "message": str,
+               "details": {"dry_run": bool, ...}}
+
+            When NOT to use:
+            - To preview changes → use get_application_diff.
+            - To rollback → use rollback_application.
+            - To create a new app → use create_application.
             """
             await ctx.info(
                 f"Syncing application '{app_name}'",
@@ -86,22 +101,33 @@ class DeploymentExecutorTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise SyncOperationFailed(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Get Application Diff",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def get_application_diff(
             cluster_name: str = Field(..., min_length=1, description='Target cluster'),
             app_name: str = Field(..., min_length=1, description='Application name'),
-            target_revision: Optional[str] = Field(default=None, description='Target Git revision'),
-            ctx: Context = None
+            target_revision: Optional[str] = Field(default=None, description='Target Git revision to diff against'),
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Show what changes will happen before syncing.
-            
-            Args:
-                cluster_name: Target cluster
-                app_name: Application name
-                target_revision: Target Git revision
-            
+
+            Use to preview the diff between the Git desired state and the
+            live cluster state. Read-only — does not apply any changes.
+
             Returns:
-                Diff showing what will change
+            - {"changes_detected": bool, "diffs": [{"kind": str,
+               "name": str, "diff": str}]}
+
+            When NOT to use:
+            - To apply changes → use sync_application.
+            - To get app details → use get_application_details.
             """
             await ctx.info(
                 f"Getting diff for application '{app_name}'",
@@ -133,24 +159,36 @@ class DeploymentExecutorTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Get Application Logs",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def get_application_logs(
             cluster_name: str = Field(..., min_length=1, description='Target cluster'),
             app_name: str = Field(..., min_length=1, description='Application name'),
-            tail_lines: int = Field(default=50, description='Number of recent log lines to retrieve per pod (max 200)'),
-            follow: bool = Field(default=False, description='Stream logs'),
-            ctx: Context = None
+            tail_lines: int = Field(default=50, description='Number of recent log lines per pod (max 200)'),
+            follow: bool = Field(default=False, description='Stream logs (not recommended for MCP)'),
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Get logs from application pods.
-            
-            Args:
-                cluster_name: Target cluster
-                app_name: Application name
-                tail_lines: Number of recent log lines to retrieve per pod (default: 50, max: 200)
-                follow: Stream logs
-            
+
+            Use to troubleshoot runtime errors, CrashLoopBackOff, or
+            verify application behavior after a sync. Retrieves logs
+            from up to 5 pods. Read-only.
+
             Returns:
-                Application logs summary with recent entries
+            - {"summary": str, "app_name": str, "total_pods": int,
+               "pod_logs": [{"pod_name": str, "line_count": int,
+               "recent_logs": [str], "error_count": int}]}
+
+            When NOT to use:
+            - To get events → use get_application_events.
+            - To check sync status → use get_sync_status.
             """
             await ctx.info(
                 f"Getting logs for application '{app_name}'",
@@ -272,20 +310,32 @@ class DeploymentExecutorTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Get Sync Status",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def get_sync_status(
             cluster_name: str = Field(..., min_length=1, description='Target cluster'),
             app_name: str = Field(..., min_length=1, description='Application name'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Get current sync status and operation progress.
-            
-            Args:
-                cluster_name: Target cluster
-                app_name: Application name
-            
+
+            Use to check if an application is Synced, OutOfSync, or has
+            a sync operation in progress. Read-only.
+
             Returns:
-                Current sync status
+            - {"sync": {"status": str, "revision": str},
+               "health": {"status": str}, "operation": {...} | null}
+
+            When NOT to use:
+            - To get full app details → use get_application_details.
+            - To sync the app → use sync_application.
             """
             await ctx.info(
                 f"Getting sync status for '{app_name}'",
@@ -315,22 +365,35 @@ class DeploymentExecutorTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Rollback Application",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def rollback_application(
             cluster_name: str = Field(..., min_length=1, description='Target cluster'),
             app_name: str = Field(..., min_length=1, description='Application name'),
-            steps: int = Field(default=1, description='How many revisions back to rollback'),
-            ctx: Context = None
+            steps: int = Field(default=1, description='How many revisions back to rollback (default: 1 = previous)'),
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Rollback application to previous sync.
-            
-            Args:
-                cluster_name: Target cluster
-                app_name: Application name
-                steps: How many revisions back to rollback
-            
+            """Rollback an application to a previous sync revision.
+
+            Use when a recent sync caused issues and you need to revert.
+            Checks sync history and syncs to the target revision.
+
+            **WARNING: This modifies the live cluster by reverting to
+            an older configuration. Pods may be restarted.**
+
             Returns:
-                Rollback result
+            - {"status": str, "app_name": str, "revision": str}
+
+            When NOT to use:
+            - To rollback to a specific commit → use rollback_to_revision.
+            - To sync to latest → use sync_application.
             """
             await ctx.warning(
                 f"Rolling back application '{app_name}' by {steps} revision(s)",
@@ -377,22 +440,34 @@ class DeploymentExecutorTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise SyncOperationFailed(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Rollback to Specific Revision",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def rollback_to_revision(
             cluster_name: str = Field(..., min_length=1, description='Target cluster'),
             app_name: str = Field(..., min_length=1, description='Application name'),
-            revision: str = Field(..., min_length=1, description='Git revision'),
-            ctx: Context = None
+            revision: str = Field(..., min_length=1, description='Git commit SHA or tag to rollback to (e.g., "abc123", "v1.0.0")'),
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Rollback to specific Git revision.
-            
-            Args:
-                cluster_name: Target cluster
-                app_name: Application name
-                revision: Git revision
-            
+            """Rollback an application to a specific Git revision.
+
+            Use when you know the exact commit or tag to revert to.
+
+            **WARNING: This modifies the live cluster by syncing to a
+            specific older revision. Pods may be restarted.**
+
             Returns:
-                Rollback result
+            - {"status": str, "app_name": str, "revision": str}
+
+            When NOT to use:
+            - To rollback N steps → use rollback_application.
+            - To sync to HEAD → use sync_application.
             """
             await ctx.warning(
                 f"Rolling back application '{app_name}' to revision {revision}",
@@ -422,22 +497,35 @@ class DeploymentExecutorTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise SyncOperationFailed(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Prune Application Resources",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def prune_resources(
             cluster_name: str = Field(..., min_length=1, description='Target cluster'),
             app_name: str = Field(..., min_length=1, description='Application name'),
-            dry_run: bool = Field(default=True, description='Preview pruning without deletion'),
-            ctx: Context = None
+            dry_run: bool = Field(default=True, description='Preview pruning without deletion (default: True for safety)'),
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Remove resources not in Git (safe cleanup).
-            
-            Args:
-                cluster_name: Target cluster
-                app_name: Application name
-                dry_run: Preview pruning without deletion
-            
+            """Remove Kubernetes resources not present in Git (safe cleanup).
+
+            Use to clean up orphaned resources after removing manifests
+            from Git. Defaults to dry_run=True for safety.
+
+            **WARNING: With dry_run=False, this DELETES Kubernetes resources
+            that exist in the cluster but not in the Git repository.**
+
             Returns:
-                Prune result
+            - {"status": str, "pruned_resources": [...]}
+
+            When NOT to use:
+            - To sync with pruning → use sync_application (prune=True).
+            - To delete the entire app → use delete_application.
             """
             await ctx.warning(
                 f"Pruning resources for '{app_name}'",
@@ -476,20 +564,33 @@ class DeploymentExecutorTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise SyncOperationFailed(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Hard Refresh Application",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def hard_refresh(
             cluster_name: str = Field(..., min_length=1, description='Target cluster'),
             app_name: str = Field(..., min_length=1, description='Application name'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Hard refresh application state (bypass cache).
-            
-            Args:
-                cluster_name: Target cluster
-                app_name: Application name
-            
+            """Hard refresh application state (bypass ArgoCD cache).
+
+            Use when the ArgoCD UI shows stale data or after making
+            changes directly in the Git repository. Forces ArgoCD to
+            re-read from Git and re-compare with the live cluster.
+
             Returns:
-                Refresh result
+            - {"app_name": str, "refreshed": bool,
+               "sync_status": str, "health_status": str}
+
+            When NOT to use:
+            - For a quick status check → use soft_refresh or get_sync_status.
+            - To apply changes → use sync_application.
             """
             await ctx.info(
                 f"Hard refreshing application '{app_name}'",
@@ -520,20 +621,32 @@ class DeploymentExecutorTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Soft Refresh Application",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def soft_refresh(
             cluster_name: str = Field(..., min_length=1, description='Target cluster'),
             app_name: str = Field(..., min_length=1, description='Application name'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Soft refresh application state (use cache).
-            
-            Args:
-                cluster_name: Target cluster
-                app_name: Application name
-            
+            """Soft refresh application state (use ArgoCD cache).
+
+            Use for a quick status update without forcing a full re-read
+            from Git. Faster than hard_refresh. Read-only.
+
             Returns:
-                Refresh result
+            - {"app_name": str, "refreshed": bool,
+               "sync_status": str, "health_status": str}
+
+            When NOT to use:
+            - If data seems stale → use hard_refresh.
+            - To apply changes → use sync_application.
             """
             await ctx.info(
                 f"Soft refreshing application '{app_name}'",
@@ -563,22 +676,34 @@ class DeploymentExecutorTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Cancel Deployment",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def cancel_deployment(
             cluster_name: str = Field(..., min_length=1, description='Target cluster'),
             app_name: str = Field(..., min_length=1, description='Application name'),
-            operation_id: str = Field(..., min_length=1, description='Operation ID to cancel'),
-            ctx: Context = None
+            operation_id: str = Field(..., min_length=1, description='Operation ID to cancel (from sync_application response)'),
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Cancel ongoing sync operation.
-            
-            Args:
-                cluster_name: Target cluster
-                app_name: Application name
-                operation_id: Operation ID to cancel
-            
+            """Cancel an ongoing sync operation.
+
+            Use when a sync is taking too long or was triggered by mistake.
+            Cancels the current sync operation for the application.
+
+            **WARNING: Cancelling a sync mid-operation may leave the
+            application in a partially-synced state.**
+
             Returns:
-                Cancellation result
+            - {"app_name": str, "operation_id": str, "cancelled": bool}
+
+            When NOT to use:
+            - To rollback a completed sync → use rollback_application.
             """
             await ctx.warning(
                 f"Cancelling deployment for '{app_name}'",

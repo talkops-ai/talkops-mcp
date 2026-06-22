@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, Optional, List
 from pydantic import Field
+from mcp.types import ToolAnnotations
 from fastmcp import Context
 
 from argocd_mcp_server.tools.base import BaseTool
@@ -24,60 +25,64 @@ class ProjectManagementTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register tools with FastMCP."""
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Create ArgoCD Project",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def create_project(
             project_name: str = Field(..., min_length=1, description='Project name (must be unique)'),
             description: str = Field(..., min_length=1, description='Project description'),
-            source_repos: List[str] = Field(..., description='List of source repository URLs (supports wildcards like https://github.com/org/*)'),
-            destinations: List[Dict[str, str]] = Field(..., description='List of destination clusters and namespaces, e.g. [{"server": "https://kubernetes.default.svc", "namespace": "prod"}]'),
-            cluster_resource_whitelist: Optional[List[Dict[str, str]]] = Field(default=None, description='Allowed cluster-scoped resources, e.g. [{"group": "apps", "kind": "Deployment"}]'),
+            source_repos: List[str] = Field(
+                ...,
+                description=(
+                    'List of allowed source repository URLs. Supports wildcards. '
+                    'Example: ["https://github.com/org/*", "https://github.com/org/specific-repo.git"]'
+                ),
+            ),
+            destinations: List[Dict[str, str]] = Field(
+                ...,
+                description=(
+                    'List of allowed destination clusters and namespaces as JSON objects. '
+                    'Example: [{"server": "https://kubernetes.default.svc", "namespace": "prod"}, '
+                    '{"server": "https://kubernetes.default.svc", "namespace": "staging"}]'
+                ),
+            ),
+            cluster_resource_whitelist: Optional[List[Dict[str, str]]] = Field(
+                default=None,
+                description=(
+                    'Allowed cluster-scoped resources as JSON objects. '
+                    'Example: [{"group": "apps", "kind": "Deployment"}, {"group": "", "kind": "Service"}]'
+                ),
+            ),
             cluster_resource_blacklist: Optional[List[Dict[str, str]]] = Field(default=None, description='Denied cluster-scoped resources'),
             namespace_resource_whitelist: Optional[List[Dict[str, str]]] = Field(default=None, description='Allowed namespace-scoped resources'),
             namespace_resource_blacklist: Optional[List[Dict[str, str]]] = Field(default=None, description='Denied namespace-scoped resources'),
             orphaned_resources_warn: bool = Field(default=False, description='Warn about orphaned resources'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            Create a new ArgoCD project for organizing applications.
-            
-            Projects provide a logical grouping of ArgoCD applications and enable
-            multi-tenancy by restricting what may be deployed and where. This tool
-            creates projects via the ArgoCD REST API.
-            
-            Args:
-                project_name: Unique name for the project
-                description: Description of the project's purpose
-                source_repos: List of allowed Git repository URLs (supports wildcards)
-                destinations: Allowed deployment destinations (cluster + namespace pairs)
-                cluster_resource_whitelist: Restrict which cluster-scoped resources can be deployed
-                cluster_resource_blacklist: Deny specific cluster-scoped resources
-                namespace_resource_whitelist: Restrict which namespace-scoped resources can be deployed
-                namespace_resource_blacklist: Deny specific namespace-scoped resources
-                orphaned_resources_warn: Enable warnings for orphaned Kubernetes resources
-            
+            """Create a new ArgoCD project for organizing applications.
+
+            Projects enable multi-tenancy by restricting what may be
+            deployed, from which repositories, and to which clusters/namespaces.
+
+            **WARNING: Project policies control access. Misconfigured
+            source_repos or destinations can block application syncs.**
+
             Returns:
-                Project creation result with configuration details
-                
-            Examples:
-                # Team-based project
-                create_project(
-                    project_name="team-frontend",
-                    description="Frontend team project",
-                    source_repos=["https://github.com/myorg/frontend-*"],
-                    destinations=[{"server": "https://kubernetes.default.svc", "namespace": "frontend-*"}]
-                )
-                
-                # Production project with strict controls
-                create_project(
-                    project_name="production",
-                    description="Production environment",
-                    source_repos=["https://github.com/myorg/prod-*"],
-                    destinations=[{"server": "https://prod-cluster.example.com", "namespace": "prod-*"}],
-                    cluster_resource_whitelist=[
-                        {"group": "apps", "kind": "Deployment"},
-                        {"group": "", "kind": "Service"}
-                    ]
-                )
+            - {"summary": str, "project_name": str, "source_repos": [...],
+               "destinations": [...]}
+
+            When NOT to use:
+            - To update an existing project → use update_project.
+            - To generate a manifest for GitOps → use generate_project_manifest.
+
+            Common errors:
+            - Project already exists: Use get_project to view it.
             """
             await ctx.info(
                 f"Creating ArgoCD project: {project_name}",
@@ -147,23 +152,31 @@ class ProjectManagementTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="List ArgoCD Projects",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def list_projects(
             name_filter: Optional[str] = Field(default=None, description='Optional project name filter'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            List all ArgoCD projects.
-            
-            This tool retrieves all projects currently registered in ArgoCD,
-            optionally filtered by name. Useful for discovering available
-            projects and monitoring project configurations.
-            
-            Args:
-                name_filter: Optional name filter to search for specific projects
-            
+            """List all ArgoCD projects.
+
+            Use to discover available projects and their configurations.
+            Optionally filter by name. Read-only.
+
             Returns:
-                List of projects with their configurations
+            - {"summary": str, "total": int,
+               "projects": [{"name": str, ...}]}
+
+            When NOT to use:
+            - To get details of one project → use get_project.
+            - To create a project → use create_project.
             """
             await ctx.info(
                 "Listing ArgoCD projects",
@@ -198,22 +211,126 @@ class ProjectManagementTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Update ArgoCD Project",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
+        async def update_project(
+            project_name: str = Field(..., min_length=1, description='Project name'),
+            description: Optional[str] = Field(default=None, description='Project description'),
+            source_repos: Optional[List[str]] = Field(
+                default=None,
+                description=(
+                    'Updated list of allowed source repository URLs. '
+                    'Example: ["https://github.com/org/*"]'
+                ),
+            ),
+            destinations: Optional[List[Dict[str, str]]] = Field(
+                default=None,
+                description=(
+                    'Updated list of allowed destinations as JSON objects. '
+                    'Example: [{"server": "https://kubernetes.default.svc", "namespace": "prod"}]'
+                ),
+            ),
+            cluster_resource_whitelist: Optional[List[Dict[str, str]]] = Field(
+                default=None,
+                description=(
+                    'Updated allowed cluster-scoped resources as JSON objects. '
+                    'Example: [{"group": "apps", "kind": "Deployment"}]'
+                ),
+            ),
+            cluster_resource_blacklist: Optional[List[Dict[str, str]]] = Field(default=None, description='Denied cluster-scoped resources'),
+            namespace_resource_whitelist: Optional[List[Dict[str, str]]] = Field(default=None, description='Allowed namespace-scoped resources'),
+            namespace_resource_blacklist: Optional[List[Dict[str, str]]] = Field(default=None, description='Denied namespace-scoped resources'),
+            orphaned_resources_warn: Optional[bool] = Field(default=None, description='Warn about orphaned resources'),
+            ctx: Context = None  # type: ignore[assignment]
+        ) -> Dict[str, Any]:
+            """Update an existing ArgoCD project's configuration.
+
+            Use to modify allowed destinations, source repositories,
+            or resource restrictions on an existing project.
+
+            **WARNING: Changing source_repos or destinations may break
+            existing applications scoped to this project.**
+
+            Returns:
+            - {"summary": str, "project_name": str}
+
+            When NOT to use:
+            - To create a new project → use create_project.
+            - To delete a project → use delete_project.
+            """
+            await ctx.info(
+                f"Updating project: {project_name}",
+                extra={'project_name': project_name}
+            )
+            
+            try:
+                result = await self.mgmt_service.update_project(
+                    project_name=project_name,
+                    description=description,
+                    source_repos=source_repos,
+                    destinations=destinations,
+                    cluster_resource_whitelist=cluster_resource_whitelist,
+                    cluster_resource_blacklist=cluster_resource_blacklist,
+                    namespace_resource_whitelist=namespace_resource_whitelist,
+                    namespace_resource_blacklist=namespace_resource_blacklist,
+                    orphaned_resources_warn=orphaned_resources_warn
+                )
+                
+                await ctx.info(f"Project updated successfully: {project_name}")
+                
+                summary = f"Project '{project_name}' has been updated successfully in ArgoCD."
+                
+                return {
+                    "summary": summary,
+                    **result
+                }
+                
+            except ArgoCDNotFoundError:
+                friendly_msg = (
+                    f"Project '{project_name}' not found in ArgoCD. "
+                    f"Cannot update a non-existent project."
+                )
+                await ctx.error(friendly_msg)
+                raise ArgoCDNotFoundError(friendly_msg)
+            except Exception as e:
+                error_msg = str(e)
+                friendly_msg = f"Failed to update project: {error_msg}"
+                await ctx.error(friendly_msg)
+                raise ArgoCDOperationError(friendly_msg)
+
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Get ArgoCD Project Details",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def get_project(
             project_name: str = Field(..., min_length=1, description='Project name'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            Get detailed information about a specific ArgoCD project.
-            
-            This tool retrieves complete configuration details for a project,
-            including source repositories, destinations, and resource restrictions.
-            
-            Args:
-                project_name: Name of the project to retrieve
-            
+            """Get detailed information about a specific ArgoCD project.
+
+            Use to view a project's full configuration including source
+            repositories, destinations, and resource restrictions. Read-only.
+
             Returns:
-                Project details including full configuration
+            - {"summary": str, "name": str, "source_repos": [...],
+               "destinations": [...], ...}
+
+            When NOT to use:
+            - To list all projects → use list_projects.
+            - To update a project → use update_project.
             """
             await ctx.info(
                 f"Getting project details: {project_name}",
@@ -256,23 +373,36 @@ class ProjectManagementTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Delete ArgoCD Project",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def delete_project(
             project_name: str = Field(..., min_length=1, description='Project name to delete'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            Delete an ArgoCD project.
-            
-            This tool removes a project from ArgoCD. Note: You cannot delete
-            a project that still has applications. Delete all applications
-            in the project first.
-            
-            Args:
-                project_name: Name of the project to delete
-            
+            """Delete an ArgoCD project.
+
+            Use when permanently removing a project. All applications
+            in the project must be deleted first.
+
+            **WARNING: DESTRUCTIVE — Cannot be undone. Applications scoped
+            to this project will need to be recreated under a different
+            project.**
+
             Returns:
-                Deletion result
+            - {"summary": str, "status": str}
+
+            When NOT to use:
+            - To update a project → use update_project.
+
+            Common errors:
+            - Project has applications: Delete all apps in the project first.
             """
             await ctx.warning(
                 f"Deleting project: {project_name}",
@@ -319,50 +449,51 @@ class ProjectManagementTools(BaseTool):
                 await ctx.error(friendly_msg)
                 raise ArgoCDOperationError(friendly_msg)
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Generate Project Manifest",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            )
+        )
         async def generate_project_manifest(
             project_name: str = Field(..., min_length=1, description='Project name'),
             description: str = Field(..., min_length=1, description='Project description'),
-            source_repos: List[str] = Field(..., description='List of source repository URLs (supports wildcards)'),
-            destinations: List[Dict[str, str]] = Field(..., description='List of destination clusters and namespaces'),
+            source_repos: List[str] = Field(
+                ...,
+                description=(
+                    'List of allowed source repository URLs. Supports wildcards. '
+                    'Example: ["https://github.com/org/*"]'
+                ),
+            ),
+            destinations: List[Dict[str, str]] = Field(
+                ...,
+                description=(
+                    'List of allowed destination clusters and namespaces as JSON objects. '
+                    'Example: [{"server": "https://kubernetes.default.svc", "namespace": "prod"}]'
+                ),
+            ),
             namespace: str = Field(default="argocd", description='Kubernetes namespace for the project'),
             cluster_resource_whitelist: Optional[List[Dict[str, str]]] = Field(default=None, description='Allowed cluster-scoped resources'),
             cluster_resource_blacklist: Optional[List[Dict[str, str]]] = Field(default=None, description='Denied cluster-scoped resources'),
             namespace_resource_whitelist: Optional[List[Dict[str, str]]] = Field(default=None, description='Allowed namespace-scoped resources'),
             namespace_resource_blacklist: Optional[List[Dict[str, str]]] = Field(default=None, description='Denied namespace-scoped resources'),
             orphaned_resources_warn: bool = Field(default=False, description='Warn about orphaned resources'),
-            ctx: Context = None
+            ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """
-            Generate a Kubernetes AppProject manifest for declarative project management.
-            
-            This tool generates an AppProject YAML manifest that can be applied
-            via kubectl or committed to Git for GitOps workflows. This is the
-            recommended approach for production environments.
-            
-            Args:
-                project_name: Unique name for the project
-                description: Description of the project's purpose
-                source_repos: List of allowed Git repository URLs (supports wildcards)
-                destinations: Allowed deployment destinations 
-                namespace: Kubernetes namespace (default: argocd)
-                cluster_resource_whitelist: Allowed cluster-scoped resources
-                cluster_resource_blacklist: Denied cluster-scoped resources
-                namespace_resource_whitelist: Allowed namespace-scoped resources
-                namespace_resource_blacklist: Denied namespace-scoped resources
-                orphaned_resources_warn: Enable warnings for orphaned resources
-            
+            """Generate an AppProject manifest for declarative project management.
+
+            Generates a YAML manifest that can be applied via kubectl or
+            committed to Git for GitOps workflows. Recommended approach
+            for production environments. Read-only — does not apply anything.
+
             Returns:
-                Kubernetes AppProject manifest (YAML-ready)
-                
-            Examples:
-                # Generate manifest for production project
-                generate_project_manifest(
-                    project_name="production",
-                    description="Production environment",
-                    source_repos=["https://github.com/myorg/prod-*"],
-                    destinations=[{"server": "https://prod-cluster.example.com", "namespace": "prod-*"}]
-                )
+            - {"summary": str, "manifest": str, "project_name": str}
+
+            When NOT to use:
+            - To create via API → use create_project.
             """
             await ctx.info(
                 f"Generating AppProject manifest: {project_name}",

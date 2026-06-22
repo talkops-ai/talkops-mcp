@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, Optional, List, Literal
 from pydantic import Field
+from mcp.types import ToolAnnotations
 from fastmcp import Context
 
 from argo_rollout_mcp_server.tools.base import BaseTool
@@ -22,7 +23,15 @@ class RolloutOperationTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register tools with FastMCP."""
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Manage Rollout Lifecycle",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def argo_manage_rollout_lifecycle(
             name: str = Field(..., min_length=1, description="Rollout name"),
             action: LIFECYCLE_ACTIONS = Field(
@@ -32,24 +41,23 @@ class RolloutOperationTools(BaseTool):
             namespace: str = Field(default="default", description="Kubernetes namespace"),
             ctx: Context = None,
         ) -> Dict[str, Any]:
-            """Manage rollout lifecycle: promote, pause, resume, abort, or skip analysis.
+            """Manage rollout lifecycle: promote, pause, resume, abort, retry, or skip analysis.
 
-            Unified tool for changing the execution state of an active rollout.
-            Use the action parameter to select the operation.
+            Unified tool for changing execution state of an active rollout.
 
-            Args:
-                name: Rollout name
-                namespace: Kubernetes namespace
-                action: One of: promote (next step), promote_full (skip to 100%), pause,
-                    resume, abort, retry (clear abort to resume deployment), skip_analysis (emergency override)
+            **WARNING: promote_full skips all remaining steps. abort
+            rolls back to stable. skip_analysis is an emergency override.**
 
             Returns:
-                Result dict with action-specific next_action_hints
+            - {"message": str, "next_action_hints": [...]}
 
-            Raises:
-                RolloutNotFoundError: If rollout doesn't exist
-                RolloutPromotionError: If promotion fails (action=promote/promote_full)
-                RolloutAbortError: If abort fails (action=abort)
+            When NOT to use:
+            - To update image/strategy → use argo_update_rollout.
+            - To delete a rollout → use argo_delete_rollout.
+
+            Common errors:
+            - RolloutNotFoundError: Rollout does not exist.
+            - RolloutPromotionError: Promotion failed (wrong state).
             """
             valid_actions = ("promote", "promote_full", "pause", "resume", "abort", "retry", "skip_analysis")
             if action not in valid_actions:
@@ -247,7 +255,15 @@ class RolloutOperationTools(BaseTool):
                 await ctx.error(f"Lifecycle action '{action}' failed: {str(e)}")
                 raise ArgoRolloutError(f"Lifecycle action failed: {str(e)}")
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Configure Analysis Template",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def argo_configure_analysis_template(
             rollout_name: str = Field(..., min_length=1, description="Rollout name"),
             mode: Literal["execute", "generate_yaml", "delete"] = Field(
@@ -280,23 +296,20 @@ class RolloutOperationTools(BaseTool):
             ),
             ctx: Context = None,
         ):
-            """Configure AnalysisTemplate for rollout validation: create+link (execute) or generate YAML (generate_yaml).
-            
-            Unified tool replacing create_analysis_template_for_rollout and argo_set_analysis_template.
-            
-            Args:
-                rollout_name: Rollout to configure
-                mode: execute (create CRD + link) or generate_yaml (return YAML only)
-                namespace: Kubernetes namespace
-                template_name: Template name (default: {rollout_name}-analysis)
-                metrics: Custom metrics for execute. If None, uses threshold-based or default.
-                service_name: For threshold-based (default: rollout_name)
-                prometheus_url: Prometheus URL for threshold-based
-                error_rate_threshold, latency_p99_threshold, latency_p95_threshold: Threshold params
-            
+            """Configure AnalysisTemplate for rollout validation.
+
+            Create and link an AnalysisTemplate (execute), generate YAML
+            only for GitOps review (generate_yaml), or delete an existing
+            template (delete).
+
             Returns:
-                execute: dict with status, template_name, rollout, message
-                generate_yaml: dict with template_yaml, template_name, metrics, thresholds
+            - execute: {"status": str, "template_name": str, "next_action_hints": [...]}
+            - generate_yaml: {"template_yaml": str, "next_action_hints": [...]}
+            - delete: {"message": str}
+
+            When NOT to use:
+            - To create an experiment → use argo_create_experiment.
+            - To promote/abort → use argo_manage_rollout_lifecycle.
             """
             svc_name = service_name or rollout_name
             tpl_name = template_name or f"{svc_name}-analysis"

@@ -1,6 +1,6 @@
 [project]
 name = "talkops-helm-mcp-server"
-version = "0.3.0"
+version = "0.4.1"
 description = "A Model Context Protocol (MCP) server for managing Kubernetes workloads via Helm."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -38,8 +38,8 @@ Changelog = "https://github.com/talkops-ai/talkops-mcp/releases"
 [project.scripts]
 helm-mcp-server = "helm_mcp_server.main:cli"
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pyright>=1.1.409",
 ]
 

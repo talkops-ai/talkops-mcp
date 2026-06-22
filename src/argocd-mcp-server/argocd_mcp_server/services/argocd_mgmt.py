@@ -720,6 +720,94 @@ class ArgoCDManagementService:
         except Exception as e:
             raise ArgoCDOperationError(f"Failed to list projects: {str(e)}")
 
+
+    async def update_project(
+        self,
+        project_name: str,
+        description: Optional[str] = None,
+        source_repos: Optional[list[str]] = None,
+        destinations: Optional[list[Dict[str, str]]] = None,
+        cluster_resource_whitelist: Optional[list[Dict[str, str]]] = None,
+        cluster_resource_blacklist: Optional[list[Dict[str, str]]] = None,
+        namespace_resource_whitelist: Optional[list[Dict[str, str]]] = None,
+        namespace_resource_blacklist: Optional[list[Dict[str, str]]] = None,
+        orphaned_resources_warn: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        """
+        Update an existing ArgoCD project.
+        
+        Args:
+            project_name: Project name
+            description: Project description (if provided, updates the existing description)
+            source_repos: Allowed source repositories (if provided, replaces existing)
+            destinations: Allowed destination clusters and namespaces (if provided, replaces existing)
+            cluster_resource_whitelist: Allowed cluster-level resources (if provided, replaces existing)
+            cluster_resource_blacklist: Denied cluster-level resources (if provided, replaces existing)
+            namespace_resource_whitelist: Allowed namespace-scoped resources (if provided, replaces existing)
+            namespace_resource_blacklist: Denied namespace-scoped resources (if provided, replaces existing)
+            orphaned_resources_warn: Warn about orphaned resources
+            
+        Returns:
+            dict: Updated project object
+            
+        Raises:
+            ArgoCDNotFoundError: Project not found
+            ArgoCDOperationError: Update operation failed
+        """
+        # Check write access
+        self._check_write_access('project update')
+        
+        # First get the existing project to preserve fields
+        try:
+            existing = await self.get_project(project_name)
+            project_data = existing.get('raw_response', {})
+        except ArgoCDNotFoundError:
+            raise ArgoCDNotFoundError(f"Project '{project_name}' not found for update.")
+            
+        # Update metadata
+        if description is not None:
+            if "annotations" not in project_data.get("metadata", {}):
+                project_data.setdefault("metadata", {})["annotations"] = {}
+            project_data["metadata"]["annotations"]["description"] = description
+            
+        # Update spec
+        spec = project_data.get("spec", {})
+        if source_repos is not None:
+            spec["sourceRepos"] = source_repos
+        if destinations is not None:
+            spec["destinations"] = destinations
+        if cluster_resource_whitelist is not None:
+            spec["clusterResourceWhitelist"] = cluster_resource_whitelist
+        if cluster_resource_blacklist is not None:
+            spec["clusterResourceBlacklist"] = cluster_resource_blacklist
+        if namespace_resource_whitelist is not None:
+            spec["namespaceResourceWhitelist"] = namespace_resource_whitelist
+        if namespace_resource_blacklist is not None:
+            spec["namespaceResourceBlacklist"] = namespace_resource_blacklist
+        if orphaned_resources_warn is not None:
+            if orphaned_resources_warn:
+                spec["orphanedResources"] = {"warn": True}
+            else:
+                spec.pop("orphanedResources", None)
+                
+        project_data["spec"] = spec
+        
+        url_path = f"/api/v1/projects/{project_name}"
+        
+        try:
+            response = self._request('PUT', url_path, json={"project": project_data})
+            
+            return {
+                'project_name': project_name,
+                'updated': True,
+                'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
+                'message': f"Project '{project_name}' updated successfully",
+                'raw_response': response
+            }
+            
+        except Exception as e:
+            raise ArgoCDOperationError(f"Failed to update project: {str(e)}")
+
     async def get_project(
         self,
         project_name: str

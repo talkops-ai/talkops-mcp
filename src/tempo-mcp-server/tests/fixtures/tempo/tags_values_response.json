@@ -1,0 +1,8 @@
+{
+  "tagValues": [
+    {"type": "string", "value": "api-gateway"},
+    {"type": "string", "value": "user-service"},
+    {"type": "string", "value": "order-service"},
+    {"type": "string", "value": "payment-service"}
+  ]
+}

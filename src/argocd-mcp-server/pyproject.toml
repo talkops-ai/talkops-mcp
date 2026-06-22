@@ -1,6 +1,6 @@
 [project]
 name = "talkops-argocd-mcp-server"
-version = "0.2.0"
+version = "0.3.4"
 description = "A Model Context Protocol (MCP) server for managing Kubernetes applications and resources via ArgoCD using GitOps principles."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -38,8 +38,8 @@ Changelog = "https://github.com/talkops-ai/talkops-mcp/releases"
 [project.scripts]
 argocd-mcp-server = "argocd_mcp_server.main:cli"
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = []
 
 [build-system]
 requires = ["hatchling"]

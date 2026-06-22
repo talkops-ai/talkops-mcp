@@ -3,6 +3,7 @@
 import yaml
 from typing import Dict, Any, Optional, List
 from pydantic import Field
+from mcp.types import ToolAnnotations
 from fastmcp import Context
 from helm_mcp_server.exceptions import HelmOperationError, HelmValidationError
 from helm_mcp_server.tools.base import BaseTool
@@ -14,25 +15,53 @@ class ValidationTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register tools with FastMCP."""
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Validate Helm Chart Values",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            )
+        )
         async def helm_validate_values(
-            chart_name: str = Field(..., description='Chart name'),
-            values: dict = Field(default_factory=dict, description='Chart values to validate (defaults to empty dict for default chart values)'),
-            json_schema: Optional[dict] = Field(default=None, description='Optional JSON schema for validation'),
+            chart_name: str = Field(..., description='Chart reference (e.g., "bitnami/postgresql")'),
+            values: dict = Field(
+                default_factory=dict,
+                description=(
+                    'Chart values to validate as a JSON object. '
+                    'Example: {"auth": {"postgresPassword": "secret"}, '
+                    '"primary": {"persistence": {"enabled": true}}}. '
+                    'Defaults to empty dict for default chart values.'
+                ),
+            ),
+            json_schema: Optional[dict] = Field(
+                default=None,
+                description=(
+                    'Optional JSON Schema object for validation. '
+                    'Example: {"type": "object", "required": ["auth"], '
+                    '"properties": {"auth": {"type": "object"}}}. '
+                    'If omitted, only structural validation is performed.'
+                ),
+            ),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Validate Helm chart values against schema.
-            
-            Args:
-                chart_name: Chart name
-                values: Values to validate
-                json_schema: Optional JSON schema for validation
-            
+
+            Use before installation to check that values conform to the
+            chart's expected structure. Read-only — does not modify any
+            cluster state.
+
             Returns:
-                Validation result with status and any errors
-            
-            Raises:
-                HelmValidationError: If validation fails
+            - {"valid": bool, "warnings": [str], "errors": [str]}
+
+            When NOT to use:
+            - To preview rendered manifests → use helm_render_manifests.
+            - To install → use helm_install_chart.
+
+            Common errors:
+            - Missing required values: Check chart documentation.
+            - Schema mismatch: Verify values match expected types.
             """
             await ctx.info(
                 f"Validating values for chart '{chart_name}'",
@@ -88,50 +117,51 @@ class ValidationTools(BaseTool):
                 )
                 raise HelmOperationError(f'Validation failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Render Kubernetes Manifests from Helm Chart",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def helm_render_manifests(
-            chart_name: str = Field(..., description='Chart name (e.g., bitnami/postgresql)'),
-            values: Optional[dict] = Field(default=None, description='Chart values dictionary (will be written to temp file)'),
-            values_files: Optional[List[str]] = Field(default=None, description='List of values YAML files (paths or URLs) to use with -f'),
+            chart_name: str = Field(..., description='Chart reference (e.g., "bitnami/postgresql")'),
+            values: Optional[dict] = Field(
+                default=None,
+                description=(
+                    'Chart values as a JSON object. '
+                    'Example: {"service": {"type": "ClusterIP"}, '
+                    '"ingress": {"enabled": true}}.'
+                ),
+            ),
+            values_files: Optional[List[str]] = Field(default=None, description='List of values YAML file paths or URLs to use with -f'),
             values_file_content: Optional[str] = Field(default=None, description='Raw YAML content to use as a values file'),
-            version: Optional[str] = Field(default=None, description='Specific chart version'),
-            namespace: str = Field(default='default', description='Kubernetes namespace'),
+            version: Optional[str] = Field(default=None, description='Specific chart version (e.g., "15.5.0")'),
+            namespace: str = Field(default='default', description='Target Kubernetes namespace'),
             kubeconfig_path: Optional[str] = Field(default=None, description='Path to kubeconfig file for multi-cluster support'),
             context_name: Optional[str] = Field(default=None, description='Kubeconfig context name for multi-cluster support'),
             eks_cluster_name: Optional[str] = Field(default=None, description='AWS EKS cluster name for multi-cluster support'),
-            include_full: bool = Field(default=False, description='Include full manifests in response (default: False to save tokens, only summary and preview included)'),
+            include_full: bool = Field(default=False, description='Include full manifests (default: False to save tokens)'),
             preview_lines: int = Field(default=100, description='Number of lines to include in preview (default: 100)'),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Render Kubernetes manifests from Helm chart and values.
-            
-            This tool renders Kubernetes manifests from a Helm chart without installing it.
-            Useful for previewing what resources would be created or for CI/CD validation.
-            
-            By default, returns a summary and preview to minimize token usage. Set include_full=True
-            to get the complete manifests.
-            
-            Args:
-                chart_name: Chart name (e.g., 'bitnami/postgresql')
-                values: Chart values dictionary (will be written to temp file and passed as -f)
-                values_files: List of values YAML files (paths or URLs) to use with -f
-                values_file_content: Raw YAML content to use as a values file
-                version: Specific chart version
-                namespace: Kubernetes namespace
-                kubeconfig_path: Path to kubeconfig file for multi-cluster support
-                context_name: Kubeconfig context name for multi-cluster support
-                eks_cluster_name: AWS EKS cluster name for multi-cluster support
-                include_full: Include full manifests in response (default: False to save tokens)
-                preview_lines: Number of lines to include in preview (default: 100)
-            
+            """Render Kubernetes manifests from a Helm chart without installing.
+
+            Use to preview what resources would be created, or for CI/CD
+            validation. Read-only — no resources are created.
+
+            By default, returns a summary and preview to minimize token
+            usage. Set include_full=True for the complete manifests.
+
             Returns:
-                Dictionary with:
-                - summary: Metadata about resources (count, types, sizes)
-                - preview: Truncated preview of manifests (first N lines)
-                - full_manifests: Full YAML manifests (only if include_full=True)
-            
-            Raises:
-                HelmOperationError: If rendering fails
+            - {"summary": {"total_resources": int, "resource_types": {...}},
+               "preview": str, "full_manifests": str (if include_full=True)}
+
+            When NOT to use:
+            - To actually install → use helm_install_chart.
+            - To dry-run with install context → use helm_dry_run_install.
             """
             await ctx.info(
                 f"Rendering manifests for chart '{chart_name}'",
@@ -242,21 +272,30 @@ class ValidationTools(BaseTool):
                 )
                 raise HelmOperationError(f'Manifest rendering failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Validate Kubernetes Manifests",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            )
+        )
         async def helm_validate_manifests(
             manifests: str = Field(..., description='Kubernetes manifests as YAML string'),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Validate Kubernetes manifests (basic YAML and structure validation).
-            
-            Args:
-                manifests: Kubernetes manifests as YAML string
-            
+            """Validate Kubernetes manifests for YAML syntax and structure.
+
+            Use to check rendered manifests before applying them to a cluster.
+            Read-only — does not modify any cluster state.
+
             Returns:
-                Validation result with status and any errors
-            
-            Raises:
-                HelmValidationError: If validation fails
+            - {"valid": bool, "resource_count": int,
+               "resource_types": {...}, "warnings": [str], "errors": [str]}
+
+            When NOT to use:
+            - To render manifests from a chart → use helm_render_manifests.
             """
             await ctx.info(
                 'Validating Kubernetes manifests',
@@ -298,23 +337,32 @@ class ValidationTools(BaseTool):
                 )
                 raise HelmOperationError(f'Manifest validation failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Check Helm Chart Dependencies",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def helm_check_dependencies(
-            chart_name: str = Field(..., description='Chart name'),
-            repository: str = Field(default='bitnami', description='Helm repository'),
+            chart_name: str = Field(..., description='Chart name (e.g., "postgresql")'),
+            repository: str = Field(default='bitnami', description='Helm repository name'),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Check if chart dependencies are available.
-            
-            Args:
-                chart_name: Chart name
-                repository: Helm repository name
-            
+            """Check if a chart's sub-chart dependencies are available.
+
+            Use before installation to ensure all dependency charts can
+            be resolved. Read-only — does not modify any state.
+
             Returns:
-                Dependency check result with status
-            
-            Raises:
-                HelmOperationError: If check fails
+            - {"dependency_count": int, "all_available": bool,
+               "dependencies": [{...}]}
+
+            When NOT to use:
+            - To validate values → use helm_validate_values.
+            - To check cluster prerequisites → use kubernetes_check_prerequisites.
             """
             await ctx.info(
                 f"Checking dependencies for chart '{chart_name}'",
@@ -357,25 +405,43 @@ class ValidationTools(BaseTool):
                 )
                 raise HelmOperationError(f'Dependency check failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Generate Helm Installation Plan",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def helm_get_installation_plan(
-            chart_name: str = Field(..., description='Chart name'),
-            values: dict = Field(default_factory=dict, description='Chart values'),
-            namespace: str = Field(default='default', description='Kubernetes namespace'),
+            chart_name: str = Field(..., description='Chart reference (e.g., "bitnami/postgresql")'),
+            values: dict = Field(
+                default_factory=dict,
+                description=(
+                    'Chart values as a JSON object. '
+                    'Example: {"auth": {"postgresPassword": "secret"}, '
+                    '"primary": {"resources": {"limits": {"cpu": "1"}}}}.'
+                ),
+            ),
+            namespace: str = Field(default='default', description='Target Kubernetes namespace'),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Generate a detailed installation plan with resource estimates.
-            
-            Args:
-                chart_name: Chart name
-                values: Chart values dictionary
-                namespace: Kubernetes namespace
-            
+
+            Use before installation to understand what resources will be
+            created and their estimated requirements. Read-only — does
+            not modify any cluster state.
+
             Returns:
-                Installation plan with resource estimates
-            
-            Raises:
-                HelmOperationError: If plan generation fails
+            - {"chart_name": str, "namespace": str,
+               "estimated_resources": int, "resource_breakdown": {...},
+               "estimated_cpu": str, "estimated_memory": str}
+
+            When NOT to use:
+            - To actually install → use helm_install_chart.
+            - To dry-run the install → use helm_dry_run_install.
+            - To render manifests → use helm_render_manifests.
             """
             await ctx.info(
                 f"Generating installation plan for '{chart_name}'",
@@ -417,4 +483,3 @@ class ValidationTools(BaseTool):
                     }
                 )
                 raise HelmOperationError(f'Installation plan generation failed: {str(e)}')
-

@@ -1,0 +1,1 @@
+{"status": "success", "data": ["api-gateway", "auth-service", "checkout", "frontend", "inventory", "notification-service", "order-service", "payment-service", "recommendation-engine", "search-service", "user-service"]}

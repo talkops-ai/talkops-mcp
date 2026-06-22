@@ -1,6 +1,6 @@
 [project]
 name = "talkops-alertmanager-mcp-server"
-version = "0.1.1"
+version = "0.1.2"
 description = "A Model Context Protocol (MCP) server for Prometheus Alertmanager alert management and incident response."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -38,8 +38,8 @@ Changelog = "https://github.com/talkops-ai/talkops-mcp/releases"
 [project.scripts]
 alertmanager-mcp-server = "alertmanager_mcp_server.main:cli"
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pyright>=1.1.409",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
@@ -62,5 +62,6 @@ testpaths = ["tests"]
 
 [tool.pyright]
 exclude = [
-    "reference"
+    "reference",
+    ".venv"
 ]

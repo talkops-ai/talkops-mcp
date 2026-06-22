@@ -245,7 +245,8 @@ class TestScrapeConfigTools:
         result = await self.tools["prom_apply_servicemonitor"](
             service_name="my-app", namespace="default",
             monitor_name=None, port_name="metrics",
-            path="/metrics", interval="30s", labels=None, metric_relabelings=None, ctx=_ctx()
+            path="/metrics", interval="30s", labels=None, metric_relabelings=None,
+            target_namespace=None, auto_discover=False, ctx=_ctx()
         )
         assert "ServiceMonitor" in result["applied"]
         self.k8s.apply_servicemonitor.assert_called_once()

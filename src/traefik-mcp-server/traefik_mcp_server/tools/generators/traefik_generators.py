@@ -4,6 +4,7 @@ import json
 from typing import Dict, Any, List, Optional, Literal
 from pydantic import Field
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 
 from traefik_mcp_server.tools.base import BaseTool
 
@@ -37,7 +38,15 @@ class TraefikGeneratorTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register generator tools with FastMCP."""
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Generate Routing Manifest",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            )
+        )
         async def traefik_generate_routing_manifest(
             manifest_type: Literal[
                 "traefik_service",
@@ -141,18 +150,15 @@ class TraefikGeneratorTools(BaseTool):
             ),
             ctx: Optional[Context] = None,
         ) -> str:
-            """Generate Traefik routing manifests (TraefikService, IngressRoute, TCP, etc.).
+            """Generate Traefik routing manifests (TraefikService, IngressRoute, TCP).
 
-            Unified tool for YAML generation. Use manifest_type to select:
-            - traefik_service: WeightedService for canary (name=app_name, stable_service, canary_service)
-            - ingress_for_traefik_service: IngressRoute → TraefikService (name=traefik_service_name, hostname)
-            - ingress_for_services: IngressRoute → direct K8s Services (name=route_name, hostname, routes)
-
-            Header/cookie routing on live clusters: use ``traefik_manage_weighted_routing`` (create) with
-            ``header_name`` / ``header_value`` or ``cookie_name`` / ``cookie_regex``.
+            Unified tool for YAML generation. Does NOT apply anything.
 
             Returns:
-                JSON string with generated YAML
+            - JSON string with {"status": str, "yaml": str, ...}
+
+            When NOT to use:
+            - To apply changes directly → use traefik_manage_weighted_routing, etc.
             """
             assert self.generator_service is not None
             assert ctx is not None

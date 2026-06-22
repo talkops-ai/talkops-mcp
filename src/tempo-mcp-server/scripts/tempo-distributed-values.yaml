@@ -1,0 +1,52 @@
+minio:
+  enabled: true
+
+storage:
+  trace:
+    backend: s3
+    s3:
+      bucket: tempo-traces
+      endpoint: tempo-minio:9000
+      access_key: grafana-tempo
+      secret_key: supersecret
+      insecure: true
+
+metricsGenerator:
+  enabled: true
+  config:
+    processor:
+      local_blocks:
+        flush_to_storage: true
+        filter_server_spans: false
+    storage:
+      path: /var/tempo/wal
+      remote_write:
+        - url: http://prometheus.otel-demo.svc.cluster.local:9090/api/v1/write
+    traces_storage:
+      path: /var/tempo/traces
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors:
+        - service-graphs
+        - span-metrics
+        - local-blocks
+
+traces:
+  otlp:
+    http:
+      enabled: true
+    grpc:
+      enabled: true
+  jaeger:
+    grpc:
+      enabled: true
+    thriftBinary:
+      enabled: true
+    thriftCompact:
+      enabled: true
+    thriftHttp:
+      enabled: true
+  zipkin:
+    enabled: true

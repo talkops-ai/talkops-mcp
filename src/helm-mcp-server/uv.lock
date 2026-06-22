@@ -398,35 +398,6 @@ wheels = [
 ]
 
 [[package]]
-name = "helm-mcp-server"
-version = "0.2.0"
-source = { editable = "." }
-dependencies = [
-    { name = "fastmcp" },
-    { name = "kubernetes" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "requests" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pyright" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastmcp", specifier = ">=2.13.3" },
-    { name = "kubernetes", specifier = ">=34.1.0" },
-    { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "requests", specifier = ">=2.32.5" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pyright", specifier = ">=1.1.409" }]
-
-[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1139,6 +1110,35 @@ sdist = { url = "https://files.pythonhosted.org/packages/ba/b8/73a0e6a6e079a9d9c
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d9/52/1064f510b141bd54025f9b55105e26d1fa970b9be67ad766380a3c9b74b0/starlette-0.50.0-py3-none-any.whl", hash = "sha256:9e5391843ec9b6e472eed1365a78c8098cfceb7a74bfd4d6b1c0c0095efb3bca", size = 74033, upload-time = "2025-11-01T15:25:25.461Z" },
 ]
+
+[[package]]
+name = "talkops-helm-mcp-server"
+version = "0.4.1"
+source = { editable = "." }
+dependencies = [
+    { name = "fastmcp" },
+    { name = "kubernetes" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "requests" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pyright" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastmcp", specifier = ">=2.13.3" },
+    { name = "kubernetes", specifier = ">=34.1.0" },
+    { name = "pydantic", specifier = ">=2.12.5" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "requests", specifier = ">=2.32.5" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pyright", specifier = ">=1.1.409" }]
 
 [[package]]
 name = "typing-extensions"

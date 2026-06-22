@@ -15,6 +15,7 @@ from typing import Any, Dict, Literal, Optional
 
 from pydantic import Field
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 
 from traefik_mcp_server.services.nginx_migration_service import slim_migrate_tool_payload
 from traefik_mcp_server.tools.base import BaseTool
@@ -26,7 +27,15 @@ class NginxMigrationTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register the migration tool with FastMCP."""
 
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="NGINX Migration",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def traefik_nginx_migration(
             namespace: str = Field(
                 ...,
@@ -65,11 +74,17 @@ class NginxMigrationTools(BaseTool):
             ),
             ctx: Optional[Context] = None,
         ) -> str:
-            """NGINX→Traefik: apply migration, generate preview, or revert one Ingress.
+            """NGINX → Traefik migration: apply, generate preview, or revert.
 
-            Read-only runbooks: ``read_resource traefik://migration/nginx-runbook/{namespace}``.
+            Translates NGINX Ingress rules to Traefik CRDs.
 
-            Resources before migrate: ``traefik://migration/nginx-ingress-scan|analyze/{namespace}``.
+            **WARNING: Mutates live traffic routing (action=apply, switch=True).**
+
+            Returns:
+            - JSON string or markdown response.
+
+            When NOT to use:
+            - For reading state → use `read_resource traefik://migration/...`.
             """
             assert self.nginx_migration_service is not None
 

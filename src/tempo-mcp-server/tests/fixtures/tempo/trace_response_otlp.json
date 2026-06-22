@@ -1,0 +1,59 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "api-gateway"}},
+          {"key": "k8s.namespace.name", "value": {"stringValue": "production"}},
+          {"key": "k8s.pod.name", "value": {"stringValue": "api-gateway-7b5f4d-x2k"}},
+          {"key": "k8s.deployment.name", "value": {"stringValue": "api-gateway"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "1234567890abcdef1234567890abcdef",
+              "spanId": "span-root",
+              "parentSpanId": "",
+              "name": "GET /users",
+              "startTimeUnixNano": "1700000000000000000",
+              "endTimeUnixNano": "1700000000150000000",
+              "status": {"code": 0},
+              "attributes": [
+                {"key": "http.method", "value": {"stringValue": "GET"}},
+                {"key": "http.status_code", "value": {"intValue": 200}},
+                {"key": "http.url", "value": {"stringValue": "/users"}}
+              ],
+              "events": []
+            },
+            {
+              "traceId": "1234567890abcdef1234567890abcdef",
+              "spanId": "span-db",
+              "parentSpanId": "span-root",
+              "name": "SELECT users",
+              "startTimeUnixNano": "1700000000010000000",
+              "endTimeUnixNano": "1700000000100000000",
+              "status": {"code": 2, "message": "connection timeout"},
+              "attributes": [
+                {"key": "db.system", "value": {"stringValue": "postgresql"}},
+                {"key": "db.statement", "value": {"stringValue": "SELECT * FROM users"}}
+              ],
+              "events": [
+                {
+                  "name": "exception",
+                  "timeUnixNano": "1700000000095000000",
+                  "attributes": [
+                    {"key": "exception.type", "value": {"stringValue": "ConnectionError"}},
+                    {"key": "exception.message", "value": {"stringValue": "timeout after 30s"}},
+                    {"key": "exception.stacktrace", "value": {"stringValue": "at db.connect()\n  at handler.query()"}}
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

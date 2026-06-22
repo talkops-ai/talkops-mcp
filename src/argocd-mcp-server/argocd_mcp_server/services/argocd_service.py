@@ -178,22 +178,14 @@ class ArgoCDService:
             }
             
             if total == 0:
-                raise ArgoCDNotFoundError(
+                result['message'] = (
                     "No applications found. "
                     "To onboard a new application, please use the 'create_application' tool. "
                     "For detailed workflows and architectural guidelines, please read the "
                     "'argocd://workflow-architecture' resource."
                 )
 
-            return {
-                'total': total,
-                'limit': limit,
-                'offset': offset,
-                'applications': paginated_apps,
-                'timestamp': datetime.datetime.utcnow().isoformat() + 'Z'
-            }
-        except ArgoCDNotFoundError:
-            raise
+            return result
         except Exception as e:
             raise ArgoCDOperationError(f"Failed to list applications: {str(e)}")
 
@@ -279,7 +271,8 @@ class ArgoCDService:
         destination_namespace: str,
         auto_sync: bool = False,
         prune: bool = True,
-        self_heal: bool = True
+        self_heal: bool = True,
+        create_namespace: bool = False
     ) -> Dict[str, Any]:
         """Create a new ArgoCD application."""
         # Check write access
@@ -301,13 +294,32 @@ class ArgoCDService:
             }
         }
         
+        if auto_sync or create_namespace:
+            body["spec"]["syncPolicy"] = {}
+            
         if auto_sync:
-            body["spec"]["syncPolicy"] = {
-                "automated": {
-                    "prune": prune,
-                    "selfHeal": self_heal
-                }
+            body["spec"]["syncPolicy"]["automated"] = {
+                "prune": prune,
+                "selfHeal": self_heal
             }
+            
+        if create_namespace:
+            # Attempt to create namespace via Kubernetes API
+            try:
+                v1 = client.CoreV1Api()
+                try:
+                    v1.read_namespace(name=destination_namespace)
+                except ApiException as e:
+                    if e.status == 404:
+                        ns = client.V1Namespace(metadata=client.V1ObjectMeta(name=destination_namespace))
+                        v1.create_namespace(body=ns)
+            except Exception:
+                pass  # Fallback to ArgoCD's CreateNamespace=true
+                
+            if "syncOptions" not in body["spec"]["syncPolicy"]:
+                body["spec"]["syncPolicy"]["syncOptions"] = []
+            if "CreateNamespace=true" not in body["spec"]["syncPolicy"]["syncOptions"]:
+                body["spec"]["syncPolicy"]["syncOptions"].append("CreateNamespace=true")
             
         try:
             self._request('POST', '/api/v1/applications', json=body)
@@ -333,7 +345,8 @@ class ArgoCDService:
         target_revision: Optional[str] = None,
         auto_sync: Optional[bool] = None,
         prune: Optional[bool] = None,
-        self_heal: Optional[bool] = None
+        self_heal: Optional[bool] = None,
+        create_namespace: Optional[bool] = None
     ) -> Dict[str, Any]:
         """Update an existing ArgoCD application."""
         # Check write access
@@ -363,6 +376,42 @@ class ArgoCDService:
                         spec['syncPolicy']['automated']['selfHeal'] = self_heal
                 else:
                     spec['syncPolicy'].pop('automated', None)
+            
+            if create_namespace is not None:
+                if 'syncPolicy' not in spec:
+                    spec['syncPolicy'] = {}
+                
+                sync_options = spec['syncPolicy'].get('syncOptions') or []
+                
+                if create_namespace:
+                    # Attempt to create namespace via Kubernetes API
+                    destination_namespace = spec.get("destination", {}).get("namespace")
+                    if destination_namespace:
+                        try:
+                            v1 = client.CoreV1Api()
+                            try:
+                                v1.read_namespace(name=destination_namespace)
+                            except ApiException as e:
+                                if e.status == 404:
+                                    ns = client.V1Namespace(metadata=client.V1ObjectMeta(name=destination_namespace))
+                                    v1.create_namespace(body=ns)
+                        except Exception:
+                            pass  # Fallback to ArgoCD's CreateNamespace=true
+                            
+                    if "CreateNamespace=true" not in sync_options:
+                        sync_options.append("CreateNamespace=true")
+                else:
+                    if "CreateNamespace=true" in sync_options:
+                        sync_options.remove("CreateNamespace=true")
+                
+                if sync_options:
+                    spec['syncPolicy']['syncOptions'] = sync_options
+                elif 'syncOptions' in spec['syncPolicy']:
+                    del spec['syncPolicy']['syncOptions']
+                    
+            # cleanup empty syncPolicy
+            if 'syncPolicy' in spec and not spec['syncPolicy']:
+                del spec['syncPolicy']
             
             app['spec'] = spec
             self._request('PUT', f'/api/v1/applications/{app_name}', json=app)
@@ -423,7 +472,7 @@ class ArgoCDService:
         
         body: Dict[str, Any] = {
             "dryRun": dry_run,
-            "strategy": {"type": auto_policy}
+            "strategy": {auto_policy: {}}
         }
         
         if revision:

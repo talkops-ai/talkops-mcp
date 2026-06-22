@@ -1,0 +1,11 @@
+{
+  "status": "success",
+  "data": {
+    "version": "2.9.0",
+    "revision": "abc123def456",
+    "branch": "main",
+    "buildDate": "2024-11-01T10:00:00Z",
+    "buildUser": "tempo-ci",
+    "goVersion": "go1.22.0"
+  }
+}

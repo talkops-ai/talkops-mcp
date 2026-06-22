@@ -3,6 +3,7 @@
 import re
 from typing import Dict, Any, Optional, List
 from pydantic import Field
+from mcp.types import ToolAnnotations
 from fastmcp import Context
 from helm_mcp_server.exceptions import HelmOperationError
 from helm_mcp_server.tools.base import BaseTool
@@ -14,33 +15,53 @@ class ChartManagementTools(BaseTool):
     def register(self, mcp_instance) -> None:
         """Register tools with FastMCP."""
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Install Helm Chart",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def helm_install_chart(
-            chart_name: str = Field(..., min_length=1, description='Chart name (e.g., bitnami/postgresql)'),
-            release_name: str = Field(..., min_length=1, description='Release name'),
-            namespace: str = Field(default='default', description='Kubernetes namespace'),
-            values: dict = Field(default_factory=dict, description='Chart values dictionary (will be written to temp file)'),
+            chart_name: str = Field(..., min_length=1, description='Chart reference (e.g., "bitnami/postgresql", "oci://registry/chart")'),
+            release_name: str = Field(..., min_length=1, description='Helm release name (e.g., "my-postgres")'),
+            namespace: str = Field(default='default', description='Target Kubernetes namespace'),
+            values: dict = Field(
+                default_factory=dict,
+                description=(
+                    'Chart values as a JSON object. '
+                    'Example: {"service": {"type": "LoadBalancer"}, '
+                    '"resources": {"limits": {"cpu": "500m", "memory": "512Mi"}}}. '
+                    'Passed to Helm as a values file override.'
+                ),
+            ),
             dry_run: bool = Field(default=False, description='Perform dry-run without installing'),
-            skip_crds: bool = Field(default=False, description='Skip CRD installation (useful when CRDs already exist)'),
-            extra_args: Optional[List[str]] = Field(default=None, description='Extra CLI flags to pass to helm install (e.g., --set-string)'),
+            skip_crds: bool = Field(default=False, description='Skip CRD installation (useful when CRDs already exist from another release)'),
+            extra_args: Optional[List[str]] = Field(default=None, description='Extra CLI flags to pass to helm install (e.g., ["--set-string", "key=val"])'),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Install a Helm chart to Kubernetes cluster.
-            
-            Args:
-                chart_name: Chart name (e.g., 'bitnami/postgresql')
-                release_name: Release name
-                namespace: Kubernetes namespace
-                values: Chart values dictionary (will be written to temp file and passed as -f)
-                dry_run: Perform dry-run without installing
-                skip_crds: Skip CRD installation (useful when CRDs already exist)
-                extra_args: Extra CLI flags to pass to helm install (e.g., --set-string)
-            
+            """Install a Helm chart to a Kubernetes cluster.
+
+            Use when deploying a new application via Helm. Requires the chart
+            repository to be already added (use helm_ensure_repository first).
+
+            **WARNING: This creates Kubernetes resources (Deployments, Services,
+            ConfigMaps, etc.) in the target namespace.**
+
             Returns:
-                Installation result with status and details
-            
-            Raises:
-                HelmOperationError: If installation fails
+            - {"status": str, "release_name": str, "namespace": str,
+               "chart_version": str, "output": {...}}
+
+            When NOT to use:
+            - To upgrade an existing release → use helm_upgrade_release.
+            - To preview without deploying → use helm_dry_run_install.
+
+            Common errors:
+            - Release already exists: Use helm_upgrade_release instead.
+            - CRD ownership conflict: Set skip_crds=True if CRDs already exist.
+            - Chart not found: Run helm_ensure_repository first.
             """
             await ctx.info(
                 f"Starting installation of chart '{chart_name}' as release '{release_name}'",
@@ -166,7 +187,7 @@ class ChartManagementTools(BaseTool):
                     existing_release_name = None
                     if 'current value is' in error_str.lower():
                         # Try to extract release name from error like: "current value is \"argocd\""
-                        match = re.search(r'current value is ["\']([^"\']+)["\']', error_str, re.IGNORECASE)
+                        match = re.search(r'current value is ["\x27]([^"\x27]+)["\x27]', error_str, re.IGNORECASE)
                         if match:
                             existing_release_name = match.group(1)
                     
@@ -247,29 +268,49 @@ class ChartManagementTools(BaseTool):
                 )
                 raise HelmOperationError(f'Installation failed: {error_str}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Upgrade Helm Release",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def helm_upgrade_release(
             release_name: str = Field(..., min_length=1, description='Release name to upgrade'),
-            chart_name: str = Field(..., min_length=1, description='Chart name (can include version)'),
-            namespace: str = Field(default='default', description='Kubernetes namespace'),
-            values: dict = Field(default_factory=dict, description='Chart values dictionary (will be written to temp file)'),
-            extra_args: Optional[List[str]] = Field(default=None, description='Extra CLI flags to pass to helm upgrade (e.g., --version, --set-string)'),
+            chart_name: str = Field(..., min_length=1, description='Chart reference (can include version)'),
+            namespace: str = Field(default='default', description='Target Kubernetes namespace'),
+            values: dict = Field(
+                default_factory=dict,
+                description=(
+                    'Chart values as a JSON object. '
+                    'Example: {"replicaCount": 3, "image": {"tag": "v2.0"}}. '
+                    'Merged with existing values.'
+                ),
+            ),
+            extra_args: Optional[List[str]] = Field(default=None, description='Extra CLI flags (e.g., ["--version", "1.2.3", "--set-string", "key=val"])'),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Upgrade an existing Helm release.
-            
-            Args:
-                release_name: Release name to upgrade
-                chart_name: Chart name (can include version)
-                namespace: Kubernetes namespace
-                values: Chart values dictionary (will be written to temp file and passed as -f)
-                extra_args: Extra CLI flags to pass to helm upgrade (e.g., --version, --set-string)
-            
+            """Upgrade an existing Helm release to a new chart version or values.
+
+            Use when updating an already-installed release. The release must
+            already exist (use helm_install_chart for new installations).
+
+            **WARNING: This modifies the running Kubernetes workload.
+            Pods may be restarted during the upgrade.**
+
             Returns:
-                Upgrade result with status and details
-            
-            Raises:
-                HelmOperationError: If upgrade fails
+            - {"status": str, "release_name": str, "namespace": str,
+               "revision": int, "output": {...}}
+
+            When NOT to use:
+            - For new installations → use helm_install_chart.
+            - To revert a bad upgrade → use helm_rollback_release.
+
+            Common errors:
+            - Release not found: The release must exist. Use helm_install_chart.
+            - Chart version mismatch: Specify version in extra_args.
             """
             await ctx.info(
                 f"Starting upgrade of release '{release_name}'",
@@ -310,25 +351,38 @@ class ChartManagementTools(BaseTool):
                 )
                 raise HelmOperationError(f'Upgrade failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Rollback Helm Release",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def helm_rollback_release(
             release_name: str = Field(..., min_length=1, description='Release name to rollback'),
             namespace: str = Field(default='default', description='Kubernetes namespace'),
-            revision: Optional[int] = Field(default=None, description='Specific revision number (if None, rolls back to previous)'),
+            revision: Optional[int] = Field(default=None, description='Target revision number (omit to rollback to previous)'),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
             """Rollback a Helm release to a previous revision.
-            
-            Args:
-                release_name: Release name to rollback
-                namespace: Kubernetes namespace
-                revision: Specific revision number (if None, rolls back to previous)
-            
+
+            Use when an upgrade caused issues and you need to revert.
+            If no revision is specified, rolls back to the previous revision.
+
+            **WARNING: This modifies the running workload by reverting to
+            an older configuration. Pods may be restarted.**
+
             Returns:
-                Rollback result with status and details
-            
-            Raises:
-                HelmOperationError: If rollback fails
+            - {"status": str, "release_name": str, "revision": int}
+
+            When NOT to use:
+            - To upgrade to a new version → use helm_upgrade_release.
+
+            Common errors:
+            - Release not found: Verify release exists with helm_get_release_status.
+            - Invalid revision: Check available revisions first.
             """
             await ctx.info(
                 f"Starting rollback of release '{release_name}'",
@@ -371,23 +425,37 @@ class ChartManagementTools(BaseTool):
                 )
                 raise HelmOperationError(f'Rollback failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Uninstall Helm Release",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
         async def helm_uninstall_release(
             release_name: str = Field(..., min_length=1, description='Release name to uninstall'),
             namespace: str = Field(default='default', description='Kubernetes namespace'),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Uninstall a Helm release.
-            
-            Args:
-                release_name: Release name to uninstall
-                namespace: Kubernetes namespace
-            
+            """Uninstall a Helm release and delete its Kubernetes resources.
+
+            Use when removing an application entirely from the cluster.
+
+            **WARNING: DESTRUCTIVE — This deletes all Kubernetes resources
+            (Deployments, Services, ConfigMaps, etc.) managed by the release.
+            This action cannot be undone.**
+
             Returns:
-                Uninstall result with status
-            
-            Raises:
-                HelmOperationError: If uninstall fails
+            - {"status": str, "release_name": str, "namespace": str}
+
+            When NOT to use:
+            - To rollback to a previous version → use helm_rollback_release.
+            - To upgrade → use helm_upgrade_release.
+
+            Common errors:
+            - Release not found: Verify the release exists first.
             """
             await ctx.warning(
                 f"Uninstalling release '{release_name}' from namespace '{namespace}'",
@@ -425,38 +493,50 @@ class ChartManagementTools(BaseTool):
                 )
                 raise HelmOperationError(f'Uninstall failed: {str(e)}')
         
-        @mcp_instance.tool()
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Dry-Run Helm Install",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
         async def helm_dry_run_install(
-            chart_name: str = Field(..., min_length=1, description='Chart name (e.g., bitnami/postgresql)'),
-            release_name: str = Field(..., min_length=1, description='Release name'),
-            namespace: str = Field(default='default', description='Kubernetes namespace'),
-            values: dict = Field(default_factory=dict, description='Chart values dictionary (will be written to temp file)'),
+            chart_name: str = Field(..., min_length=1, description='Chart reference (e.g., "bitnami/postgresql")'),
+            release_name: str = Field(..., min_length=1, description='Release name for the dry-run'),
+            namespace: str = Field(default='default', description='Target Kubernetes namespace'),
+            values: dict = Field(
+                default_factory=dict,
+                description=(
+                    'Chart values as a JSON object. '
+                    'Example: {"persistence": {"enabled": true, "size": "10Gi"}}. '
+                    'Passed to Helm as a values file override.'
+                ),
+            ),
             skip_crds: bool = Field(default=False, description='Skip CRD installation (useful when CRDs already exist)'),
-            extra_args: Optional[List[str]] = Field(default=None, description='Extra CLI flags to pass to helm install (e.g., --set-string)'),
+            extra_args: Optional[List[str]] = Field(default=None, description='Extra CLI flags (e.g., ["--set-string", "key=val"])'),
             include_full: bool = Field(default=False, description='Include full Helm output (default: False to save tokens, only summary included)'),
             ctx: Context = None  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Perform a dry-run of Helm installation (preview without installing).
-            
-            By default, returns a summary to minimize token usage. Set include_full=True
-            to get the complete Helm output with all chart templates.
-            
-            Args:
-                chart_name: Chart name (e.g., 'bitnami/postgresql')
-                release_name: Release name
-                namespace: Kubernetes namespace
-                values: Chart values dictionary (will be written to temp file and passed as -f)
-                skip_crds: Skip CRD installation (useful when CRDs already exist)
-                extra_args: Extra CLI flags to pass to helm install (e.g., --set-string)
-                include_full: Include full Helm output (default: False to save tokens)
-            
+            """Preview a Helm installation without creating any resources.
+
+            Use to validate chart configuration and see what would be deployed
+            before running helm_install_chart. No Kubernetes resources are created.
+            Read-only operation.
+
+            By default, returns a summary to minimize token usage. Set
+            include_full=True to get the complete Helm output with all
+            chart templates.
+
             Returns:
-                Dictionary with:
-                - summary: Key information about the dry-run (release info, chart metadata, notes)
-                - full_output: Complete Helm output (only if include_full=True)
-            
-            Raises:
-                HelmOperationError: If dry-run fails
+            - {"status": str, "summary": {"release_name": str,
+               "chart_version": str, "template_count": int, ...},
+               "full_output": {...} (only if include_full=True)}
+
+            When NOT to use:
+            - To actually install → use helm_install_chart.
+            - To render manifests without install context → use helm_render_manifests.
             """
             await ctx.info(
                 f"Performing dry-run installation of '{chart_name}'",
@@ -550,4 +630,3 @@ class ChartManagementTools(BaseTool):
                     }
                 )
                 raise HelmOperationError(f'Dry-run failed: {str(e)}')
-
