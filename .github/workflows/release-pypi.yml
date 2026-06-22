@@ -13,6 +13,11 @@ on:
       # Matches tags like: prometheus-mcp-server/v0.1.0, helm-mcp-server/v0.2.0
       - "*/v*"
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag to release (e.g., prometheus-mcp-server/v0.1.11)'
+        required: true
+        type: string
 
 # Cancel in-flight runs for the same tag
 concurrency:
@@ -40,7 +45,11 @@ jobs:
       - name: Parse tag
         id: parse
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag_name }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
           # Tag format: <server-name>/v<version>
           SERVER_NAME="${TAG%/v*}"
           VERSION="${TAG#*/v}"
