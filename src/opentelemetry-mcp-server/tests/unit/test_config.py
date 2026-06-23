@@ -69,7 +69,7 @@ class TestConfigFromEnv:
     def test_defaults_from_env(self) -> None:
         config = Config.from_env()
         assert config.name == "opentelemetry-mcp-server"
-        assert config.transport == "http"
+        assert config.transport == "stdio"
 
 
 
