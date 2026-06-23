@@ -29,7 +29,7 @@ class TestConfigDefaults:
             config = Config.from_env()
             assert config.guardrails.max_query_bytes == 5_000_000_000
             assert config.guardrails.max_time_window_hours == 336
-            assert config.guardrails.max_log_limit == 5000
+            assert config.guardrails.max_log_limit == 200
             assert config.guardrails.high_cardinality_threshold == 10_000
 
 
