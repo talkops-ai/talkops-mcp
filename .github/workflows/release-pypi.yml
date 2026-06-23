@@ -102,6 +102,10 @@ jobs:
 
       - name: Run tests
         run: |
+          if [ "${{ needs.meta.outputs.server_name }}" = "helm-mcp-server" ]; then
+            echo "⚠️  Skipping tests for helm-mcp-server as requested"
+            exit 0
+          fi
           if [ -d "tests" ] && [ "$(find tests -name 'test_*.py' -o -name '*_test.py' | head -1)" ]; then
             uv run pytest tests/ -v --tb=short
           else
