@@ -15,6 +15,7 @@ The vision for TalkOps MCP Servers is to offer a **modular, extensible, and unif
 
 - [TalkOps MCP Servers](#talkops-mcp-servers)
   - [Table of Contents](#table-of-contents)
+  - [Quick start](#quick-start)
   - [Available MCP Servers](#available-mcp-servers)
     - [📦 Kubernetes Package Management](#kubernetes-package-management)
     - [🚀 CI/CD & GitOps](#cicd--gitops)
@@ -26,59 +27,73 @@ The vision for TalkOps MCP Servers is to offer a **modular, extensible, and unif
 
 ---
 
-## Installation
+## Quick start
 
-Every TalkOps MCP server can be installed in **three ways**:
+Every server is published on PyPI as `talkops-<server-name>`. The easiest way to run one is with [uv](https://docs.astral.sh/uv/getting-started/installation/), which downloads and runs it in one step:
 
-| Method | Command | Best for |
-|--------|---------|----------|
-| **pip** | `pip install talkops-<server-name>` | Quick local setup |
-| **uv** | `uv pip install talkops-<server-name>` | Fast, modern Python |
-| **uvx** | `uvx talkops-<server-name>` | Run without installing |
-| **Docker** | `docker run talkopsai/<server-name>:latest` | Production / HTTP mode |
+```bash
+uvx --from talkops-prometheus-mcp-server prometheus-mcp-server --help
+```
 
-After installation, each server provides a CLI command (e.g., `prometheus-mcp-server`) that runs in **stdio mode** by default or **HTTP mode** with `MCP_TRANSPORT=http`.
+To use it from Claude Desktop, Cursor, or any other MCP client, add it to your client's MCP config:
+
+```json
+{
+  "mcpServers": {
+    "prometheus": {
+      "command": "uvx",
+      "args": ["--from", "talkops-prometheus-mcp-server", "prometheus-mcp-server", "--read-only"],
+      "env": { "PROMETHEUS_BASE_URL": "http://localhost:9090" }
+    }
+  }
+}
+```
+
+A few things are the same across every server:
+
+- **Safe by default.** Servers start read-only (Prometheus is the one exception; see its README). You opt in to changes with `--allow-write`.
+- **stdio or HTTP.** Servers talk over `stdio` by default. Set `MCP_TRANSPORT=http` to share one server across clients (Traefik is `stdio` only).
+- **Agent Skills included.** Each server ships playbooks in its `skills/` folder that teach your assistant how to use the tools well.
+
+Each server's README has its exact setup, settings, and example prompts.
 
 ---
 
 ## Available MCP Servers
 
-Each table lists MCP servers by DevOps domain. Use **Quick Install** for the recommended setup (Docker preferred; CLI if no Docker), **README** for full documentation, and **Config** for MCP client configuration in that server's README.
-
 <a id="kubernetes-package-management"></a>
 ### 📦 Kubernetes Package Management
 
-| Server Name | Description | Quick Install | README | Config | Video |
-|-------------|-------------|---------------|--------|--------|-------|
-| [Helm MCP Server](src/helm-mcp-server) | Search charts, install/upgrade/rollback releases, validate manifests, monitor deployments. Full Helm lifecycle with dry-run and multi-cluster support. | `pip install talkops-helm-mcp-server`<br>or<br>`docker run -p 8765:8765 -v ~/.kube/config:/app/.kube/config:ro talkopsai/helm-mcp-server:latest` | [README](src/helm-mcp-server/README.md) | [Config](src/helm-mcp-server/README.md#configuration--running) | [▶ Watch](https://youtu.be/efU7TatQCqI?si=YYZC9BvBqmeq93_x) |
+| Server | What it does | Run it | Video |
+|--------|--------------|--------|-------|
+| [Helm](src/helm-mcp-server) | Find, install, upgrade, and roll back Helm charts, with a plan before every change. | `uvx --from talkops-helm-mcp-server helm-mcp-server` | [▶ Watch](https://youtu.be/efU7TatQCqI?si=YYZC9BvBqmeq93_x) |
 
 <a id="cicd--gitops"></a>
 ### 🚀 CI/CD & GitOps
 
-| Server Name | Description | Quick Install | README | Config | Video |
-|-------------|-------------|---------------|--------|--------|-------|
-| [ArgoCD MCP Server](src/argocd-mcp-server) | Manage ArgoCD applications, sync deployments, onboard repositories, create projects, and run GitOps workflows via bundled Agent Skills with credential isolation. | `pip install talkops-argocd-mcp-server`<br>or<br>`docker run -p 8770:8770 -e ARGOCD_SERVER_URL=... -e ARGOCD_AUTH_TOKEN=... -e MCP_ALLOW_WRITE=true talkopsai/argocd-mcp-server:latest` | [README](src/argocd-mcp-server/README.md) | [Config](src/argocd-mcp-server/README.md#quick-start--configuration) | [▶ Overview](https://youtu.be/5V0wo4jkUtQ)<br>[▶ Demo](https://youtu.be/gfMLUK9YcGc) |
-| [Argo Rollout MCP Server](src/argo-rollout-mcp-server) | Convert K8s Deployments to Argo Rollouts, orchestrate canary/blue-green deployments, promote/pause/abort, and integrate AnalysisTemplates with bundled Agent Skills. | `pip install talkops-argo-rollout-mcp-server`<br>or<br>`docker run -p 8768:8768 -v ~/.kube:/app/.kube:ro -e K8S_KUBECONFIG=/app/.kube/config talkopsai/argo-rollout-mcp-server:latest` | [README](src/argo-rollout-mcp-server/README.md) | [Config](src/argo-rollout-mcp-server/README.md#configuration--cli-flags) | [▶ Quick Walk](https://youtu.be/tPd6i7F8_e4?si=4jJjZzLyb6DD6lDL)<br>[▶ Migration](https://youtu.be/Kb0VNf6uGAs?si=bOGqnETYwDYHLapN)<br>[▶ Canary](https://youtu.be/E7riLSKC8Tg?si=VmD0pecfA19ryE9E)<br>[▶ Blue-Green](https://youtu.be/mb_gUr6KmYE?si=swU-irIyR3UyOZZn)<br>[▶ A/B Testing](https://youtu.be/yEXinOu2718?si=s2FWRNjFcG3W7Myp) |
-| [Kargo MCP Server](src/kargo-mcp-server) | Continuous promotion orchestration for Kubernetes with Kargo. Manage stages, promotions, freight, warehouses, and RBAC with bundled Agent Skills. | `pip install talkops-kargo-mcp-server`<br>or<br>`uvx talkops-kargo-mcp-server` | [README](src/kargo-mcp-server/README.md) | [Config](src/kargo-mcp-server/README.md#cli-flags--environment-variables) | — |
+| Server | What it does | Run it | Video |
+|--------|--------------|--------|-------|
+| [ArgoCD](src/argocd-mcp-server) | Check app health, preview and run syncs, roll back, and onboard repos and projects. | `uvx --from talkops-argocd-mcp-server argocd-mcp-server` | [▶ Overview](https://youtu.be/5V0wo4jkUtQ)<br>[▶ Demo](https://youtu.be/gfMLUK9YcGc) |
+| [Argo Rollouts](src/argo-rollout-mcp-server) | Move Deployments to Rollouts and run canary and blue-green releases gated on metrics. | `uvx --from talkops-argo-rollout-mcp-server argo-rollout-mcp-server` | [▶ Quick Walk](https://youtu.be/tPd6i7F8_e4?si=4jJjZzLyb6DD6lDL)<br>[▶ Migration](https://youtu.be/Kb0VNf6uGAs?si=bOGqnETYwDYHLapN)<br>[▶ Canary](https://youtu.be/E7riLSKC8Tg?si=VmD0pecfA19ryE9E)<br>[▶ Blue-Green](https://youtu.be/mb_gUr6KmYE?si=swU-irIyR3UyOZZn)<br>[▶ A/B Testing](https://youtu.be/yEXinOu2718?si=s2FWRNjFcG3W7Myp) |
+| [Kargo](src/kargo-mcp-server) | See what's deployed where, promote and approve freight, and roll back stages. | `uvx --from talkops-kargo-mcp-server kargo-mcp-server` | — |
 
 <a id="observability--monitoring"></a>
 ### 📊 Observability & Monitoring
 
-| Server Name | Description | Quick Install | README | Config | Video |
-|-------------|-------------|---------------|--------|--------|-------|
-| [Prometheus MCP Server](src/prometheus-mcp-server) | AI-native Prometheus observability — query metrics, manage alerting rules, analyze cardinality, deploy exporters, configure ServiceMonitors and Probes. | `pip install talkops-prometheus-mcp-server`<br>or<br>`docker run -p 8767:8767 talkopsai/prometheus-mcp-server:latest` | [README](src/prometheus-mcp-server/README.md) | [Config](src/prometheus-mcp-server/README.md#cli-flags--environment-configuration) | — |
-| [Alertmanager MCP Server](src/alertmanager-mcp-server) | AI-native alert management — list/silence/route alerts, audit routing, manage silences with safety guardrails. | `pip install talkops-alertmanager-mcp-server`<br>or<br>`docker run -p 8769:8769 talkopsai/alertmanager-mcp-server:latest` | [README](src/alertmanager-mcp-server/README.md) | [Config](src/alertmanager-mcp-server/README.md#quick-start--configuration) | — |
-| [Loki MCP Server](src/loki-mcp-server) | AI-native log analysis — explore, query, and analyze logs with LogQL query construction, cardinality-aware schema exploration, and guardrails. | `pip install talkops-loki-mcp-server`<br>or<br>`docker run -p 8770:8770 talkopsai/loki-mcp-server:latest` | [README](src/loki-mcp-server/README.md) | [Config](src/loki-mcp-server/README.md#cli-flags--environment-configuration) | — |
-| [Tempo MCP Server](src/tempo-mcp-server) | AI-native distributed tracing — search, correlate, and summarize traces with TraceQL, RED metrics analysis, and service topology mapping. | `pip install talkops-tempo-mcp-server`<br>or<br>`docker run -p 8768:8768 talkopsai/tempo-mcp-server:latest` | [README](src/tempo-mcp-server/README.md) | [Config](src/tempo-mcp-server/README.md#configuration--cli-usage) | — |
-| [OpenTelemetry MCP Server](src/opentelemetry-mcp-server) | AI-native OpenTelemetry pipelines — discover, provision, instrument, validate, and govern OTel on K8s with cardinality control and sampling optimization. | `pip install talkops-opentelemetry-mcp-server`<br>or<br>`docker run -p 8771:8771 talkopsai/opentelemetry-mcp-server:latest` | [README](src/opentelemetry-mcp-server/README.md) | [Config](src/opentelemetry-mcp-server/README.md#getting-started--cli-flags) | — |
+| Server | What it does | Run it | Video |
+|--------|--------------|--------|-------|
+| [Prometheus](src/prometheus-mcp-server) | Run PromQL, check SLOs, test alert rules, and cut expensive metrics. Works with Thanos, Mimir, and more. | `uvx --from talkops-prometheus-mcp-server prometheus-mcp-server` | — |
+| [Alertmanager](src/alertmanager-mcp-server) | See what's firing, find out why an alert didn't notify, and create safe silences. | `uvx --from talkops-alertmanager-mcp-server alertmanager-mcp-server` | — |
+| [Grafana Loki](src/loki-mcp-server) | Search logs, summarize errors, compare releases, and follow a trace ID across services. | `uvx --from talkops-loki-mcp-server loki-mcp-server` | — |
+| [Grafana Tempo](src/tempo-mcp-server) | Search traces with TraceQL, find slow spans, and map service dependencies. | `uvx --from talkops-tempo-mcp-server tempo-mcp-server` | — |
+| [OpenTelemetry](src/opentelemetry-mcp-server) | Set up collectors, auto-instrument workloads, tune sampling, and debug pipelines. | `uvx --from talkops-opentelemetry-mcp-server opentelemetry-mcp-server` | — |
 
 <a id="integration--traffic"></a>
 ### 📡 Integration & Traffic
 
-| Server Name | Description | Quick Install | README | Config | Video |
-|-------------|-------------|---------------|--------|--------|-------|
-| [Traefik MCP Server](src/traefik-mcp-server) | Manage K8s traffic via Traefik: weighted canary routing, traffic mirroring, NGINX-to-Traefik migration, rate limit and circuit breaker middlewares. Works with Argo Rollouts for progressive delivery. | `pip install talkops-traefik-mcp-server`<br>or<br>`docker run -p 8769:8769 -v ~/.kube/config:/app/.kube/config:ro talkopsai/traefik-mcp-server:latest` | [README](src/traefik-mcp-server/README.md) | [Config](src/traefik-mcp-server/README.md#quick-start--cli-configuration) | — |
-
+| Server | What it does | Run it | Video |
+|--------|--------------|--------|-------|
+| [Traefik](src/traefik-mcp-server) | Manage routes, canary traffic, middlewares, and TLS, and explain 404s and 502s. | `uvx --from talkops-traefik-mcp-server traefik-mcp-server` | — |
 
 ---
 

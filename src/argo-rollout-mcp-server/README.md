@@ -18,148 +18,168 @@
 
 ---
 
-## Architecture: Skill & Execution Separation (`v0.2.0`)
+Let your AI assistant run progressive delivery with Argo Rollouts: move Deployments to Rollouts, run canary and blue-green releases, gate them on Prometheus metrics, and recover when something goes wrong.
 
-Following the TalkOps Skill & Execution Separation standard (`docs/skill-and-execution-separation.md`), this repository packages two distinct layers in a single Agent Plugin (`plugin.json` + `mcp.json`):
+## What you get
 
-1. **Reasoning Layer (`skills/*/SKILL.md` + `references/` + `scripts/`)**:
-   - **4 Agent Skills** loaded progressively on-demand (~100 tokens at startup for metadata, `<500` lines when activated).
-   - **8 Offline Deterministic Scripts** (`skills/*/scripts/*.py`) for local/GitOps YAML generation, transformation, and validation — zero live Kubernetes API dependencies.
-   - **8 Domain Reference Guides** (`skills/*/references/*.md`) loaded only when needed.
+- **15 MCP tools** (3 read-only) that work against your live Argo Rollouts setup
+- **13 resources** your assistant can read for context, under `argorollout://`
+- **4 Agent Skills**: step-by-step playbooks that teach your assistant how to use the tools well
+- **Safe by default**: only read-only tools are loaded until you turn on writes, and changes are previewed or confirmed before they happen
 
-2. **Execution Layer (`argo_rollout_mcp_server/`)**:
-   - **15 Live Cluster Tools** across 4 selectable toolsets (`rollouts`, `analysis`, `migration`, `diagnostics`), each strictly `<= 8` parameters with Pydantic `Field(description=...)` schemas.
-   - **13 Sanitized Live Resources** (`argorollout://...`) for read-only cluster discovery, revision history, AnalysisRun inspection, and Prometheus health.
-   - **0 MCP Prompts** — all multi-step runbooks and decision trees live in `skills/`.
-   - **Safety-First Execution**: Read-only by default (`allow_write=False`), tiered `dry_run` defaults (`dry_run=True` on structural mutations, `dry_run=False` on runtime step/image operations), MCP Elicitation (`ctx.elicit()`) + `confirm=True` fallback on destructive operations, and automatic secret/annotation redaction.
+## Quick start
 
+**You'll need:**
+
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Access to a Kubernetes cluster with Argo Rollouts installed
+- Optional: a Prometheus URL for metric comparisons and analysis
+
+**1. Add the server to your MCP client.** For Claude Desktop, Cursor, Windsurf, and most other clients, add this to your MCP config file:
+
+```json
+{
+  "mcpServers": {
+    "rollouts": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "talkops-argo-rollout-mcp-server",
+        "argo-rollout-mcp-server"
+      ],
+      "env": {
+        "KUBECONFIG": "/path/to/your/kubeconfig",
+        "PROMETHEUS_URL": "http://prometheus.monitoring:9090"
+      }
+    }
+  }
+}
 ```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                        AI Host (Cursor, Claude, Agent)                     │
-└───────────────────┬────────────────────────────────────┬───────────────────┘
-                    │ Progressive Disclosure             │ MCP Protocol (stdio / HTTP)
-                    ▼                                    ▼
-┌───────────────────────────────────────┐  ┌─────────────────────────────────┐
-│     Agent Skills Layer (skills/)      │  │   FastMCP Execution Server      │
-│                                       │  │  (argo_rollout_mcp_server/)     │
-│ • onboarding-and-migrating-to-...     │  │                                 │
-│ • progressing-argo-rollouts           │  │ • 15 Tools (4 Toolsets, <=8 args│
-│ • gating-rollouts-with-analysis-...   │  │ • 13 Resources (argorollout://) │
-│ • troubleshooting-argo-rollouts       │  │ • 0 Prompts                     │
-│ • 8 Offline Scripts & 8 References    │  │ • Redaction & Write/Elicit Gate │
-└───────────────────────────────────────┘  └────────────────┬────────────────┘
-                                                            │
-                                                            ▼
-                                           ┌─────────────────────────────────┐
-                                           │  Kubernetes Cluster + Prometheus│
-                                           └─────────────────────────────────┘
-```
 
----
-
-## Bundled Agent Skills (`skills/`)
-
-| Skill Name | Purpose | Offline Scripts (`scripts/`) | Reference Docs (`references/`) |
-|------------|---------|------------------------------|--------------------------------|
-| `onboarding-and-migrating-to-argo-rollouts` | Validate Deployments, choose Direct vs `workloadRef` migration, convert live or offline, and safely scale down/delete legacy Deployments | `lint_deployment_manifest.py`, `convert_deployment_to_rollout.py`, `convert_rollout_to_deployment.py`, `generate_scale_down_manifest.py`, `generate_argocd_ignore_differences.py` | `migration-modes.md`, `gitops-integration.md` |
-| `progressing-argo-rollouts` | Trigger canary/blue-green rollouts, verify step health & metrics, promote, pause/resume, or abort across single or multi-cluster waves | `render_canary_steps.py` | `strategy-playbooks.md`, `traffic-routing.md`, `multi-cluster-waves.md` |
-| `gating-rollouts-with-analysis-and-experiments` | Configure Prometheus `AnalysisTemplate` / `ClusterAnalysisTemplate`, run A/B `Experiment`s with `specRef`, and compare canary vs stable metrics | `generate_analysis_template.py`, `validate_analysis_template.py` | `prometheus-analysis-queries.md`, `experiment-design.md` |
-| `troubleshooting-argo-rollouts` | Diagnose degraded, stuck, paused, or `InvalidSpec` rollouts using `argo_diagnose_rollout` and execute targeted recovery | *(uses live `argo_diagnose_rollout`)* | `rollout-error-catalog.md` |
-
----
-
-## Available MCP Tools (15 Tools across 4 Toolsets)
-
-Every tool enforces `<= 8` parameters and returns structured Pydantic models (`ExecutionResult`, `ReadinessReport`, `RolloutDiagnosisReport`, `CanaryMetricsComparison`).
-
-### Toolset: `rollouts`
-| Tool | Read-Only? | `dry_run` Default | Destructive Gate | Description |
-|------|------------|-------------------|------------------|-------------|
-| `argo_create_rollout` | No | `True` | No | Create a Rollout (`canary`, `bluegreen`, or `rolling`) and auto-create companion Services |
-| `argo_set_rollout_image` | No | `False` | No | Update container image on a direct or `workloadRef` Rollout |
-| `argo_configure_rollout_strategy` | No | `True` | No | Patch canary steps, Services, Traefik/Gateway API routing, `workloadRef.scaleDown`, or repair conflicting strategy blocks |
-| `argo_manage_rollout_lifecycle` | No | N/A | On `abort` / `skip_analysis` | Execute `promote`, `promote_full`, `pause`, `resume`, `abort`, `retry`, or `skip_analysis` |
-| `argo_delete_rollout` | No | N/A | Yes (`confirm` / elicit) | Delete a Rollout (and optionally companion resources); blocks if `workloadRef` Deployment is at 0 replicas |
-
-### Toolset: `analysis`
-| Tool | Read-Only? | `dry_run` Default | Destructive Gate | Description |
-|------|------------|-------------------|------------------|-------------|
-| `argo_configure_analysis_template` | No | `True` | No | Create/update an `AnalysisTemplate` or `ClusterAnalysisTemplate` and link it to a Rollout |
-| `argo_delete_analysis_template` | No | N/A | Yes (`confirm` / elicit) | Delete a namespace or cluster-scoped AnalysisTemplate |
-| `argo_create_experiment` | No | `False` | No | Launch an A/B `Experiment` with `specRef` (`stable`/`canary`/`active`/`preview`) or pod templates |
-| `argo_delete_experiment` | No | N/A | Yes (`confirm` / elicit) | Delete an Experiment resource |
-| `argo_compare_canary_metrics` | **Yes** | N/A | No | Compare live Prometheus metrics (error rate, P99/P95 latency) between canary and stable pods |
-
-### Toolset: `migration`
-| Tool | Read-Only? | `dry_run` Default | Destructive Gate | Description |
-|------|------------|-------------------|------------------|-------------|
-| `argo_validate_deployment_readiness` | **Yes** | N/A | No | Score a live Deployment (0–100) for migration readiness and detect container ports |
-| `argo_convert_deployment_to_rollout` | No | `True` | No | Convert a live Deployment into a Rollout (`direct` or `workload_ref`) and create Services |
-| `argo_convert_rollout_to_deployment` | No | `True` | No | Reverse-migrate a live Rollout back into a standard Kubernetes Deployment |
-| `argo_manage_legacy_deployment` | No | `True` | On `delete` / `scale=0` | Scale or delete a legacy Deployment after verifying the replacing Rollout is `Healthy` |
-
-### Toolset: `diagnostics`
-| Tool | Read-Only? | `dry_run` Default | Destructive Gate | Description |
-|------|------------|-------------------|------------------|-------------|
-| `argo_diagnose_rollout` | **Yes** | N/A | No | Single-call diagnostic snapshot returning deterministic `diagnosis_codes`, conditions, failing metrics, warning events, and pod statuses |
-
----
-
-## Available MCP Resources (13 Live Resources)
-
-| Resource URI | Description |
-|--------------|-------------|
-| `argorollout://server/capabilities` | Server write mode (`allow_write`), enabled `toolsets`, cluster connectivity, and installed CRDs |
-| `argorollout://cluster/health` | Cluster API reachability and Argo Rollouts controller health |
-| `argorollout://cluster/namespaces` | Available Kubernetes namespaces |
-| `argorollout://cluster/contexts` | Available kubeconfig contexts and active context (credentials stripped) |
-| `argorollout://rollouts/list` | Cluster-wide Rollout inventory with phase, replica counts, and `health_score` (0–100) |
-| `argorollout://rollouts/{namespace}/{name}/detail` | Concise JSON status (`phase`, `healthScore`, `canaryWeight`, `currentStep`, `pauseConditions`, `replicas`) |
-| `argorollout://rollouts/{namespace}/{name}/manifest` | Sanitized live Rollout YAML (`managedFields`, `last-applied-configuration`, and literal env values redacted) |
-| `argorollout://rollouts/{namespace}/{name}/analysisruns` | Recent `AnalysisRun` phases, metric measurements, and failure messages for a Rollout |
-| `argorollout://analysistemplates/{namespace}` | Available `AnalysisTemplate` and `ClusterAnalysisTemplate` definitions |
-| `argorollout://experiments/{namespace}/{name}/status` | Live `Experiment` phase, template replica counts, and linked `AnalysisRun` statuses |
-| `argorollout://history/{namespace}/{deployment}` | Separated ReplicaSet `revisions` and Kubernetes status `conditions` |
-| `argorollout://metrics/prometheus/status` | Prometheus reachability and query readiness (`status: "unavailable"` when Prometheus is unreachable) |
-| `argorollout://metrics/{namespace}/{service}/summary` | Live service Golden Signals summary (request rate, error ratio, latency quantiles) |
-
----
-
-## Configuration & CLI Flags
-
-The server defaults to **read-only mode** (`allow_write=False`) and supports both CLI flags and environment variables:
+Using Claude Code? Run this instead:
 
 ```bash
-uv run argo-rollout-mcp-server \
-  --allow-write \
-  --toolsets rollouts,analysis,migration,diagnostics \
-  --prometheus-url http://prometheus:9090 \
-  --kubeconfig ~/.kube/config \
-  --context prod-us-east-1 \
-  --transport stdio
+claude mcp add rollouts -e KUBECONFIG=/path/to/your/kubeconfig -e PROMETHEUS_URL=http://prometheus.monitoring:9090 -- uvx --from talkops-argo-rollout-mcp-server argo-rollout-mcp-server
 ```
 
-| CLI Flag | Environment Variable | Default | Description |
-|----------|----------------------|---------|-------------|
-| `--allow-write` | `MCP_ALLOW_WRITE=true` | `false` | Enable mutating tools (create, update, lifecycle, convert, delete) |
-| `--read-only` | `MCP_READ_ONLY=true` | `true` | Force read-only mode (overrides `--allow-write`) |
-| `--toolsets` | `MCP_TOOLSETS` | `all` | Comma-separated toolsets: `all`, `rollouts`, `analysis`, `migration`, `diagnostics` |
-| `--prometheus-url` | `PROMETHEUS_URL` | *(none)* | Prometheus base URL for `argo_compare_canary_metrics` and metrics resources |
-| `--kubeconfig` | `K8S_KUBECONFIG` | `~/.kube/config` | Path to kubeconfig file |
-| `--context` | `K8S_CONTEXT` | *(active)* | Kubernetes context name |
-| `--transport` | `MCP_TRANSPORT` | `stdio` | Transport protocol: `stdio`, `http`, or `sse` |
-| `--host` | `MCP_HOST` | `0.0.0.0` | HTTP bind host |
-| `--port` | `MCP_PORT` | `8768` | HTTP bind port |
-| `--path` | `MCP_PATH` | `/mcp` | HTTP endpoint path |
-| `--debug` | `MCP_LOG_LEVEL=DEBUG` | `INFO` | Enable debug logging |
+`uvx` downloads [`talkops-argo-rollout-mcp-server`](https://pypi.org/project/talkops-argo-rollout-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-argo-rollout-mcp-server` and use `argo-rollout-mcp-server` as the command.
 
-### Multi-Cluster Configuration (`mcp.json`)
+**2. Restart your client and try asking:**
 
-For multi-cluster progressive delivery, configure one server entry per Kubernetes context in `mcp.json` (see `skills/progressing-argo-rollouts/references/multi-cluster-waves.md` for wave progression gates).
+- *"Is the `checkout` Deployment ready to migrate to an Argo Rollout?"*
+- *"Start a canary for `checkout` with image `v2.4.0` and pause at 20%."*
+- *"My rollout is stuck in Degraded. What happened?"*
 
----
+## Allowing changes
 
-## Migration Guide: `v0.1.x` → `v0.2.0` (Clean Break)
+Out of the box the server is read-only. To let your assistant make changes (creating, converting, promoting, aborting, and deleting rollouts, analysis templates, and experiments), add `"--allow-write"` to `args` (or set `MCP_ALLOW_WRITE=true`). Even then, changes are previewed first and destructive actions ask for confirmation.
+
+## Configuration
+
+Set these as environment variables (the `env` block in your client config) or pass the matching flag.
+
+| Variable | Flag | Default | What it does |
+| :--- | :--- | :--- | :--- |
+| `K8S_KUBECONFIG` / `KUBECONFIG` | `--kubeconfig` | `~/.kube/config` | Kubeconfig file to use |
+| `K8S_CONTEXT` | `--context` | current context | Kubernetes context to use |
+| `PROMETHEUS_URL` | `--prometheus-url` | `http://prometheus:9090` | Prometheus for metric checks |
+| `MCP_ALLOW_WRITE` | `--allow-write` | `false` | Enable tools that change your cluster |
+| `MCP_TOOLSETS` | `--toolsets` | `all` | Limit tools: `rollouts`, `migration`, `analysis`, `diagnostics`, `readonly` |
+| `MCP_TRANSPORT` | `--transport` | `stdio` | `stdio` or `http` |
+| `MCP_PORT` | `--port` | `8768` | Port when using HTTP |
+
+Run `uvx --from talkops-argo-rollout-mcp-server argo-rollout-mcp-server --help` to see every option.
+
+### Running over HTTP
+
+To share one server between several clients or run it remotely, start it in HTTP mode:
+
+```bash
+MCP_TRANSPORT=http MCP_PORT=8768 uvx --from talkops-argo-rollout-mcp-server argo-rollout-mcp-server
+```
+
+Then point your client at `http://localhost:8768/mcp`:
+
+```json
+{
+  "mcpServers": {
+    "rollouts": {
+      "url": "http://localhost:8768/mcp"
+    }
+  }
+}
+```
+
+## Agent Skills
+
+Skills live in [`skills/`](skills/). Each one is a `SKILL.md` playbook (plus optional `references/` and offline `scripts/`) that teaches your AI assistant *how* to do a job safely, while the MCP server does the actual work. Tools are the hands, skills are the know-how.
+
+To use them, copy the folders into your assistant's skills directory, for example:
+
+```bash
+git clone https://github.com/talkops-ai/talkops-mcp.git
+cp -r talkops-mcp/src/argo-rollout-mcp-server/skills/* ~/.claude/skills/
+```
+
+This folder is also a portable [Agent Plugin](https://agent-plugins.org) (`plugin.json` + `mcp.json` + `skills/`), so plugin-aware clients can load the server and skills together.
+
+| Skill | Use it to |
+| :--- | :--- |
+| [`onboarding-and-migrating-to-argo-rollouts`](skills/onboarding-and-migrating-to-argo-rollouts/SKILL.md) | Check a Deployment and move it to a Rollout, including zero-downtime migrations. |
+| [`progressing-argo-rollouts`](skills/progressing-argo-rollouts/SKILL.md) | Run canary, blue-green, and multi-cluster rollouts step by step. |
+| [`gating-rollouts-with-analysis-and-experiments`](skills/gating-rollouts-with-analysis-and-experiments/SKILL.md) | Use Prometheus analysis and experiments to decide whether a rollout continues. |
+| [`troubleshooting-argo-rollouts`](skills/troubleshooting-argo-rollouts/SKILL.md) | Diagnose degraded, paused, or aborted rollouts and fix them. |
+
+## Reference
+
+<details>
+<summary><strong>All 15 tools</strong></summary>
+
+| Tool | Access | What it does |
+| :--- | :--- | :--- |
+| `argo_compare_canary_metrics` | Read | Compare live Prometheus HTTP error rate, latency (P95/P99), and RPS between stable and canary Services. |
+| `argo_configure_analysis_template` | Write | Create (or preview) an AnalysisTemplate/ClusterAnalysisTemplate and link it to a Rollout. |
+| `argo_configure_rollout_strategy` | Write | Configure or repair Rollout strategy steps, Services, and traffic routing. |
+| `argo_convert_deployment_to_rollout` | Write | Convert a live Kubernetes Deployment to an Argo Rollout (<= 8 parameters). |
+| `argo_convert_rollout_to_deployment` | Write | Reverse-migrate a live Argo Rollout back to a standard Kubernetes Deployment. |
+| `argo_create_experiment` | Write | Create a standalone Argo Experiment for baseline vs. canary comparison. |
+| `argo_create_rollout` | Write | Create a new Argo Rollout for progressive delivery (<= 8 parameters). |
+| `argo_delete_analysis_template` | Write (destructive) | Permanently delete an AnalysisTemplate or ClusterAnalysisTemplate. |
+| `argo_delete_experiment` | Write (destructive) | Permanently delete an Argo Experiment and its ephemeral ReplicaSets. |
+| `argo_delete_rollout` | Write (destructive) | Permanently delete an Argo Rollout (blocks if workloadRef Deployment has 0 replicas). |
+| `argo_diagnose_rollout` | Read | Collect a single-call diagnostic report with deterministic diagnosis codes for a Rollout. |
+| `argo_manage_legacy_deployment` | Write (destructive) | Scale, delete, or configure workloadRef scale-down on a legacy Deployment after Rollout migration. |
+| `argo_manage_rollout_lifecycle` | Write (destructive) | Execute a progressive delivery lifecycle action on an active Rollout. |
+| `argo_set_rollout_image` | Write | Update the container image on an existing Argo Rollout to trigger a rollout cycle. |
+| `argo_validate_deployment_readiness` | Read | Validate whether a live Kubernetes Deployment is ready for Argo Rollouts migration. |
+
+</details>
+
+<details>
+<summary><strong>All 13 resources</strong></summary>
+
+| Resource | What it returns |
+| :--- | :--- |
+| `argorollout://cluster/contexts` | Get active and available kubeconfig contexts (no credentials). |
+| `argorollout://cluster/health` | Get overall cluster node readiness and capacity. |
+| `argorollout://cluster/namespaces` | Get list of namespaces in the cluster. |
+| `argorollout://metrics/prometheus/status` | Get Prometheus connectivity status. |
+| `argorollout://rollouts/list` | List all rollouts across namespaces with health scores. |
+| `argorollout://server/capabilities` | Get server capabilities, write mode, enabled toolsets, and CRD availability. |
+| `argorollout://analysistemplates/{namespace}` | List namespace AnalysisTemplates and ClusterAnalysisTemplates. |
+| `argorollout://experiments/{namespace}/{name}/status` | Get Argo Experiment status. |
+| `argorollout://history/{namespace}/{deployment}` | Get ReplicaSet revision history and status conditions for a Rollout. |
+| `argorollout://metrics/{namespace}/{service}/summary` | Get real Prometheus metrics for a service, or explicit unavailable status (fixes B9 & B12). |
+| `argorollout://rollouts/{namespace}/{name}/analysisruns` | Get the 5 most recent AnalysisRuns for a Rollout. |
+| `argorollout://rollouts/{namespace}/{name}/detail` | Get concise Rollout status (phase, step, weights, hashes, healthScore, conditions) without YAML bloat. |
+| `argorollout://rollouts/{namespace}/{name}/manifest` | Get sanitized YAML manifest for a Rollout (strips managedFields and redacts literal env values). |
+
+</details>
+
+<details>
+<summary><strong>Upgrading from an older version</strong></summary>
+
+### Migration Guide: `v0.1.x` → `v0.2.0` (Clean Break)
 
 ### Tool Migration Table
 
@@ -185,22 +205,24 @@ For multi-cluster progressive delivery, configure one server entry per Kubernete
 | `canary_deployment_guided` / `blue_green_deployment_guided` / `rolling_update_guided` / `multi_cluster_canary_guided` prompts | `skills/progressing-argo-rollouts/SKILL.md` |
 | `cost_optimized_deployment_guided` prompt | Removed (simulated `orch_*` dead code removed) |
 
----
+</details>
 
-## Running Tests
+## Development
 
 ```bash
-cd src/argo-rollout-mcp-server
-uv run pytest -v
+git clone https://github.com/talkops-ai/talkops-mcp.git
+cd talkops-mcp/src/argo-rollout-mcp-server
+uv sync --dev
+uv run pytest
+uv run argo-rollout-mcp-server --help
 ```
 
-The test suite includes **78 tests** across three layers:
-- `tests/unit/` — Service `dry_run` propagation, `workloadRef` outage guards, `diagnose_rollout` classification, redaction, middleware coercion/caching, error translation, `specRef` resolution, and named port resolution.
-- `tests/integration/` — In-memory FastMCP `Client(mcp)` tests for toolsets/read-only filtering, `<= 8` parameter schema budgets, `dry_run` defaults, MCP Elicitation + `confirm` gates, all 13 live resources, 0 prompts, and end-to-end onboarding/canary/analysis workflows.
-- `tests/skills/` — Contract tests for `plugin.json` (closed Agent Plugins v1.0.0 schema), `mcp.json`, `SKILL.md` frontmatter and line budgets (`< 500` lines), gate markers, tool/resource cross-reference integrity, and offline execution of all 8 skill scripts.
+## Get help
 
----
+- [Documentation](https://talkops.ai/docs/integrations/argo-rollout-mcp-server/overview)
+- [Report a bug or request a feature](https://github.com/talkops-ai/talkops-mcp/issues/new?labels=argo-rollout-mcp-server)
+- [Join the TalkOps community on Slack](https://talkops.ai/slack/)
 
 ## License
 
-Apache 2.0 — see [LICENSE](../../LICENSE).
+Apache 2.0. See [LICENSE](../../LICENSE).

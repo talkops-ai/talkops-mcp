@@ -18,160 +18,178 @@
 
 ---
 
-## Architecture: Skill Layer vs. Execution Layer
+Let your AI assistant manage your ArgoCD applications: check health, preview and run syncs, roll back, and onboard repositories and projects. Git credentials stay on the server and are never shown to the model.
 
-Version `0.4.0` separates **procedural GitOps knowledge** from **deterministic API execution**:
+## What you get
 
-1. **Execution Layer (`argocd_mcp_server/`)**:
-   - **24 high-signal MCP tools** across 4 toolset profiles (`applications`, `deployments`, `repositories`, `projects`), each with $\le 8$ parameters and full MCP `ToolAnnotations`.
-   - **8 URI-addressed `argocd://` resources** for zero-side-effect context loading.
-   - **Non-blocking async HTTP (`httpx.AsyncClient`)** with automatic retry on transient `GET` failures and model-directed error messages.
-   - **Safe read-only default (`MCP_ALLOW_WRITE=false`)**, `dry_run=True` defaults on `sync_application` and `rollback_application`, and human-in-the-loop confirmation via **MCP Elicitation** (`ctx.elicit()`) with a two-step `confirm=True` fallback.
+- **24 MCP tools** (13 read-only) that work against your live ArgoCD setup
+- **8 resources** your assistant can read for context, under `argocd://`
+- **4 Agent Skills**: step-by-step playbooks that teach your assistant how to use the tools well
+- **Safe by default**: only read-only tools are loaded until you turn on writes, and changes are previewed or confirmed before they happen
 
-2. **Skill Layer (`skills/` + `plugin.json` + `mcp.json`)**:
-   - Packaged as an **Agent Plugin v1.0.0** (`plugin.json` + `mcp.json`) containing **4 progressive-disclosure Agent Skills** (`SKILL.md` + `references/` + stdlib-only `scripts/`):
-     - `deploying-argocd-applications`
-     - `rolling-back-argocd-applications`
-     - `troubleshooting-argocd-applications`
-     - `onboarding-argocd-repositories-and-projects`
+## Quick start
 
+**You'll need:**
+
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- An ArgoCD server URL and an API token (`argocd account generate-token`)
+
+**1. Add the server to your MCP client.** For Claude Desktop, Cursor, Windsurf, and most other clients, add this to your MCP config file:
+
+```json
+{
+  "mcpServers": {
+    "argocd": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "talkops-argocd-mcp-server",
+        "argocd-mcp-server",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "ARGOCD_SERVER_URL": "https://argocd.example.com",
+        "ARGOCD_AUTH_TOKEN": "<your-argocd-token>"
+      }
+    }
+  }
+}
 ```
-src/argocd-mcp-server/
-├── plugin.json                 # Agent Plugin v1.0.0 manifest
-├── mcp.json                    # Portable MCP launcher config
-├── skills/                     # 4 Progressive-Disclosure Agent Skills
-│   ├── deploying-argocd-applications/
-│   ├── rolling-back-argocd-applications/
-│   ├── troubleshooting-argocd-applications/
-│   └── onboarding-argocd-repositories-and-projects/
-├── argocd_mcp_server/          # MCP Execution Server (FastMCP + httpx)
-│   ├── config.py               # ServerConfig (allow_write=False default, MCP_TOOLSETS)
-│   ├── main.py                 # CLI (--transport, --toolsets, --read-only)
-│   ├── exceptions/             # Model-directed custom exceptions (401/403/404/409/5xx)
-│   ├── server/                 # FastMCP bootstrap & middleware (tool caching disabled)
-│   ├── services/               # ArgoCDClient, ArgoCDService, ArgoCDManagementService
-│   ├── tools/                  # 24 tools across 4 toolset profiles
-│   └── resources/              # 8 argocd:// URI resources
-└── tests/                      # 3-Layer Test Suite (Unit, In-Memory MCP, E2E, Skills)
-```
 
----
-
-## Bundled Agent Skills (`skills/`)
-
-| Skill Directory | Purpose | Offline Scripts (`scripts/`) | Reference Guides (`references/`) |
-|---|---|---|---|
-| `deploying-argocd-applications` | Pre-sync diff validation (`get_application_diff`), dry-run preview, controlled sync execution, and declarative YAML authoring | `generate_argocd_manifests.py` | `sync-strategies.md` |
-| `rolling-back-argocd-applications` | Integer history ID resolution, auto-sync blocker detection, preview-first rollback, and recovery verification | *(uses `rollback_application`)* | `rollback-edge-cases.md` |
-| `troubleshooting-argocd-applications` | Structured root-cause diagnosis across `OutOfSync`, `Degraded`, `Missing`, warning events, and pod log streams | *(uses live diagnostic tools)* | `argocd-error-catalog.md` |
-| `onboarding-argocd-repositories-and-projects` | Credential-isolated HTTPS/SSH/OCI repository onboarding, `AppProject` RBAC scoping, and safe local token setup | `fetch_argocd_token.py` | `rbac-and-credentials.md` |
-
----
-
-## Tool Catalog (24 Tools)
-
-### 1. `applications` Toolset (7 Tools)
-
-| Tool | Read-Only | Destructive | Parameters ($\le 8$) | Description |
-|---|---|---|---|---|
-| `list_applications` | Yes | No | `cluster`, `namespace`, `project`, `sync_status`, `health_status`, `limit`, `offset` | List applications with filtering and pagination |
-| `get_application_details` | Yes | No | `app_name`, `detail_level` (`"summary"` \| `"full"`) | Get sync/health status, problem resources, and deployment history with history IDs |
-| `get_application_resource_tree` | Yes | No | `app_name` | Get Kubernetes resource hierarchy (`Deployment -> ReplicaSet -> Pod`) |
-| `get_application_events` | Yes | No | `app_name`, `limit`, `warnings_only` | Get recent Kubernetes events sorted newest first |
-| `create_application` | No | No | `app_name`, `project`, `repo_url`, `path`, `destination_namespace`, `target_revision`, `destination_server`, `sync_policy` | Register a new ArgoCD application |
-| `update_application` | No | No | `app_name`, `target_revision`, `sync_policy`, `path`, `destination_namespace` | Update tracked revision, path, namespace, or sync policy |
-| `delete_application` | No | **Yes** | `app_name`, `cascade`, `confirm` | Delete an application (gated by MCP Elicitation / `confirm=True`) |
-
-### 2. `deployments` Toolset (7 Tools)
-
-| Tool | Read-Only | Destructive | Parameters ($\le 8$) | Description |
-|---|---|---|---|---|
-| `get_application_diff` | Yes | No | `app_name`, `revision`, `validate` | Compare live cluster state vs. target Git manifests and optionally validate via dry-run sync |
-| `sync_application` | Preview / Write | Conditional (`prune=True`) | `app_name`, `revision`, `dry_run` (`True`), `prune`, `force`, `resources`, `confirm` | Preview (`dry_run=True`) or execute (`dry_run=False`) an application sync |
-| `get_sync_status` | Yes | No | `app_name` | Get active operation phase, per-resource sync results, and recent history |
-| `get_application_logs` | Yes | No | `app_name`, `pod_name`, `container`, `tail_lines`, `since_seconds`, `errors_only` | Fetch and parse ArgoCD NDJSON pod log streams with error extraction |
-| `rollback_application` | Preview / Write | **Yes** | `app_name`, `history_id`, `dry_run` (`True`), `prune`, `confirm` | Preview or execute a rollback to a deployment history ID with auto-sync blocker detection |
-| `refresh_application` | Yes | No | `app_name`, `mode` (`"normal"` \| `"hard"`) | Trigger soft (`normal`) or manifest-cache-invalidating (`hard`) refresh |
-| `cancel_deployment` | No | No | `app_name` | Terminate an ongoing sync operation |
-
-### 3. `repositories` Toolset (5 Tools)
-
-| Tool | Read-Only | Destructive | Parameters ($\le 8$) | Description |
-|---|---|---|---|---|
-| `list_repositories` | Yes | No | `repo_filter` | List onboarded Git/Helm/OCI repositories (credentials redacted) |
-| `get_repository` | Yes | No | `repo_url` | Get repository connection status and metadata (credentials redacted) |
-| `validate_repository_connection` | Yes | No | `repo_url`, `insecure` | Validate connectivity using server-configured Git credentials |
-| `onboard_repository` | No | No | `repo_url`, `repo_type`, `project`, `enable_lfs`, `insecure`, `force_http_basic_auth` | Onboard HTTPS or SSH repository using server-side credentials |
-| `delete_repository` | No | **Yes** | `repo_url`, `confirm` | Delete a registered repository (gated by MCP Elicitation / `confirm=True`) |
-
-### 4. `projects` Toolset (5 Tools)
-
-| Tool | Read-Only | Destructive | Parameters ($\le 8$) | Description |
-|---|---|---|---|---|
-| `list_projects` | Yes | No | `name_filter` | List AppProjects with source repos and destination rules |
-| `get_project` | Yes | No | `project_name` | Get detailed AppProject RBAC rules and resource restrictions |
-| `create_project` | No | No | `project_name`, `description`, `source_repos`, `destinations`, `resource_restrictions` | Create an AppProject with RBAC restrictions |
-| `update_project` | No | No | `project_name`, `description`, `source_repos`, `destinations`, `resource_restrictions` | Update an existing AppProject |
-| `delete_project` | No | **Yes** | `project_name`, `confirm` | Delete an AppProject (gated by MCP Elicitation / `confirm=True`) |
-
----
-
-## Resource Catalog (8 URI-Addressed Resources)
-
-| Resource URI | Description |
-|---|---|
-| `argocd://applications` | Catalog of all ArgoCD applications with sync and health status |
-| `argocd://applications/{app_name}` | Full state, resources, and deployment history for a specific application |
-| `argocd://applications/{app_name}/history` | Deployment revision history with integer `id`s for rollback targeting |
-| `argocd://applications/{app_name}/resource-tree` | Hierarchical Kubernetes resource tree for an application |
-| `argocd://clusters` | Registered target Kubernetes clusters with connection state and version |
-| `argocd://repositories` | Onboarded Git, Helm, and OCI repositories (credentials redacted) |
-| `argocd://projects/{project_name}` | AppProject RBAC rules, allowed source repositories, and destinations |
-| `argocd://health` | ArgoCD API connectivity, server version, and `MCP_ALLOW_WRITE` posture |
-
----
-
-## Quick Start & Configuration
-
-### Installation
+Using Claude Code? Run this instead:
 
 ```bash
-cd src/argocd-mcp-server
-uv sync --dev
+claude mcp add argocd -e ARGOCD_SERVER_URL=https://argocd.example.com -e ARGOCD_AUTH_TOKEN=<your-argocd-token> -- uvx --from talkops-argocd-mcp-server argocd-mcp-server --transport stdio
 ```
 
-### Environment Variables
+> [!NOTE]
+> ArgoCD defaults to HTTP mode, so the examples pass `--transport stdio` for desktop clients.
 
-| Variable | Default | Description |
-|---|---|---|
-| `ARGOCD_SERVER_URL` | `https://argocd-server.argocd.svc:443` | ArgoCD API server URL |
-| `ARGOCD_AUTH_TOKEN` | `None` | ArgoCD Bearer JWT token |
-| `ARGOCD_INSECURE` | `false` | Skip TLS verification for self-signed ArgoCD certs |
-| `ARGOCD_TIMEOUT` | `300` | HTTP request timeout in seconds |
-| `ARGOCD_MAX_RETRIES` | `2` | Automatic retries for transient `GET` failures |
-| `MCP_ALLOW_WRITE` | **`false`** | **Safe default**: read-only mode (`true` enables mutating tools) |
-| `MCP_TOOLSETS` | `all` | Comma-separated toolsets (`all,readonly,applications,deployments,repositories,projects`) |
-| `MCP_TRANSPORT` | `http` | Transport mode (`stdio` or `http`) |
-| `GIT_USERNAME` | `""` | Server-side username for HTTPS repository onboarding |
-| `GIT_PASSWORD` | `None` | Server-side PAT/token for HTTPS repository onboarding |
-| `SSH_PRIVATE_KEY_PATH` | `~/.ssh/id_rsa` | Server-side SSH private key path for SSH repository onboarding |
+`uvx` downloads [`talkops-argocd-mcp-server`](https://pypi.org/project/talkops-argocd-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-argocd-mcp-server` and use `argocd-mcp-server` as the command.
 
-### Running the Server
+**2. Restart your client and try asking:**
+
+- *"Which of my ArgoCD applications are out of sync or degraded?"*
+- *"Show me the diff for `payments-api`, then do a dry-run sync."*
+- *"Roll `checkout` back to its last healthy deployment."*
+
+## Allowing changes
+
+Out of the box the server is read-only. To let your assistant make changes (creating, updating, syncing, rolling back, and deleting apps, repositories, and projects), add `"MCP_ALLOW_WRITE": "true"` to the `env` block. Even then, syncs and rollbacks run as a dry run first, and destructive actions ask for confirmation.
+
+## Configuration
+
+Set these as environment variables (the `env` block in your client config) or pass the matching flag.
+
+| Variable | Flag | Default | What it does |
+| :--- | :--- | :--- | :--- |
+| `ARGOCD_SERVER_URL` | — | `https://argocd-server.argocd.svc:443` | Your ArgoCD API URL |
+| `ARGOCD_AUTH_TOKEN` | — | none | ArgoCD API token (required) |
+| `ARGOCD_INSECURE` | — | `false` | Skip TLS verification (self-signed certs only) |
+| `MCP_ALLOW_WRITE` | — | `false` | Enable tools that change ArgoCD |
+| `MCP_TOOLSETS` | `--toolsets` | `all` | Limit tools: `applications`, `deployments`, `repositories`, `projects`, `readonly` |
+| `GIT_USERNAME` / `GIT_PASSWORD` | — | none | Server-side credentials for onboarding HTTPS repos |
+| `SSH_PRIVATE_KEY_PATH` | — | `~/.ssh/id_rsa` | Server-side key for onboarding SSH repos |
+| `MCP_TRANSPORT` | `--transport` | `http` | `stdio` or `http` |
+| `MCP_PORT` | — | `8770` | Port when using HTTP |
+
+Run `uvx --from talkops-argocd-mcp-server argocd-mcp-server --help` to see every option.
+
+### Running over HTTP
+
+To share one server between several clients or run it remotely, start it in HTTP mode:
 
 ```bash
-# Default stdio transport in safe read-only mode
-uv run argocd-mcp-server --transport stdio --read-only
-
-# Enable specific toolsets
-uv run argocd-mcp-server --transport stdio --toolsets applications,deployments
-
-# Streamable HTTP transport
-uv run argocd-mcp-server --transport http
+MCP_TRANSPORT=http MCP_PORT=8770 uvx --from talkops-argocd-mcp-server argocd-mcp-server
 ```
 
----
+Then point your client at `http://localhost:8770/mcp`:
 
-## Migration Guide: v0.3.0 -> v0.4.0
+```json
+{
+  "mcpServers": {
+    "argocd": {
+      "url": "http://localhost:8770/mcp"
+    }
+  }
+}
+```
+
+## Agent Skills
+
+Skills live in [`skills/`](skills/). Each one is a `SKILL.md` playbook (plus optional `references/` and offline `scripts/`) that teaches your AI assistant *how* to do a job safely, while the MCP server does the actual work. Tools are the hands, skills are the know-how.
+
+To use them, copy the folders into your assistant's skills directory, for example:
+
+```bash
+git clone https://github.com/talkops-ai/talkops-mcp.git
+cp -r talkops-mcp/src/argocd-mcp-server/skills/* ~/.claude/skills/
+```
+
+This folder is also a portable [Agent Plugin](https://agent-plugins.org) (`plugin.json` + `mcp.json` + `skills/`), so plugin-aware clients can load the server and skills together.
+
+| Skill | Use it to |
+| :--- | :--- |
+| [`deploying-argocd-applications`](skills/deploying-argocd-applications/SKILL.md) | Diff first, dry-run the sync, then deploy and confirm the app is healthy. |
+| [`rolling-back-argocd-applications`](skills/rolling-back-argocd-applications/SKILL.md) | Pick a known-good revision, handle auto-sync, preview, and roll back. |
+| [`troubleshooting-argocd-applications`](skills/troubleshooting-argocd-applications/SKILL.md) | Figure out why an app is degraded or out of sync using events, resources, and logs. |
+| [`onboarding-argocd-repositories-and-projects`](skills/onboarding-argocd-repositories-and-projects/SKILL.md) | Add Git, Helm, or OCI repos and set up projects with the right access limits. |
+
+## Reference
+
+<details>
+<summary><strong>All 24 tools</strong></summary>
+
+| Tool | Access | What it does |
+| :--- | :--- | :--- |
+| `cancel_deployment` | Write | Terminate an ongoing sync operation on an application. |
+| `create_application` | Write | Create a new ArgoCD application tracking a Git repository path. |
+| `create_project` | Write | Create a new ArgoCD AppProject with source repositories, destinations, and RBAC restrictions. |
+| `delete_application` | Write (destructive) | Delete an ArgoCD application and optionally cascade-delete its cluster resources. |
+| `delete_project` | Write (destructive) | Delete an ArgoCD AppProject (fails safely if applications still belong to the project). |
+| `delete_repository` | Write (destructive) | Delete a registered repository from ArgoCD. |
+| `get_application_details` | Read | Get application sync/health state, managed resources, sync policy, and deployment history with history IDs. |
+| `get_application_diff` | Read | Compare live cluster state against target Git manifests and optionally validate via dry-run. |
+| `get_application_events` | Read | Get recent Kubernetes events for an application sorted newest first. |
+| `get_application_logs` | Read | Retrieve and summarize pod logs for an application with NDJSON stream parsing and error detection. |
+| `get_application_resource_tree` | Read | Get the Kubernetes resource hierarchy (Deployments, ReplicaSets, Pods, Services) for an application. |
+| `get_project` | Read | Get detailed AppProject configuration, allowed repositories, destinations, and resource restrictions. |
+| `get_repository` | Read | Get repository connection status and metadata (credentials redacted). |
+| `get_sync_status` | Read | Get current sync status, active operation phase, per-resource sync results, and recent history. |
+| `list_applications` | Read | List ArgoCD applications with optional filtering and pagination. |
+| `list_projects` | Read | List all ArgoCD AppProjects with source repositories and destination rules. |
+| `list_repositories` | Read | List all repositories registered in ArgoCD with credentials redacted. |
+| `onboard_repository` | Write | Onboard a Git/Helm/OCI repository into ArgoCD using server-side credentials (inferred from URL scheme). |
+| `refresh_application` | Read | Trigger a soft ('normal') or manifest-cache-invalidating ('hard') refresh on an application. |
+| `rollback_application` | Write (destructive) | Preview (dry_run=True) or execute (dry_run=False) an application rollback to a specific deployment history ID. |
+| `sync_application` | Write | Preview (dry_run=True) or execute (dry_run=False) an ArgoCD application sync operation. |
+| `update_application` | Write | Update an existing ArgoCD application's revision, path, namespace, or sync policy. |
+| `update_project` | Write | Update an existing ArgoCD AppProject's description, repositories, destinations, or resource restrictions. |
+| `validate_repository_connection` | Read | Validate repository connectivity using server-configured Git credentials. |
+
+</details>
+
+<details>
+<summary><strong>All 8 resources</strong></summary>
+
+| Resource | What it returns |
+| :--- | :--- |
+| `argocd://applications` | Catalog of all ArgoCD applications with sync and health status. |
+| `argocd://clusters` | Registered target Kubernetes clusters with connection state and server version. |
+| `argocd://health` | ArgoCD API connectivity, server version, and MCP guardrail posture. |
+| `argocd://repositories` | Onboarded Git, Helm, and OCI repositories (credentials redacted). |
+| `argocd://applications/{app_name}` | Full state, managed resources, and deployment history for a specific application. |
+| `argocd://applications/{app_name}/history` | Deployment revision history with integer history IDs for rollback targeting. |
+| `argocd://applications/{app_name}/resource-tree` | Hierarchical Kubernetes resource tree for an application. |
+| `argocd://projects/{project_name}` | AppProject RBAC rules, allowed source repositories, and cluster destinations. |
+
+</details>
+
+<details>
+<summary><strong>Upgrading from an older version</strong></summary>
+
+### Migration Guide: v0.3.0 -> v0.4.0
 
 | v0.3.0 Component | v0.4.0 Replacement | Reason |
 |---|---|---|
@@ -183,14 +201,24 @@ uv run argocd-mcp-server --transport http
 | `generate_repository_secret_manifest` | Removed | Security hardening: prevents secret material from entering LLM context (`N8`) |
 | 7 `@mcp.prompt()` workflows + `argocd://workflow` | 4 Agent Skills under `skills/` | Progressive disclosure via Agent Skills Open Spec |
 
----
+</details>
 
-## Testing & Verification
+## Development
 
 ```bash
-# Run all 58 Unit, In-Memory FastMCP Integration, E2E Workflow, and Skill Contract tests
-uv run pytest tests/ -v --tb=short
-
-# Run static type checking
-uv run pyright .
+git clone https://github.com/talkops-ai/talkops-mcp.git
+cd talkops-mcp/src/argocd-mcp-server
+uv sync --dev
+uv run pytest
+uv run argocd-mcp-server --help
 ```
+
+## Get help
+
+- [Documentation](https://talkops.ai/docs/integrations/argocd-mcp-server/overview)
+- [Report a bug or request a feature](https://github.com/talkops-ai/talkops-mcp/issues/new?labels=argocd-mcp-server)
+- [Join the TalkOps community on Slack](https://talkops.ai/slack/)
+
+## License
+
+Apache 2.0. See [LICENSE](../../LICENSE).
