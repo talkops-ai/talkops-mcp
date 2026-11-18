@@ -1,0 +1,3 @@
+{"result":{"content":"2026-10-30T15:30:01Z INFO Starting payments-api server on :8080","timeStamp":"2026-10-30T15:30:01Z","last":false}}
+{"result":{"content":"2026-10-30T15:30:05Z ERROR Failed to connect to upstream ledger: connection refused","timeStamp":"2026-10-30T15:30:05Z","last":false}}
+{"result":{"content":"2026-10-30T15:30:10Z INFO Retrying upstream ledger connection (attempt 2)","timeStamp":"2026-10-30T15:30:10Z","last":true}}

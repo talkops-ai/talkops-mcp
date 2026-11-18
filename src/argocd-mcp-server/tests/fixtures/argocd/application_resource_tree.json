@@ -1,0 +1,41 @@
+{
+  "nodes": [
+    {
+      "kind": "Deployment",
+      "name": "payments-api",
+      "namespace": "payments-prod",
+      "health": {
+        "status": "Healthy"
+      },
+      "parentRefs": []
+    },
+    {
+      "kind": "ReplicaSet",
+      "name": "payments-api-7f8c9b",
+      "namespace": "payments-prod",
+      "health": {
+        "status": "Healthy"
+      },
+      "parentRefs": [
+        {
+          "kind": "Deployment",
+          "name": "payments-api"
+        }
+      ]
+    },
+    {
+      "kind": "Pod",
+      "name": "payments-api-7f8c9b-abc12",
+      "namespace": "payments-prod",
+      "health": {
+        "status": "Healthy"
+      },
+      "parentRefs": [
+        {
+          "kind": "ReplicaSet",
+          "name": "payments-api-7f8c9b"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "argocd-mcp-server": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "argocd-mcp-server",
+        "--transport",
+        "stdio"
+      ],
+      "cwd": "./",
+      "env": {
+        "ARGOCD_SERVER_URL": "${ARGOCD_SERVER_URL:-https://localhost:8080}",
+        "ARGOCD_AUTH_TOKEN": "${ARGOCD_AUTH_TOKEN:-}",
+        "ARGOCD_INSECURE": "${ARGOCD_INSECURE:-false}",
+        "MCP_ALLOW_WRITE": "${MCP_ALLOW_WRITE:-false}",
+        "MCP_TOOLSETS": "${MCP_TOOLSETS:-all}"
+      }
+    }
+  }
+}

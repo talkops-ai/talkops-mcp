@@ -1,0 +1,19 @@
+{
+  "metadata": {
+    "name": "payments-service"
+  },
+  "status": {
+    "operationState": {
+      "phase": "Succeeded",
+      "message": "successfully synced",
+      "operation": {
+        "initiatedBy": {
+          "username": "mcp-operator"
+        },
+        "sync": {
+          "revision": "v1.4.0"
+        }
+      }
+    }
+  }
+}

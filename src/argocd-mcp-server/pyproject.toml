@@ -1,7 +1,7 @@
 [project]
 name = "talkops-argocd-mcp-server"
-version = "0.3.4"
-description = "A Model Context Protocol (MCP) server for managing Kubernetes applications and resources via ArgoCD using GitOps principles."
+version = "0.4.0"
+description = "A Model Context Protocol (MCP) execution server for managing Kubernetes applications and resources via ArgoCD using GitOps principles."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.12"
@@ -22,10 +22,9 @@ classifiers = [
 ]
 dependencies = [
     "fastmcp>=2.13.3",
-    "kubernetes>=34.1.0",
+    "httpx>=0.28.0",
     "pydantic>=2.12.5",
     "pyyaml>=6.0.3",
-    "requests>=2.32.5",
 ]
 
 [project.urls]
@@ -39,7 +38,12 @@ Changelog = "https://github.com/talkops-ai/talkops-mcp/releases"
 argocd-mcp-server = "argocd_mcp_server.main:cli"
 
 [dependency-groups]
-dev = []
+dev = [
+    "pyright>=1.1.409",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "respx>=0.22.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -50,3 +54,15 @@ packages = ["argocd_mcp_server"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.pyright]
+exclude = [
+    "docs",
+    ".venv",
+    "dist",
+]

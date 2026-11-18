@@ -1,0 +1,46 @@
+{
+  "items": [
+    {
+      "metadata": {
+        "name": "production",
+        "annotations": {
+          "description": "Production workloads"
+        }
+      },
+      "spec": {
+        "sourceRepos": [
+          "https://github.com/org/gitops-manifests.git"
+        ],
+        "destinations": [
+          {
+            "server": "https://kubernetes.default.svc",
+            "namespace": "payments-prod"
+          }
+        ],
+        "clusterResourceWhitelist": [
+          {
+            "group": "",
+            "kind": "Namespace"
+          }
+        ]
+      }
+    },
+    {
+      "metadata": {
+        "name": "default"
+      },
+      "spec": {
+        "description": "Default project",
+        "sourceRepos": [
+          "*"
+        ],
+        "destinations": [
+          {
+            "server": "*",
+            "namespace": "*"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,141 @@
+{
+  "metadata": {
+    "name": "payments-service",
+    "namespace": "argocd"
+  },
+  "spec": {
+    "project": "production",
+    "source": {
+      "repoURL": "https://github.com/org/gitops-manifests.git",
+      "path": "apps/payments/overlays/prod",
+      "targetRevision": "v1.4.0"
+    },
+    "destination": {
+      "server": "https://kubernetes.default.svc",
+      "namespace": "payments-prod"
+    },
+    "syncPolicy": {
+      "syncOptions": [
+        "CreateNamespace=true"
+      ]
+    }
+  },
+  "status": {
+    "sync": {
+      "status": "OutOfSync",
+      "revision": "8f3c1a9d4e2b",
+      "comparedTo": {
+        "source": {
+          "repoURL": "https://github.com/org/gitops-manifests.git",
+          "path": "apps/payments/overlays/prod",
+          "targetRevision": "v1.4.0"
+        }
+      }
+    },
+    "health": {
+      "status": "Healthy"
+    },
+    "resources": [
+      {
+        "group": "",
+        "kind": "Service",
+        "namespace": "payments-prod",
+        "name": "payments-svc",
+        "status": "Synced",
+        "health": {
+          "status": "Healthy"
+        }
+      },
+      {
+        "group": "apps",
+        "kind": "Deployment",
+        "namespace": "payments-prod",
+        "name": "payments-api",
+        "status": "OutOfSync",
+        "health": {
+          "status": "Healthy"
+        }
+      },
+      {
+        "group": "",
+        "kind": "ConfigMap",
+        "namespace": "payments-prod",
+        "name": "payments-config",
+        "status": "Synced",
+        "health": {}
+      }
+    ],
+    "history": [
+      {
+        "id": 11,
+        "revision": "1111aaaa2222bbbb",
+        "deployedAt": "2026-10-28T10:00:00Z",
+        "deployStartedAt": "2026-10-28T09:59:40Z",
+        "initiatedBy": {
+          "username": "alice"
+        },
+        "source": {
+          "repoURL": "https://github.com/org/gitops-manifests.git",
+          "path": "apps/payments/overlays/prod",
+          "targetRevision": "v1.2.0"
+        }
+      },
+      {
+        "id": 12,
+        "revision": "3333cccc4444dddd",
+        "deployedAt": "2026-10-29T12:00:00Z",
+        "deployStartedAt": "2026-10-29T11:59:30Z",
+        "initiatedBy": {
+          "username": "bob"
+        },
+        "source": {
+          "repoURL": "https://github.com/org/gitops-manifests.git",
+          "path": "apps/payments/overlays/prod",
+          "targetRevision": "v1.3.0"
+        }
+      },
+      {
+        "id": 13,
+        "revision": "8f3c1a9d4e2b",
+        "deployedAt": "2026-10-30T15:30:00Z",
+        "deployStartedAt": "2026-10-30T15:29:45Z",
+        "initiatedBy": {
+          "username": "ci-bot"
+        },
+        "source": {
+          "repoURL": "https://github.com/org/gitops-manifests.git",
+          "path": "apps/payments/overlays/prod",
+          "targetRevision": "v1.4.0"
+        }
+      }
+    ],
+    "operationState": {
+      "phase": "Succeeded",
+      "message": "successfully synced (all tasks run)",
+      "startedAt": "2026-10-30T15:29:45Z",
+      "finishedAt": "2026-10-30T15:30:00Z",
+      "operation": {
+        "initiatedBy": {
+          "username": "ci-bot"
+        },
+        "sync": {
+          "revision": "8f3c1a9d4e2b"
+        }
+      },
+      "syncResult": {
+        "revision": "8f3c1a9d4e2b",
+        "resources": [
+          {
+            "group": "apps",
+            "kind": "Deployment",
+            "namespace": "payments-prod",
+            "name": "payments-api",
+            "status": "Synced",
+            "message": "deployment.apps/payments-api configured"
+          }
+        ]
+      }
+    },
+    "conditions": []
+  }
+}
