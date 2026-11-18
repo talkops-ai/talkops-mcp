@@ -1,11 +1,20 @@
-# TalkOps Helm MCP Server & Agent Plugin (`v0.5.0`)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cncf/artwork/main/projects/helm/icon/color/helm-icon-color.svg" alt="Helm logo" height="100"/>
+</p>
 
-[![PyPI](https://img.shields.io/pypi/v/talkops-helm-mcp-server)](https://pypi.org/project/talkops-helm-mcp-server/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![FastMCP](https://img.shields.io/badge/FastMCP-2.13+-green.svg)](https://github.com/jlowin/fastmcp)
+<h1 align="center">Helm MCP Server &amp; Agent Plugin</h1>
 
-A production-grade Model Context Protocol (MCP) execution server and portable Agent Plugin for managing Kubernetes workloads with Helm.
+<p align="center">
+  A production-grade Model Context Protocol (MCP) execution server and portable Agent Plugin for managing Kubernetes workloads with Helm.
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/talkops-helm-mcp-server/"><img src="https://img.shields.io/pypi/v/talkops-helm-mcp-server.svg?style=flat-square&logo=pypi&logoColor=white&label=PyPI" alt="PyPI"/></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12%2B-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+"/></a>
+  <a href="https://github.com/talkops-ai/talkops-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License"/></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-4A90D9.svg?style=flat-square" alt="MCP"/></a>
+  <a href="https://helm.sh/"><img src="https://img.shields.io/badge/Helm-v3.x-0F1689.svg?style=flat-square&logo=helm&logoColor=white" alt="Helm v3"/></a>
+</p>
 
 Built on the **Two-Layer Separation Principle**:
 - **Skill Layer (`skills/` + `plugin.json`):** Procedural runbooks, values-authoring standards, error-recovery decision trees, security review checklists, and zero-network local Python validation scripts (`SKILL.md` progressive disclosure).

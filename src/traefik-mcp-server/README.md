@@ -1,18 +1,19 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/traefik/traefik/master/docs/content/assets/img/traefik.logo.png" alt="Traefik MCP Server" width="140" onError="this.style.display='none'"/>
+  <img src="https://raw.githubusercontent.com/traefik/traefik/master/docs/content/assets/img/traefik.logo.png" alt="Traefik logo" height="100"/>
 </p>
 
-<h1 align="center">Traefik MCP Server & Agent Plugin (v0.2.0)</h1>
+<h1 align="center">Traefik MCP Server &amp; Agent Plugin</h1>
 
 <p align="center">
   An Agent Plugin (v1.0.0) and FastMCP Execution Server for Traefik v3 Kubernetes Traffic Management, Security Policies, and Deep Diagnostics — separating reasoning workflows (<code>SKILL.md</code>) from live cluster execution (MCP Tools & Resources).
 </p>
 
 <p align="center">
-  <a href="https://github.com/talkops-ai/talkops-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License"/></a>
+  <a href="https://pypi.org/project/talkops-traefik-mcp-server/"><img src="https://img.shields.io/pypi/v/talkops-traefik-mcp-server.svg?style=flat-square&logo=pypi&logoColor=white&label=PyPI" alt="PyPI"/></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12%2B-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+"/></a>
+  <a href="https://github.com/talkops-ai/talkops-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License"/></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-4A90D9.svg?style=flat-square" alt="MCP"/></a>
-  <a href="https://traefik.io/"><img src="https://img.shields.io/badge/Traefik-v3.6%2B-24A1C1.svg?style=flat-square&logo=traefik&logoColor=white" alt="Traefik v3.6+"/></a>
+  <a href="https://traefik.io/"><img src="https://img.shields.io/badge/Traefik-v3.6%2B-24A1C1.svg?style=flat-square&logo=traefikproxy&logoColor=white" alt="Traefik v3.6+"/></a>
 </p>
 
 ---

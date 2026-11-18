@@ -1,6 +1,20 @@
-# TalkOps Alertmanager MCP Server & Agent Plugin (`v0.2.0`)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cncf/artwork/main/projects/prometheus/icon/color/prometheus-icon-color.svg" alt="Prometheus Alertmanager logo" height="100"/>
+</p>
 
-A Model Context Protocol (MCP) execution server and **Agent Plugins v1.0.0** skill package for Prometheus Alertmanager incident triage, routing & inhibition simulation, silence governance (`SP001`–`SP010`), and SRE alert hygiene.
+<h1 align="center">Alertmanager MCP Server &amp; Agent Plugin</h1>
+
+<p align="center">
+  A Model Context Protocol (MCP) execution server and <strong>Agent Plugins v1.0.0</strong> skill package for Prometheus Alertmanager incident triage, routing &amp; inhibition simulation, silence governance (<code>SP001</code>–<code>SP010</code>), and SRE alert hygiene.
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/talkops-alertmanager-mcp-server/"><img src="https://img.shields.io/pypi/v/talkops-alertmanager-mcp-server.svg?style=flat-square&logo=pypi&logoColor=white&label=PyPI" alt="PyPI"/></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12%2B-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+"/></a>
+  <a href="https://github.com/talkops-ai/talkops-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License"/></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-4A90D9.svg?style=flat-square" alt="MCP"/></a>
+  <a href="https://prometheus.io/docs/alerting/latest/alertmanager/"><img src="https://img.shields.io/badge/Alertmanager-API%20v2-E6522C.svg?style=flat-square&logo=prometheus&logoColor=white" alt="Alertmanager API v2"/></a>
+</p>
 
 ---
 

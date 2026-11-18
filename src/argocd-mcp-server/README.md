@@ -1,18 +1,19 @@
 <p align="center">
-  <img src="https://argo-cd.readthedocs.io/en/stable/assets/logo.png" alt="ArgoCD MCP Server" width="140"/>
+  <img src="https://raw.githubusercontent.com/cncf/artwork/main/projects/argo/icon/color/argo-icon-color.svg" alt="Argo CD logo" height="100"/>
 </p>
 
-<h1 align="center">ArgoCD MCP Server & Agent Plugin (v0.4.0)</h1>
+<h1 align="center">ArgoCD MCP Server &amp; Agent Plugin</h1>
 
 <p align="center">
   An MCP execution server and Agent Skills plugin for managing Kubernetes applications via ArgoCD using GitOps principles.
 </p>
 
 <p align="center">
-  <a href="https://github.com/talkops-ai/talkops-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License"/></a>
+  <a href="https://pypi.org/project/talkops-argocd-mcp-server/"><img src="https://img.shields.io/pypi/v/talkops-argocd-mcp-server.svg?style=flat-square&logo=pypi&logoColor=white&label=PyPI" alt="PyPI"/></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12%2B-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+"/></a>
+  <a href="https://github.com/talkops-ai/talkops-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License"/></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-4A90D9.svg?style=flat-square" alt="MCP"/></a>
-  <a href="https://argo-cd.readthedocs.io/"><img src="https://img.shields.io/badge/ArgoCD-v2.x-0F1689.svg?style=flat-square&logo=argo&logoColor=white" alt="ArgoCD v2.x"/></a>
+  <a href="https://argo-cd.readthedocs.io/"><img src="https://img.shields.io/badge/ArgoCD-v2.x-EF7B4D.svg?style=flat-square&logo=argo&logoColor=white" alt="ArgoCD v2.x"/></a>
 </p>
 
 ---

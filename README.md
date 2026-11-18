@@ -93,5 +93,5 @@ This project is licensed under the Apache-2.0 License.
 ## 📞 Support
 
 - Open an issue on GitHub
-- Join our [Discord server](https://discord.gg/tSN2Qn9uM8)
+- Join the TalkOps community on [Slack](https://talkops.ai/slack/)
 - See each server's README for documentation and guides
