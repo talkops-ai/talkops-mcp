@@ -22,141 +22,201 @@ Built on the **Two-Layer Separation Principle**:
 
 ---
 
-## Architecture Overview
+Let your AI assistant find, install, upgrade, and roll back Helm charts on your Kubernetes clusters. It plans every change before applying it and hides secrets from the output.
 
-```text
-src/helm-mcp-server/
-├── plugin.json                                     # Agent Plugin v1.0.0 manifest
-├── mcp.json                                        # Portable MCP server launch configuration
-├── skills/                                         # Copy-pasteable Agent Skills (Progressive Disclosure)
-│   ├── deploying-helm-charts/
-│   │   ├── SKILL.md
-│   │   ├── references/
-│   │   │   ├── known-repositories.md
-│   │   │   └── values-authoring.md
-│   │   └── scripts/
-│   │       ├── validate_values.py
-│   │       └── validate_manifests.py
-│   ├── upgrading-and-rolling-back-helm-releases/
-│   │   ├── SKILL.md
-│   │   └── references/
-│   │       ├── upgrade-checklist.md
-│   │       └── rollback-sop.md
-│   ├── troubleshooting-helm-releases/
-│   │   ├── SKILL.md
-│   │   └── references/
-│   │       └── error-catalog.md
-│   └── reviewing-helm-release-security/
-│       ├── SKILL.md
-│       ├── references/
-│       │   └── security-checklist.md
-│       └── scripts/
-│           └── scan_manifest_security.py
-└── helm_mcp_server/                                # FastMCP Execution Server
-    ├── config.py                                   # Read-only default, toolsets, env/CLI overrides
-    ├── main.py                                     # CLI entrypoint (--transport, --allow-write, --toolsets)
-    ├── server/                                     # FastMCP core, middleware, bootstrap
-    ├── services/                                   # HelmService & KubernetesService (session context isolated)
-    ├── tools/                                      # 13 focused MCP tools (Read, Mutate, Session tiers)
-    ├── resources/                                  # 10 URI-addressed MCP resources
-    └── utils/                                      # Secret redaction, semver comparison, manifest diffing
+## What you get
+
+- **13 MCP tools** (7 read-only) that work against your live Helm setup
+- **10 resources** your assistant can read for context, under `helm://`
+- **4 Agent Skills**: step-by-step playbooks that teach your assistant how to use the tools well
+- **Safe by default**: only read-only tools are loaded until you turn on writes, and changes are previewed or confirmed before they happen
+
+## Quick start
+
+**You'll need:**
+
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
+- Access to a Kubernetes cluster through a kubeconfig file
+- The `helm` CLI on your `PATH` when using `uvx` (already bundled inside the Docker image)
+
+**1. Add the server to your MCP client.** For Claude Desktop, Cursor, Windsurf, and most other clients, add this to your MCP config file:
+
+```json
+{
+  "mcpServers": {
+    "helm": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "talkops-helm-mcp-server",
+        "helm-mcp-server"
+      ],
+      "env": {
+        "KUBECONFIG": "/path/to/your/kubeconfig"
+      }
+    }
+  }
+}
 ```
 
----
-
-## Bundled Agent Skills (`skills/`)
-
-The `skills/` directory is self-contained and can be installed directly via the root `plugin.json` or copied into any agent skill directory (e.g., `.claude/skills/`, `.gemini/skills/`, `.cursor/skills/`):
-
-| Skill Name | Purpose | Local Scripts & References |
-|---|---|---|
-| `deploying-helm-charts` | End-to-end discovery, values authoring, pre-flight planning, and chart installation | `scripts/validate_values.py`, `scripts/validate_manifests.py`, `references/known-repositories.md`, `references/values-authoring.md` |
-| `upgrading-and-rolling-back-helm-releases` | Safe live diffing (`helm_plan_release`), values-merge strategy selection, upgrades, and rollbacks | `references/upgrade-checklist.md`, `references/rollback-sop.md` |
-| `troubleshooting-helm-releases` | Root-cause diagnosis and remediation for `CrashLoopBackOff`, `ImagePullBackOff`, `OOMKilledRecurring`, `ProgressDeadlineExceeded`, and CRD conflicts | `references/error-catalog.md` |
-| `reviewing-helm-release-security` | Pre-deployment Kubernetes manifest security auditing (privileged containers, host namespaces, RBAC wildcards, mutable tags) | `scripts/scan_manifest_security.py`, `references/security-checklist.md` |
-
----
-
-## MCP Execution Surface
-
-### 1. Tools (13 Total — All $\le 8$ Parameters)
-
-Mutating tools (`mutate` tag) are **hidden by default** when `MCP_ALLOW_WRITE=false` (the default). Enable them with `MCP_ALLOW_WRITE=true` or `--allow-write`.
-
-| Tier / Tag | Tool Name | Description |
-|---|---|---|
-| `read` | `helm_search_charts` | Search configured Helm chart repositories by keyword (`query`, `repository`, `versions`, `limit`) |
-| `read` | `helm_list_releases` | List Helm releases across or within namespaces with status filter and pagination (`limit`, `offset`) |
-| `read` | `helm_get_release_status` | Single-call release status summary with resource counts and links to `/history`, `/values`, and `/manifest` resources |
-| `read` | `helm_render_manifests` | Render Kubernetes manifests (`helm template`) with automatic `Secret` and sensitive `env` redaction |
-| `read` | `helm_plan_release` | **N-to-1 release planner**: computes install preview for new releases or live manifest diff (added/removed/modified resources, image & replica changes) for existing releases |
-| `read` | `helm_monitor_deployment` | Multi-layer rollout health monitor checking Helm status, `Deployment`/`StatefulSet` rollout conditions, and container failure states |
-| `read` | `kubernetes_check_prerequisites` | Verify cluster semantic version and API resource/CRD availability via Kubernetes Discovery APIs |
-| `session` | `kubernetes_set_context` | Switch active Kubernetes context for the current MCP session (propagates `--kube-context` to all Helm CLI and Kubernetes API calls) |
-| `mutate` | `helm_ensure_repository` | Register and index a Helm chart repository (`helm repo add` + `helm repo update`) |
-| `mutate` | `helm_install_chart` | Install a new Helm release with explicit typed parameters (`chart_ref`, `release_name`, `namespace`, `values`, `version`, `create_namespace`, `skip_crds`, `wait_timeout`) |
-| `mutate` | `helm_upgrade_release` | Upgrade an existing Helm release (`release_name`, `chart_ref`, `namespace`, `values`, `version`, `values_strategy`, `wait_timeout`, `atomic`) |
-| `mutate` | `helm_rollback_release` | Roll back a release to a previous revision (`release_name`, `namespace`, `revision`, `wait_timeout`, `dry_run`) |
-| `mutate` | `helm_uninstall_release` | Uninstall a Helm release (`release_name`, `namespace`, `keep_history`) |
-
-### 2. URI-Addressed Resources (10 Total)
-
-| Resource URI | MIME Type | Description |
-|---|---|---|
-| `helm://repositories` | `application/json` | Configured Helm chart repositories (`helm repo list`) |
-| `helm://charts/{repository}/{chart_name}` | `application/json` | Chart metadata, `kubeVersion` constraint, and dependencies (`Chart.yaml`) |
-| `helm://charts/{repository}/{chart_name}/values` | `application/x-yaml` | Default `values.yaml` for a chart |
-| `helm://charts/{repository}/{chart_name}/readme` | `text/markdown` | Chart `README.md` documentation |
-| `helm://releases/{namespace}/{release_name}/history` | `application/json` | Revision history for a deployed release |
-| `helm://releases/{namespace}/{release_name}/values` | `application/json` | Redacted user-supplied values for a deployed release |
-| `helm://releases/{namespace}/{release_name}/manifest` | `application/x-yaml` | Secret-redacted Kubernetes YAML manifest for a deployed release |
-| `kubernetes://cluster-info` | `application/json` | Active cluster version, node summary, and namespace summary |
-| `kubernetes://namespaces` | `application/json` | List of Kubernetes namespaces in the active cluster |
-| `kubernetes://contexts` | `application/json` | Available kubeconfig contexts and active session context |
-
----
-
-## Configuration & Running
-
-### Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` or `http` (Streamable HTTP) |
-| `MCP_ALLOW_WRITE` | `false` | Enable mutating tools (`helm_install_chart`, `helm_upgrade_release`, etc.) |
-| `MCP_TOOLSETS` | `all` | Comma-separated toolsets to expose: `all`, `read`, `mutate` |
-| `MCP_READ_ONLY` | `false` | Force read-only mode (`allow_write=False`, `toolsets=["read"]`) |
-| `KUBECONFIG` | `~/.kube/config` | Path to Kubernetes configuration file |
-| `HELM_TIMEOUT` | `300` | Timeout in seconds for Helm CLI subprocesses |
-| `MCP_HOST` / `MCP_PORT` | `0.0.0.0` / `8765` | Bind host and port when `MCP_TRANSPORT=http` |
-
-### CLI Usage
+Using Claude Code? Run this instead:
 
 ```bash
-# Default: Read-only mode over stdio
-uv run helm-mcp-server
-
-# Write-enabled mode over stdio
-uv run helm-mcp-server --allow-write
-
-# Streamable HTTP mode on port 8765 with write enabled
-uv run helm-mcp-server --transport http --port 8765 --allow-write
+claude mcp add helm -e KUBECONFIG=/path/to/your/kubeconfig -- uvx --from talkops-helm-mcp-server helm-mcp-server
 ```
 
----
+`uvx` downloads [`talkops-helm-mcp-server`](https://pypi.org/project/talkops-helm-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-helm-mcp-server` and use `helm-mcp-server` as the command.
 
-## Development & Testing
+**Prefer Docker?** Pull [`talkopsai/helm-mcp-server`](https://hub.docker.com/r/talkopsai/helm-mcp-server) from Docker Hub—no Python setup needed:
+
+```json
+{
+  "mcpServers": {
+    "helm": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "MCP_TRANSPORT=stdio",
+        "-v",
+        "/path/to/your/kubeconfig:/app/.kube/config:ro",
+        "talkopsai/helm-mcp-server:latest"
+      ]
+    }
+  }
+}
+```
+
+**2. Restart your client and try asking:**
+
+- *"Install the latest Bitnami PostgreSQL chart into the `database` namespace."*
+- *"Show me what would change if I upgrade `my-app` to chart version 2.1.0."*
+- *"My `redis` release is failing. What's wrong and how do I roll it back?"*
+
+## Allowing changes
+
+Out of the box the server is read-only. To let your assistant make changes (installs, upgrades, rollbacks, uninstalls, and adding chart repositories), add `"--allow-write"` to `args` (or pass `-e MCP_ALLOW_WRITE=true` to `docker run`). Even then, changes are previewed first and destructive actions ask for confirmation.
+
+## Configuration
+
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
+
+| Variable | Flag | Default | What it does |
+| :--- | :--- | :--- | :--- |
+| `KUBECONFIG` | — | `~/.kube/config` | Kubeconfig file to use |
+| `MCP_ALLOW_WRITE` | `--allow-write` | `false` | Enable tools that change your cluster |
+| `MCP_TOOLSETS` | `--toolsets` | `all` | Limit tools: `read`, `mutate`, or `all` |
+| `HELM_TIMEOUT` | — | `300` | Seconds to wait for a Helm command |
+| `MCP_TRANSPORT` | `--transport` | `stdio` | `stdio` or `http` |
+| `MCP_PORT` | `--port` | `8765` | Port when using HTTP |
+
+Run `uvx --from talkops-helm-mcp-server helm-mcp-server --help` to see every option.
+
+### Running over HTTP
+
+To share one server between several clients or run it remotely, start it in HTTP mode with Docker or `uvx`:
 
 ```bash
-# Install dependencies including dev test suite
+# With Docker (starts in HTTP mode by default)
+docker run --rm -p 8765:8765 \
+  -v ~/.kube/config:/app/.kube/config:ro \
+  talkopsai/helm-mcp-server:latest
+
+# Or with uvx
+MCP_TRANSPORT=http MCP_PORT=8765 uvx --from talkops-helm-mcp-server helm-mcp-server
+```
+
+Then point your client at `http://localhost:8765/mcp`:
+
+```json
+{
+  "mcpServers": {
+    "helm": {
+      "url": "http://localhost:8765/mcp"
+    }
+  }
+}
+```
+
+## Agent Skills
+
+Skills live in [`skills/`](skills/). Each one is a `SKILL.md` playbook (plus optional `references/` and offline `scripts/`) that teaches your AI assistant *how* to do a job safely, while the MCP server does the actual work. Tools are the hands, skills are the know-how.
+
+To use them, copy the folders into your assistant's skills directory, for example:
+
+```bash
+git clone https://github.com/talkops-ai/talkops-mcp.git
+cp -r talkops-mcp/src/helm-mcp-server/skills/* ~/.claude/skills/
+```
+
+This folder is also a portable [Agent Plugin](https://agent-plugins.org) (`plugin.json` + `mcp.json` + `skills/`), so plugin-aware clients can load the server and skills together.
+
+| Skill | Use it to |
+| :--- | :--- |
+| [`deploying-helm-charts`](skills/deploying-helm-charts/SKILL.md) | Find a chart, check your values, preview, install, and watch the rollout. |
+| [`upgrading-and-rolling-back-helm-releases`](skills/upgrading-and-rolling-back-helm-releases/SKILL.md) | Diff an upgrade before you run it, and roll back safely when needed. |
+| [`troubleshooting-helm-releases`](skills/troubleshooting-helm-releases/SKILL.md) | Work out why a release or its pods are failing (CrashLoopBackOff, image pulls, OOM, and more). |
+| [`reviewing-helm-release-security`](skills/reviewing-helm-release-security/SKILL.md) | Check rendered manifests for risky settings like privileged containers or `latest` tags. |
+
+## Reference
+
+<details>
+<summary><strong>All 13 tools</strong></summary>
+
+| Tool | Access | What it does |
+| :--- | :--- | :--- |
+| `helm_ensure_repository` | Write | Add and index a Helm chart repository if not already configured. |
+| `helm_get_release_status` | Read | Get concise current status, revision, resource counts, and resource URIs for a Helm release. |
+| `helm_install_chart` | Write (destructive) | Install a new Helm release onto the active Kubernetes cluster context. |
+| `helm_list_releases` | Read | List Helm releases in the active cluster with optional namespace/status filtering and pagination. |
+| `helm_monitor_deployment` | Read | Evaluate Helm release status, Deployment/StatefulSet rollouts, and container failure states. |
+| `helm_plan_release` | Read | Compute a pre-deployment plan for a Helm release (install preview if new; resource/image/replica diff if existing). |
+| `helm_render_manifests` | Read | Render Kubernetes manifests from a Helm chart offline with automatic Secret data redaction. |
+| `helm_rollback_release` | Write (destructive) | Roll back a Helm release to a previous revision (or simulate with dry_run=True). |
+| `helm_search_charts` | Read | Search configured Helm chart repositories by keyword. |
+| `helm_uninstall_release` | Write (destructive) | Uninstall a Helm release and delete its managed Kubernetes resources. |
+| `helm_upgrade_release` | Write (destructive) | Upgrade an existing Helm release to a new chart version or values configuration. |
+| `kubernetes_check_prerequisites` | Read | Verify whether the active cluster meets minimum Kubernetes version and API resource/CRD requirements. |
+| `kubernetes_set_context` | Write | Switch the active Kubernetes cluster context for all subsequent Helm and Kubernetes calls in this session. |
+
+</details>
+
+<details>
+<summary><strong>All 10 resources</strong></summary>
+
+| Resource | What it returns |
+| :--- | :--- |
+| `helm://repositories` | List all configured Helm chart repositories. |
+| `kubernetes://cluster-info` | Get Kubernetes cluster version, node summary, namespace summary, and active context. |
+| `kubernetes://contexts` | List all available Kubernetes contexts from kubeconfig and the active session context. |
+| `kubernetes://namespaces` | List all Kubernetes namespace names in the active cluster. |
+| `helm://charts/{repository}/{chart_name}` | Get Chart.yaml metadata and sub-chart dependencies for a specific chart. |
+| `helm://charts/{repository}/{chart_name}/readme` | Get the README documentation for a specific Helm chart. |
+| `helm://charts/{repository}/{chart_name}/values` | Get default values.yaml structure for a specific Helm chart. |
+| `helm://releases/{namespace}/{release_name}/history` | Get revision history for a deployed Helm release in a namespace. |
+| `helm://releases/{namespace}/{release_name}/manifest` | Get secret-redacted Kubernetes YAML manifest for a deployed Helm release. |
+| `helm://releases/{namespace}/{release_name}/values` | Get secret-redacted user override values for a deployed Helm release. |
+
+</details>
+
+## Development
+
+```bash
+git clone https://github.com/talkops-ai/talkops-mcp.git
+cd talkops-mcp/src/helm-mcp-server
 uv sync --dev
-
-# Run unit and in-memory FastMCP integration tests
-uv run pytest tests/ -v --tb=short
-
-# Run static type checking
-uv run pyright .
-
-# Build wheel and sdist
-uv build
+uv run pytest
+uv run helm-mcp-server --help
 ```
+
+## Get help
+
+- [Documentation](https://talkops.ai/docs/integrations/helm-mcp-server/overview)
+- [Report a bug or request a feature](https://github.com/talkops-ai/talkops-mcp/issues/new?labels=helm-mcp-server)
+- [Join the TalkOps community on Slack](https://talkops.ai/slack/)
+
+## License
+
+Apache 2.0. See [LICENSE](../../LICENSE).

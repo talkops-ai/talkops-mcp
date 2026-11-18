@@ -1,50 +1,49 @@
-# Environment variables
-.env
-.env.*
-!.env.example
-
-# Python
+# Virtual environments & caches
+.venv/
+venv/
+ENV/
+env/
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Build artifacts
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
 *.egg-info/
-.installed.cfg
 *.egg
 
-# Virtual Environment
-.venv/
-venv/
-ENV/
-
-# IDE and Editor
+# Git, IDE, OS
+.git/
+.gitignore
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
+.DS_Store
 
-# Tests and Coverage
-.tox/
-.coverage
-htmlcov/
-.pytest_cache/
-
-# Project specific
-tests/
-reference/
-docs/
-logs/
+# Local secrets & logs
+.env
+.env.*
+!.env.example
 *.log
+logs/
+
+# Non-runtime top-level project directories (leading slash keeps skills/*/references intact)
+/tests/
+/docs/
+/reference/
+/references/
+/tasks/

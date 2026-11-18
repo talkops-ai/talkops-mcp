@@ -5,8 +5,6 @@ Tools:
 - loki_apply_operator_cr (`operator` toolset, write-gated)
 """
 
-from __future__ import annotations
-
 from typing import Any, Dict, Literal, Optional
 
 from fastmcp import Context

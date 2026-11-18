@@ -1,95 +1,70 @@
-# Use Python 3.12 slim as base image
+# Stage 1: Build locked Python virtual environment with uv
 FROM python:3.12-slim AS uv
 
-# Install the project into `/app`
+ARG TARGETARCH=amd64
 WORKDIR /app
 
-# Enable bytecode compilation
-ENV UV_COMPILE_BYTECODE=1
-
-# Copy from the cache instead of linking since it's a mounted volume
-ENV UV_LINK_MODE=copy
-
-# Prefer the system python
-ENV UV_PYTHON_PREFERENCE=only-system
-
-# Run without updating the uv.lock file like running with `--frozen`
-# NOTE: Removed --frozen because the package might not be fully locked yet
-ENV UV_FROZEN=false
-
-# Copy the required files first
-COPY pyproject.toml ./
-
-# Python optimization and uv configuration
-ENV PIP_NO_CACHE_DIR=1 \
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_PREFERENCE=only-system \
+    UV_FROZEN=true \
+    PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies and Python package manager
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential \
-    gcc \
-    libffi-dev \
-    libssl-dev \
-    curl && \
+        build-essential \
+        gcc \
+        libffi-dev \
+        libssl-dev \
+        curl && \
+    pip install --no-cache-dir uv && \
     rm -rf /var/lib/apt/lists/*
 
-# Install uv package manager
-RUN pip install uv
+COPY pyproject.toml uv.lock ./
 
-# Create virtual environment and install the project's dependencies
-RUN uv venv /app/.venv
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --python 3.12 --no-install-project --no-dev --no-editable
+RUN --mount=type=cache,target=/root/.cache/uv,id=uv-opentelemetry-mcp-server-${TARGETARCH} \
+    uv sync --python 3.12 --frozen --no-install-project --no-dev --no-editable
 
-# Then, add the rest of the project source code and install it
 COPY . /app
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --python 3.12 --no-dev --no-editable
+RUN --mount=type=cache,target=/root/.cache/uv,id=uv-opentelemetry-mcp-server-${TARGETARCH} \
+    uv sync --python 3.12 --frozen --no-dev --no-editable
 
-# Make the directory just in case it doesn't exist
-RUN mkdir -p /root/.local
-
-# Final stage - runtime image
+# Stage 2: Minimal non-root runtime image
 FROM python:3.12-slim
 
-# Place executables in the environment at the front of the path and include other binaries
+ARG TARGETARCH=amd64
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HOME=/app
 
-# Install runtime dependencies and create application user
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl lsof && \
     rm -rf /var/lib/apt/lists/* && \
     update-ca-certificates && \
     groupadd -r app && \
-    useradd -r -g app -d /app -s /bin/bash app
+    useradd -r -g app -d /app -s /bin/bash app && \
+    mkdir -p /app/.kube /app/.cache /app/.config /app/.ssh /app/logs && \
+    chown -R app:app /app
 
-# Copy application artifacts from build stage
 COPY --from=uv --chown=app:app /app/.venv /app/.venv
-COPY --from=uv --chown=app:app /root/.local /root/.local
+COPY --from=uv --chown=app:app /app/plugin.json /app/mcp.json /app/
+COPY --from=uv --chown=app:app /app/skills /app/skills
 
-# Copy scripts and make them executable
-COPY ./docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY --chmod=755 ./docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# Run as non-root
 USER app
-
-# Expose port
-EXPOSE 8771
-
-# Set working directory
 WORKDIR /app
 
-# Default environment variables
-ENV MCP_SERVER_NAME=opentelemetry-mcp-server
-ENV MCP_SERVER_VERSION=0.2.0
-ENV MCP_TRANSPORT=http
-ENV MCP_HOST=0.0.0.0
-ENV MCP_PORT=8771
-ENV MCP_PATH=/mcp
-ENV K8S_IN_CLUSTER=true
-ENV K8S_ENABLED=true
+EXPOSE 8771
+
+ENV MCP_SERVER_NAME=opentelemetry-mcp-server \
+    MCP_SERVER_VERSION=0.2.1 \
+    MCP_TRANSPORT=http \
+    MCP_HOST=0.0.0.0 \
+    MCP_PORT=8771 \
+    MCP_PATH=/mcp \
+    MCP_ALLOW_WRITE=false \
+    K8S_ENABLED=true
 
 ENTRYPOINT ["docker-entrypoint.sh"]

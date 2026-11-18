@@ -1,7 +1,5 @@
 """Helm release mutation tools: install, upgrade, rollback, and uninstall."""
 
-from __future__ import annotations
-
 from typing import Any, Dict, Literal, Optional
 from fastmcp import Context
 from mcp.types import ToolAnnotations

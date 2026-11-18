@@ -1,6 +1,6 @@
 [project]
 name = "talkops-alertmanager-mcp-server"
-version = "0.2.0"
+version = "0.2.1"
 description = "A Model Context Protocol (MCP) server and Agent Plugins v1.0.0 skill suite for Prometheus Alertmanager alert triage, routing simulation, silence governance, and SRE hygiene."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "fastmcp>=2.13.3",
+    "fastmcp>=3.2.4,<4",
     "httpx>=0.28.0",
     "pydantic>=2.12.5",
     "python-dotenv>=1.0.0",

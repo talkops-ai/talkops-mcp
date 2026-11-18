@@ -57,18 +57,6 @@ def test_plugin_json_conforms_to_closed_v1_schema() -> None:
         assert (skill_dir / "SKILL.md").exists(), f"Missing SKILL.md in {skill_dir}"
 
 
-def test_mcp_json_is_valid() -> None:
-    """mcp.json must define mcpServers.helm-mcp-server with stdio transport and read-only default env."""
-    mcp_path = PROJECT_ROOT / "mcp.json"
-    assert mcp_path.exists()
-
-    data = json.loads(mcp_path.read_text(encoding="utf-8"))
-    assert "mcpServers" in data
-    helm_srv = data["mcpServers"]["helm-mcp-server"]
-    assert helm_srv["command"] == "helm-mcp-server"
-    assert any("--transport" in a for a in helm_srv["args"])
-    assert helm_srv["env"]["MCP_ALLOW_WRITE"] == "false"
-
 
 @pytest.mark.parametrize("skill_name", EXPECTED_SKILLS)
 def test_skill_frontmatter_line_budget_and_links(skill_name: str) -> None:
@@ -225,3 +213,26 @@ spec:
     assert "no-privileged-container" in rules
     assert "no-hostnetwork" in rules
     assert "pin-image-tag" in rules
+
+
+def test_mcp_json_launches_pinned_pypi_release_read_only() -> None:
+    """mcp.json runs this package's exact PyPI release over stdio, read-only, with only portable variables."""
+    import json as _json
+    import re as _re
+    import tomllib as _tomllib
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[2]
+    project = _tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    data = _json.loads((root / "mcp.json").read_text(encoding="utf-8"))
+
+    assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+    assert list(data["mcpServers"]) == ["helm"]
+    entry = data["mcpServers"]["helm"]
+    cli = next(iter(project["scripts"]))
+    assert entry["type"] == "stdio"
+    assert entry["command"] == "uvx"
+    assert entry["args"] == ["--from", f"{project['name']}=={project['version']}", cli, "--transport", "stdio"]
+    assert entry["env"]["MCP_ALLOW_WRITE"] == "false"
+    # Agent Plugins 1.0.0 only expands ${PLUGIN_ROOT} and ${PLUGIN_DATA} in portable configs.
+    assert not _re.search(r"\$\{(?!PLUGIN_ROOT\}|PLUGIN_DATA\})", _json.dumps(entry))

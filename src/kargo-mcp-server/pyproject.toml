@@ -1,6 +1,6 @@
 [project]
 name = "talkops-kargo-mcp-server"
-version = "0.2.0"
+version = "0.2.1"
 description = "Execution-only MCP server and Agent Skills package for Kargo v1.12 continuous promotion orchestration."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "fastmcp>=2.13.3",
+    "fastmcp>=3.2.4,<4",
     "httpx>=0.28.0",
     "pydantic>=2.12.5",
     "pyyaml>=6.0.0",

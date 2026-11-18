@@ -34,7 +34,7 @@ def test_plugin_json_valid_and_paths_resolve() -> None:
     assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
     assert data["name"] == "argocd-gitops-plugin"
     assert re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", data["name"])
-    assert data["version"] == "0.4.0"
+    assert data["version"] == "0.4.1"
     assert isinstance(data["author"], dict)
     assert "name" in data["author"]
 
@@ -50,18 +50,24 @@ def test_plugin_json_valid_and_paths_resolve() -> None:
         assert (skill_path / "SKILL.md").exists(), f"Missing SKILL.md in {skill_path}"
 
 
-def test_mcp_json_uses_safe_defaults() -> None:
-    """Verify mcp.json conforms to Agent Plugins v1.0.0 and uses safe read-only defaults."""
-    mcp_json_path = PLUGIN_DIR / "mcp.json"
-    assert mcp_json_path.exists()
+def test_mcp_json_launches_pinned_pypi_release_read_only() -> None:
+    """mcp.json runs this package's exact PyPI release over stdio, read-only, with only portable variables."""
+    import json as _json
+    import re as _re
+    import tomllib as _tomllib
+    from pathlib import Path as _Path
 
-    data = json.loads(mcp_json_path.read_text(encoding="utf-8"))
+    root = _Path(__file__).resolve().parents[2]
+    project = _tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    data = _json.loads((root / "mcp.json").read_text(encoding="utf-8"))
+
     assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
-    server_cfg = data["mcpServers"]["argocd-mcp-server"]
-    assert server_cfg["type"] == "stdio"
-    assert server_cfg["command"] == "uv"
-    assert server_cfg["cwd"] == "./"
-    assert "argocd-mcp-server" in server_cfg["args"]
-    env = server_cfg["env"]
-    assert "MCP_ALLOW_WRITE" in env
-    assert "false" in env["MCP_ALLOW_WRITE"]
+    assert list(data["mcpServers"]) == ["argocd"]
+    entry = data["mcpServers"]["argocd"]
+    cli = next(iter(project["scripts"]))
+    assert entry["type"] == "stdio"
+    assert entry["command"] == "uvx"
+    assert entry["args"] == ["--from", f"{project['name']}=={project['version']}", cli, "--transport", "stdio"]
+    assert entry["env"]["MCP_ALLOW_WRITE"] == "false"
+    # Agent Plugins 1.0.0 only expands ${PLUGIN_ROOT} and ${PLUGIN_DATA} in portable configs.
+    assert not _re.search(r"\$\{(?!PLUGIN_ROOT\}|PLUGIN_DATA\})", _json.dumps(entry))

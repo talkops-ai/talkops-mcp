@@ -21,7 +21,7 @@ class TestConfigAndValidation:
         with patch.dict(os.environ, {}, clear=True):
             cfg = Config.from_env()
             assert cfg.name == "alertmanager-mcp-server"
-            assert cfg.version == "0.2.0"
+            assert cfg.version == "0.2.1"
             assert cfg.port == 8769
             assert cfg.allow_write is False
             assert cfg.toolsets == ["all"]

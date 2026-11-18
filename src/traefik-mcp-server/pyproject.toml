@@ -1,6 +1,6 @@
 [project]
 name = "talkops-traefik-mcp-server"
-version = "0.2.0"
+version = "0.2.1"
 description = "A Model Context Protocol (MCP) server for Traefik v3 traffic management — routing, canary/weighted services, middlewares, TLS, TCP/UDP, and runtime diagnostics."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "fastmcp>=2.13.3",
+    "fastmcp>=3.4.11,<4",
     "kubernetes>=34.1.0",
     "pydantic>=2.12.5",
     "pyyaml>=6.0.3",

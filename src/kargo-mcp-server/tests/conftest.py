@@ -356,7 +356,7 @@ def fake_kargo_service() -> MagicMock:
     svc.get_server_capabilities = AsyncMock(
         return_value={
             "server_name": "kargo-mcp-server",
-            "server_version": "0.2.0",
+            "server_version": "0.2.1",
             "allow_write": True,
             "toolsets": ["all"],
             "kargo_connected": True,

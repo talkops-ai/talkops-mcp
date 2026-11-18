@@ -18,155 +18,192 @@
 
 ---
 
-## Architecture: Skill & Execution Separation (`v0.2.0`)
+Let your AI assistant manage Traefik v3 on Kubernetes: routes, weighted canary traffic, mirroring, middlewares, TLS, and TCP/UDP routing. It also explains why a request returns 404 or 502, and audits your setup for security issues.
 
-Following the TalkOps Skill & Execution Separation standard (`docs/skill-and-execution-separation.md`), this repository packages two distinct layers in a single Agent Plugin (`plugin.json` + `mcp.json`):
+## What you get
 
-1. **Reasoning Layer (`skills/*/SKILL.md` + `references/` + `scripts/`)**:
-   - **7 Agent Skills** loaded progressively on-demand (~100 tokens at startup for metadata, `<500` lines when activated).
-   - **10 Offline Deterministic Scripts** (`skills/*/scripts/*.py`) for local/GitOps Traefik v3 YAML generation, rule linting, TLS SAN validation, access log parsing, and NGINX annotation classification — zero live Kubernetes API dependencies.
-   - **23 Domain Reference Guides** (`skills/*/references/*.md`) covering all 41 diagnostic codes, 20 security audit checks, 26 middleware types, and Traefik v3.6+ `kubernetesIngressNGINX` provider compatibility.
+- **15 MCP tools** (5 read-only) that work against your live Traefik setup
+- **12 resources** your assistant can read for context, under `traefik://`
+- **7 Agent Skills**: step-by-step playbooks that teach your assistant how to use the tools well
+- **Safe by default**: only read-only tools are loaded until you turn on writes, and changes are previewed or confirmed before they happen
 
-2. **Execution Layer (`traefik_mcp_server/`)**:
-   - **15 Live Cluster Tools** across selectable toolsets (`traffic`, `policies`, `diagnostics`), each strictly `<= 8` parameters with Pydantic `Field(description=...)` schemas and `ToolAnnotations`.
-   - **12 Sanitized Live Resources** (`traefik://...` — 4 static + 8 templates) for read-only cluster discovery, Traefik `/api/rawdata` runtime inspection, sanitized X.509 certificate metadata, Gateway API read-only inventory, and Prometheus golden metrics.
-   - **0 MCP Prompts** — all multi-step runbooks and decision trees live in `skills/`.
-   - **Local `stdio` Transport Only** (`ServerConfig.transport == "stdio"`).
-   - **Safety-First Execution**: Read-only by default (`allow_write=False`), preview-first `dry_run=True` defaults on all mutating tools (including `traefik_set_traffic_weights`), optimistic concurrency via `expected_resource_version`, Argo Rollouts / GitOps / NGINX ownership guards, CRD OpenAPI schema gating, and MCP Elicitation (`ctx.elicit()`) + `confirm=True` fallback on destructive operations.
+## Quick start
 
-```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                        AI Host (Cursor, Claude, Agent)                     │
-└───────────────────┬────────────────────────────────────┬───────────────────┘
-                    │ Progressive Disclosure             │ MCP Protocol (stdio)
-                    ▼                                    ▼
-┌───────────────────────────────────────┐  ┌─────────────────────────────────┐
-│     Agent Skills Layer (skills/)      │  │   FastMCP Execution Server      │
-│                                       │  │    (traefik_mcp_server/)        │
-│ • managing-traefik-traffic-routing    │  │                                 │
-│ • configuring-traefik-middlewares     │  │ • 15 Tools (<=8 params each)    │
-│ • securing-traefik-tls-and-certs      │  │ • 12 Resources (traefik://)     │
-│ • routing-traefik-tcp-and-udp         │  │ • 0 Prompts                     │
-│ • troubleshooting-traefik-routing     │  │ • Ownership & Schema Guards     │
-│ • auditing-traefik-security-posture   │  │ • Secret & Log Redaction        │
-│ • adopting-traefik-nginx-ingress-...  │  │ • Write & Elicitation Gates     │
-└───────────────────────────────────────┘  └────────────────┬────────────────┘
-                                                            │
-                                                            ▼
-                                           ┌─────────────────────────────────┐
-                                           │ Kubernetes + Traefik Runtime API│
-                                           │         + Prometheus            │
-                                           └─────────────────────────────────┘
+**You'll need:**
+
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
+- Access to a Kubernetes cluster running Traefik v3 (through a kubeconfig file)
+- Optional: a Prometheus URL for traffic metrics
+
+**1. Add the server to your MCP client.** For Claude Desktop, Cursor, Windsurf, and most other clients, add this to your MCP config file:
+
+```json
+{
+  "mcpServers": {
+    "traefik": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "talkops-traefik-mcp-server",
+        "traefik-mcp-server"
+      ],
+      "env": {
+        "KUBECONFIG": "/path/to/your/kubeconfig",
+        "TRAEFIK_NAMESPACE": "traefik"
+      }
+    }
+  }
+}
 ```
 
----
-
-## Bundled Agent Skills (`skills/`)
-
-| Skill Name | Purpose | Offline Scripts (`scripts/`) | Reference Docs (`references/`) |
-|------------|---------|------------------------------|--------------------------------|
-| `managing-traefik-traffic-routing` | Configure HTTP/gRPC `IngressRoute`s, weighted `TraefikService` canary splits (`wrr`/`p2c`/`hrw`), preview-first weight shifts, and shadow traffic mirroring | `render_route_manifest.py`, `validate_match_rule.py`, `plan_weight_schedule.py` | `v3-rule-syntax-and-priority.md`, `canary-and-blue-green-playbooks.md`, `header-cookie-routing.md`, `shadow-mirroring-guide.md` |
-| `configuring-traefik-middlewares` | Author, capability-gate, order, and attach all 24 HTTP `Middleware` and 2 TCP `MiddlewareTCP` types | `render_middleware_manifest.py`, `lint_middleware_spec.py` | `middleware-catalog.md`, `middleware-ordering-and-chains.md`, `rate-limit-and-circuit-breaker-tuning.md`, `servers-transport-and-healthchecks.md` |
-| `securing-traefik-tls-and-certificates` | Configure `TLSOption` (Mozilla profiles, mTLS), `TLSStore` default certificates, backend `ServersTransport`, and inspect X.509 SANs/expiry | `inspect_certificate.py`, `check_host_coverage.py` | `tls-option-baselines.md`, `mtls-client-auth.md`, `cert-manager-and-acme-patterns.md`, `cert-rotation-runbook.md` |
-| `routing-traefik-tcp-and-udp` | Configure `IngressRouteTCP` (`HostSNI`, TLS passthrough vs termination), `IngressRouteUDP`, and `ServersTransportTCP` | *(uses `traefik_configure_tcp_udp_route`)* | `tcp-sni-and-tls-patterns.md`, `udp-routing-notes.md` |
-| `troubleshooting-traefik-routing` | Diagnose 404/421/500/502/503/504 errors across Traefik CRDs, `Ingress`, and Gateway API routes using `traefik_diagnose_route` (41 codes), `traefik_trace_request`, and `traefik_analyze_logs` | `parse_access_log.py` | `traefik-error-catalog.md`, `symptom-decision-trees.md`, `gateway-api-diagnostics.md`, `incident-summary-template.md` |
-| `auditing-traefik-security-posture` | Run the 20-check best-practice and security audit (`traefik_audit_configuration`) and remediate findings | `render_audit_report.py` | `hardening-checklist.md`, `audit-report-template.md` |
-| `adopting-traefik-nginx-ingress-provider` | Adopt Traefik v3.6+'s built-in `providers.kubernetesIngressNGINX` provider to serve existing `nginx.ingress.kubernetes.io/*` `Ingress` objects in-place | `classify_nginx_annotations.py` | `annotation-support-matrix.md`, `provider-configuration-and-coexistence.md`, `cutover-and-rollback-runbook.md` |
-
-> **Note on Legacy NGINX Migration Tools**: Legacy `nginx_to_traefik` CRD rewrite MCP tools have been removed in `v0.2.0`. Use the `adopting-traefik-nginx-ingress-provider` skill and Traefik v3.6+'s native `providers.kubernetesIngressNGINX` provider instead.
-
----
-
-## Available MCP Tools (15 Tools across Toolsets)
-
-Every tool enforces `<= 8` parameters and returns structured Pydantic models (`ExecutionResult`, `RouteDiagnosisReport`, `RequestTraceReport`, `TrafficMetricsComparison`, `LogAnalysisReport`, `ConfigurationAuditReport`).
-
-### Toolset: `traffic` (Write-Gated)
-| Tool | Params | `dry_run` Default | Destructive Gate | Description |
-|------|--------|-------------------|------------------|-------------|
-| `traefik_configure_http_route` | 7 | `True` | No | Create or update an HTTP/gRPC `IngressRoute` with structured or raw v3 `RouteMatch` rules |
-| `traefik_configure_weighted_service` | 6 | `True` | No | Create or update a weighted `TraefikService` (`wrr`, `p2c`, `hrw`) and optionally wire an `IngressRoute` |
-| `traefik_set_traffic_weights` | 5 | `True` | No | Preview or shift traffic weights on a `TraefikService` with `expected_resource_version` concurrency control and `0`-ready-endpoint protection |
-| `traefik_configure_traffic_mirroring` | 7 | `True` | Yes (`confirm` / elicit) | Enable, update, or disable shadow traffic mirroring via a `TraefikService` |
-| `traefik_update_route` | 6 | `True` | No | Patch middlewares, TLS, entryPoints, priority, or backend on an `IngressRoute`, `IngressRouteTCP`, `IngressRouteUDP`, or `Ingress` |
-| `traefik_configure_tcp_udp_route` | 7 | `True` | No | Create or update a Layer-4 `IngressRouteTCP` or `IngressRouteUDP` |
-
-### Toolset: `policies` (Write-Gated)
-| Tool | Params | `dry_run` Default | Destructive Gate | Description |
-|------|--------|-------------------|------------------|-------------|
-| `traefik_configure_middleware` | 6 | `True` | No | Create or update any of the 24 HTTP `Middleware` or 2 TCP `MiddlewareTCP` types with CRD schema gating |
-| `traefik_configure_tls_policy` | 6 | `True` | On `default` / `TLSStore` | Create or update a `TLSOption` (Mozilla profiles / mTLS) or `TLSStore` |
-| `traefik_configure_servers_transport` | 5 | `True` | No | Create or update a backend `ServersTransport` or `ServersTransportTCP` |
-
-### Shared Lifecycle Tool (Registered when `traffic` or `policies` write toolset is enabled)
-| Tool | Params | `dry_run` Default | Destructive Gate | Description |
-|------|--------|-------------------|------------------|-------------|
-| `traefik_delete_resource` | 6 | `True` | Yes (`confirm` / elicit) | Delete any Traefik CRD (`IngressRoute*`, `TraefikService`, `Middleware*`, `TLSOption`, `TLSStore`, `ServersTransport*`) with referential integrity checks |
-
-### Toolset: `diagnostics` (Read-Only — Always Available in Default Mode)
-| Tool | Params | Read-Only? | Description |
-|------|--------|------------|-------------|
-| `traefik_diagnose_route` | 4 | **Yes** | Single-call deep diagnosis across Traefik CRDs, `Ingress`, and Gateway API (`Gateway`, `HTTPRoute`, `GRPCRoute`, `TLSRoute`, `TCPRoute`) returning 41 deterministic `diagnosis_codes` |
-| `traefik_trace_request` | 7 | **Yes** | Static Traefik v3 rule evaluation, priority ordering, middleware simulation, and SSRF-guarded live HTTP probe |
-| `traefik_compare_traffic_metrics` | 6 | **Yes** | Compare Prometheus RPS, 2xx/4xx/5xx rates, and P50/P95/P99 latency across baseline vs comparison windows |
-| `traefik_analyze_logs` | 5 | **Yes** | Parse and aggregate Traefik JSON/CLF access logs or controller logs with automatic token/header redaction |
-| `traefik_audit_configuration` | 4 | **Yes** | Run the 20-check security, TLS, reliability, and hygiene audit across namespaces |
-
----
-
-## Available MCP Resources (12 Read-Only `traefik://` Resources)
-
-| Resource URI | Type | Description |
-|--------------|------|-------------|
-| `traefik://server/capabilities` | Static | Server readiness, `allow_write`, active `toolsets`, Traefik version, installed CRDs (`traefik.io` & `gateway.networking.k8s.io`), enabled providers, and namespace policies |
-| `traefik://cluster/contexts` | Static | Available kubeconfig contexts, active context, and cluster connection mode |
-| `traefik://instance/static-config` | Static | Redacted Traefik static configuration (`entryPoints`, `providers`, `certificatesResolvers`, `metrics`, `accessLog`, `plugins`) |
-| `traefik://runtime/health` | Static | Live Traefik runtime overview (`/api/overview` + `/api/entrypoints`): router/service/middleware error counts and listener status |
-| `traefik://runtime/{protocol}` | Template | Active Traefik runtime routers, services (with backend `serverStatus` UP/DOWN), and middlewares for `http`, `tcp`, or `udp` |
-| `traefik://routes/{namespace}` | Template | Unified route inventory (`IngressRoute*`, `TraefikService`, and `Ingress`) in `namespace` or `_all` |
-| `traefik://manifests/{kind}/{namespace}/{name}` | Template | Sanitized Kubernetes manifest (`managedFields`, `uid`, and `last-applied-configuration` stripped; `Secret` data redacted) + `resource_version` |
-| `traefik://policies/{namespace}` | Template | Unified policy inventory (`Middleware*`, `TLSOption`, `TLSStore`, `ServersTransport*`) with `referenced_by` route counts |
-| `traefik://certificates/{namespace}` | Template | Sanitized X.509 certificate metadata (`Subject`, `Issuer`, `SANs`, `NotAfter`, `days_remaining`). Never exposes private keys |
-| `traefik://gateway/{namespace}` | Template | Read-only Kubernetes Gateway API inventory (`GatewayClass`, `Gateway`, `HTTPRoute`, `GRPCRoute`, `TLSRoute`, `TCPRoute`, `ReferenceGrant`) |
-| `traefik://metrics/{namespace}/{service}/summary` | Template | 5-minute Prometheus GOLDEN metrics snapshot (RPS, 2xx/4xx/5xx rates, P50/P95/P99 latency, open connections) |
-| `traefik://schema/{kind}` | Template | Cluster-installed CRD OpenAPI v3 `spec` properties and supported load-balancing strategies for `kind` |
-
----
-
-## Quick Start & CLI Configuration
+Using Claude Code? Run this instead:
 
 ```bash
-# Run in safe Read-Only mode (default: 5 diagnostic tools + 12 resources)
-uv run traefik-mcp-server
-
-# Enable write tools across all toolsets (15 tools + 12 resources)
-uv run traefik-mcp-server --allow-write --toolsets all
-
-# Enable only traffic and diagnostics toolsets with namespace allowlisting
-uv run traefik-mcp-server --allow-write --toolsets traffic,diagnostics --allowed-namespaces default,payments
+claude mcp add traefik -e KUBECONFIG=/path/to/your/kubeconfig -e TRAEFIK_NAMESPACE=traefik -- uvx --from talkops-traefik-mcp-server traefik-mcp-server
 ```
 
-### CLI Flags & Environment Variables
+`uvx` downloads [`talkops-traefik-mcp-server`](https://pypi.org/project/talkops-traefik-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-traefik-mcp-server` and use `traefik-mcp-server` as the command.
 
-| CLI Flag | Environment Variable | Default | Description |
-|----------|----------------------|---------|-------------|
-| `--transport` | `MCP_TRANSPORT` | `stdio` | Transport mode (`stdio` only) |
-| `--allow-write` | `MCP_ALLOW_WRITE` | `false` | Enable mutating and destructive cluster tools |
-| `--read-only` | `MCP_READ_ONLY` | `false` | Force read-only mode (overrides `--allow-write`) |
-| `--toolsets` | `MCP_TOOLSETS` | `all` | Comma-separated toolsets: `all`, `readonly`, `traffic`, `policies`, `diagnostics` |
-| `--traefik-namespace` | `TRAEFIK_NAMESPACE` | `traefik` | Namespace where the Traefik controller runs |
-| `--traefik-api-url` | `TRAEFIK_API_URL` | `None` | Optional direct URL to Traefik Runtime API (defaults to K8s `pods/proxy`) |
-| `--prometheus-url` | `PROMETHEUS_URL` | `http://prometheus:9090` | Prometheus base URL for golden metrics |
-| `--allowed-namespaces` | `MCP_ALLOWED_NAMESPACES` | `None` (all non-protected) | Comma-separated allowlist of namespaces permitted for writes |
-| `--protected-namespaces` | `MCP_PROTECTED_NAMESPACES` | `kube-system,traefik` | Protected namespaces requiring operator confirmation |
-| `--kubeconfig` | `K8S_KUBECONFIG` | `None` | Path to kubeconfig file |
-| `--context` | `K8S_CONTEXT` | `None` | Kubernetes context name |
+**Prefer Docker?** Pull [`talkopsai/traefik-mcp-server`](https://hub.docker.com/r/talkopsai/traefik-mcp-server) from Docker Hub—no Python setup needed:
 
----
+```json
+{
+  "mcpServers": {
+    "traefik": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-v",
+        "/path/to/your/kubeconfig:/app/.kube/config:ro",
+        "-e",
+        "TRAEFIK_NAMESPACE",
+        "talkopsai/traefik-mcp-server:latest"
+      ],
+      "env": {
+        "TRAEFIK_NAMESPACE": "traefik"
+      }
+    }
+  }
+}
+```
 
-## Running Tests
+> [!NOTE]
+> Traefik runs over `stdio` only.
+
+**2. Restart your client and try asking:**
+
+- *"Why does `https://shop.example.com/api` return a 404?"*
+- *"Shift 10% of traffic for `checkout` to the canary service, but show me the preview first."*
+- *"Run a security audit of my Traefik setup."*
+
+## Allowing changes
+
+Out of the box the server is read-only. To let your assistant make changes (creating and changing routes, weighted services, middlewares, TLS settings, and deleting Traefik resources), add `"--allow-write"` to `args` (or pass `-e MCP_ALLOW_WRITE=true` to `docker run`). Even then, changes are previewed first and destructive actions ask for confirmation.
+
+## Configuration
+
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
+
+| Variable | Flag | Default | What it does |
+| :--- | :--- | :--- | :--- |
+| `K8S_KUBECONFIG` / `KUBECONFIG` | `--kubeconfig` | `~/.kube/config` | Kubeconfig file to use |
+| `K8S_CONTEXT` | `--context` | current context | Kubernetes context to use |
+| `TRAEFIK_NAMESPACE` | `--traefik-namespace` | `traefik` | Namespace where Traefik runs |
+| `TRAEFIK_API_URL` | `--traefik-api-url` | via Kubernetes | Direct URL to the Traefik API (optional) |
+| `PROMETHEUS_URL` | `--prometheus-url` | `http://prometheus:9090` | Prometheus for traffic metrics |
+| `MCP_ALLOW_WRITE` | `--allow-write` | `false` | Enable tools that change your cluster |
+| `MCP_ALLOWED_NAMESPACES` | `--allowed-namespaces` | all | Only allow changes in these namespaces |
+| `MCP_PROTECTED_NAMESPACES` | `--protected-namespaces` | `kube-system,traefik` | Ask for confirmation before changes here |
+| `MCP_TOOLSETS` | `--toolsets` | `all` | Limit tools: `traffic`, `policies`, `diagnostics`, `readonly` |
+
+Run `uvx --from talkops-traefik-mcp-server traefik-mcp-server --help` to see every option.
+
+## Agent Skills
+
+Skills live in [`skills/`](skills/). Each one is a `SKILL.md` playbook (plus optional `references/` and offline `scripts/`) that teaches your AI assistant *how* to do a job safely, while the MCP server does the actual work. Tools are the hands, skills are the know-how.
+
+To use them, copy the folders into your assistant's skills directory, for example:
 
 ```bash
-cd src/traefik-mcp-server
-.venv/bin/pytest -v
+git clone https://github.com/talkops-ai/talkops-mcp.git
+cp -r talkops-mcp/src/traefik-mcp-server/skills/* ~/.claude/skills/
 ```
+
+This folder is also a portable [Agent Plugin](https://agent-plugins.org) (`plugin.json` + `mcp.json` + `skills/`), so plugin-aware clients can load the server and skills together.
+
+| Skill | Use it to |
+| :--- | :--- |
+| [`managing-traefik-traffic-routing`](skills/managing-traefik-traffic-routing/SKILL.md) | Create routes and run canary, blue-green, and mirrored traffic. |
+| [`configuring-traefik-middlewares`](skills/configuring-traefik-middlewares/SKILL.md) | Add rate limits, circuit breakers, auth, headers, and other middlewares in the right order. |
+| [`securing-traefik-tls-and-certificates`](skills/securing-traefik-tls-and-certificates/SKILL.md) | Set up TLS options, mTLS, and check certificates. |
+| [`routing-traefik-tcp-and-udp`](skills/routing-traefik-tcp-and-udp/SKILL.md) | Route TCP and UDP traffic, including TLS passthrough. |
+| [`troubleshooting-traefik-routing`](skills/troubleshooting-traefik-routing/SKILL.md) | Work out why requests fail (404, 502, 503, TLS errors, and more). |
+| [`auditing-traefik-security-posture`](skills/auditing-traefik-security-posture/SKILL.md) | Run a security and best-practice audit and fix the findings. |
+| [`adopting-traefik-nginx-ingress-provider`](skills/adopting-traefik-nginx-ingress-provider/SKILL.md) | Serve existing NGINX Ingress resources with Traefik's built-in NGINX provider. |
+
+## Reference
+
+<details>
+<summary><strong>All 15 tools</strong></summary>
+
+| Tool | Access | What it does |
+| :--- | :--- | :--- |
+| `traefik_analyze_logs` | Read | Parse and aggregate Traefik pod access logs (JSON or CLF) or controller logs with automatic secret/token redaction, status/router/latency filtering, and grouped counts. |
+| `traefik_audit_configuration` | Read | Run 20 deterministic security, TLS, reliability, hygiene, v3_migration, and gateway_api checks across Traefik static configuration, routes, policies, certificates, and Gateway API objects. |
+| `traefik_compare_traffic_metrics` | Read | Query Prometheus for Traefik service, router, or entrypoint request rate, 4xx/5xx error rate, P50/P95/P99 latency, and open connections across baseline and comparison windows, or compare canary vs stable backend sub-services. |
+| `traefik_configure_http_route` | Write | Create or update a Traefik v3 HTTP IngressRoute (<= 8 parameters). |
+| `traefik_configure_middleware` | Write | Create or update a Traefik v3 HTTP Middleware or TCP MiddlewareTCP (<= 8 parameters). |
+| `traefik_configure_servers_transport` | Write | Create or update a Traefik ServersTransport or ServersTransportTCP CRD (<= 8 parameters). |
+| `traefik_configure_tcp_udp_route` | Write | Create or update a Traefik IngressRouteTCP or IngressRouteUDP (<= 8 parameters). |
+| `traefik_configure_tls_policy` | Write (destructive) | Create or update a Traefik TLSOption policy or default TLSStore (<= 8 parameters). |
+| `traefik_configure_traffic_mirroring` | Write (destructive) | Enable, update, or disable shadow traffic mirroring via a TraefikService (<= 8 parameters). |
+| `traefik_configure_weighted_service` | Write | Create or update a weighted TraefikService for canary or blue-green traffic splitting, and optionally expose it via an IngressRoute in one call (<= 8 parameters). |
+| `traefik_delete_resource` | Write (destructive) | Delete a Traefik custom resource (IngressRoute, IngressRouteTCP, IngressRouteUDP, TraefikService, Middleware, MiddlewareTCP, TLSOption, TLSStore, ServersTransport, ServersTransportTCP) with referential-integrity and human confirmation checks. Does NOT delete Kubernetes Services, Secrets, or Gateway API resources. |
+| `traefik_diagnose_route` | Read | Perform deep end-to-end health diagnosis of an IngressRoute, IngressRouteTCP, IngressRouteUDP, TraefikService, Ingress, HTTPRoute, GRPCRoute, TLSRoute, TCPRoute, or Gateway across Kubernetes manifests, Traefik runtime API, endpoints, and TLS. |
+| `traefik_set_traffic_weights` | Write | Shift traffic weights on an existing weighted TraefikService (<= 8 parameters). |
+| `traefik_trace_request` | Read | Evaluate which Traefik router matches a synthetic HTTP/TCP request by priority, trace the ordered middleware chain and backend service tree, identify shadowed routers and near-misses, and optionally run an SSRF-guarded live HTTP/TLS probe. |
+| `traefik_update_route` | Write (destructive) | Patch an existing IngressRoute, IngressRouteTCP, or Kubernetes Ingress without restating the full resource (<= 8 parameters). |
+
+</details>
+
+<details>
+<summary><strong>All 12 resources</strong></summary>
+
+| Resource | What it returns |
+| :--- | :--- |
+| `traefik://cluster/contexts` | Available kubeconfig contexts, active context, and cluster connection mode. |
+| `traefik://instance/static-config` | Redacted Traefik static configuration including entryPoints, providers (kubernetesCRD, kubernetesIngress, kubernetesIngressNGINX, kubernetesGateway), certificatesResolvers, metrics, accessLog, and plugins. |
+| `traefik://runtime/health` | Live Traefik runtime overview (/api/overview + /api/entrypoints): router, service, and middleware error/warning counts per protocol plus entryPoint listener status. |
+| `traefik://server/capabilities` | Server readiness, allow_write flag, active toolsets, Traefik version, installed CRDs (traefik.io and gateway.networking.k8s.io), enabled providers, Prometheus reachability, and namespace policies. |
+| `traefik://certificates/{namespace}` | Sanitized X.509 certificate metadata (Subject, Issuer, SANs, NotBefore, NotAfter, days_remaining, cert-manager Certificate status) in a namespace (or '_all'). Never exposes private key material. |
+| `traefik://gateway/{namespace}` | Read-only Kubernetes Gateway API inventory (GatewayClass, Gateway, HTTPRoute, GRPCRoute, TLSRoute, TCPRoute, ReferenceGrant) with listener & parent status conditions (Accepted, Programmed, ResolvedRefs). |
+| `traefik://manifests/{kind}/{namespace}/{name}` | Sanitized Kubernetes manifest (managedFields and applied-configuration bloat stripped, Secret data redacted) with resourceVersion for optimistic concurrency. |
+| `traefik://metrics/{namespace}/{service}/summary` | 5-minute Prometheus GOLDEN metrics snapshot (RPS, 2xx/4xx/5xx error rates, P50/P95/P99 latency, open connections) for a Traefik service. |
+| `traefik://policies/{namespace}` | Unified policy inventory (Middleware, MiddlewareTCP, TLSOption, TLSStore, ServersTransport, ServersTransportTCP) in a namespace (or '_all') with referenced-by route counts. |
+| `traefik://routes/{namespace}` | Unified route inventory (IngressRoute, IngressRouteTCP, IngressRouteUDP, TraefikService, and Ingress) in a namespace (or '_all'), enriched with hosts, entryPoints, weights, mirror percentages, and ownership metadata. |
+| `traefik://runtime/{protocol}` | Active Traefik runtime routers, services (with backend serverStatus UP/DOWN), and middlewares for protocol ('http', 'tcp', or 'udp'). |
+| `traefik://schema/{kind}` | Cluster-installed CRD OpenAPI v3 spec schema and supported field names for a Traefik or Gateway API resource kind. |
+
+</details>
+
+## Development
+
+```bash
+git clone https://github.com/talkops-ai/talkops-mcp.git
+cd talkops-mcp/src/traefik-mcp-server
+uv sync --dev
+uv run pytest
+uv run traefik-mcp-server --help
+```
+
+## Get help
+
+- [Documentation](https://talkops.ai/docs/integrations/traefik-mcp-server/overview)
+- [Report a bug or request a feature](https://github.com/talkops-ai/talkops-mcp/issues/new?labels=traefik-mcp-server)
+- [Join the TalkOps community on Slack](https://talkops.ai/slack/)
+
+## License
+
+Apache 2.0. See [LICENSE](../../LICENSE).

@@ -3,21 +3,18 @@
   "mcpServers": {
     "prometheus": {
       "type": "stdio",
-      "command": "prometheus-mcp-server",
+      "command": "uvx",
       "args": [
+        "--from",
+        "talkops-prometheus-mcp-server==0.2.1",
+        "prometheus-mcp-server",
         "--transport",
-        "stdio",
-        "--read-only",
-        "--toolsets",
-        "all"
+        "stdio"
       ],
-      "cwd": "./",
       "env": {
-        "PROMETHEUS_BASE_URL": "http://localhost:9090",
-        "MCP_TRANSPORT": "stdio",
+        "FASTMCP_LOG_LEVEL": "ERROR",
         "MCP_ALLOW_WRITE": "false",
-        "PROMETHEUS_TOOLSETS": "all",
-        "PROMETHEUS_AUDIT_LOG_PATH": "${PLUGIN_DATA}/audit.jsonl"
+        "PROMETHEUS_AUDIT_LOG_PATH": "${PLUGIN_DATA}/prometheus-audit.jsonl"
       }
     }
   }

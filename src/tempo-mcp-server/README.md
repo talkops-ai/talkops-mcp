@@ -18,141 +18,214 @@
 
 ---
 
-## Architecture: Strict Skill & Execution Separation (`v0.2.0`)
+Let your AI assistant explore distributed traces in Grafana Tempo: search with TraceQL, find slow or failing spans, compare traces, map service dependencies, and jump from a log line or metric to the trace behind it.
 
-Following the TalkOps [Skill and Execution Separation](../../docs/skill-and-execution-separation.md) standard, all procedural runbooks, TraceQL references, and offline generators live in **Agent Skills**, while the **MCP Server** focuses strictly on live, bounded, secret-redacted execution:
+## What you get
 
-```text
-src/tempo-mcp-server/
-├── plugin.json                              # Agent Plugins v1.0.0 manifest
-├── mcp.json                                 # Default stdio MCP server wiring (read-only by default)
-├── skills/                                  # 6 Progressive-Disclosure Agent Skills (8 scripts, 18 references)
-│   ├── authoring-traceql-and-metrics-queries/
-│   ├── triaging-tempo-service-errors/
-│   ├── investigating-tempo-latency-regressions/
-│   ├── diagnosing-tempo-ingestion-and-health/
-│   ├── mapping-tempo-topology-and-alerts/
-│   └── operating-tempo-deployments-and-tenants/
-└── tempo_mcp_server/                        # FastMCP Execution Plane
-    ├── config.py                            # Multi-backend, multi-tenant, guardrail & toolset config
-    ├── services/                            # Async Tempo HTTP API, Prometheus service-graphs, K8s Operator CRDs
-    ├── resources/                           # 10 live tempo:// URI resources (zero static markdown bloat)
-    └── tools/                               # 18 tools across 5 selectable toolsets (all <= 8 params, 0 prompts)
+- **18 MCP tools** (16 read-only) that work against your live Grafana Tempo setup
+- **10 resources** your assistant can read for context, under `tempo://`
+- **6 Agent Skills**: step-by-step playbooks that teach your assistant how to use the tools well
+- **Safe by default**: only read-only tools are loaded until you turn on writes, and changes are previewed or confirmed before they happen
+
+## Quick start
+
+**You'll need:**
+
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
+- A Tempo URL
+- Optional: Prometheus (for service graphs) and Kubernetes access (for the Tempo Operator)
+
+**1. Add the server to your MCP client.** For Claude Desktop, Cursor, Windsurf, and most other clients, add this to your MCP config file:
+
+```json
+{
+  "mcpServers": {
+    "tempo": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "talkops-tempo-mcp-server",
+        "tempo-mcp-server"
+      ],
+      "env": {
+        "TEMPO_URL": "http://localhost:3200"
+      }
+    }
+  }
+}
 ```
 
-- **Zero MCP Prompts (`0`) & Zero Static-Doc Resources**: Legacy MCP prompt playbooks and static reference/runbook resources have been migrated into `skills/*/SKILL.md` and `skills/*/references/*.md`.
-- **Safe Read-Only Default (`MCP_ALLOW_WRITE=false`)**: All 16 read/diagnostic tools are available out-of-the-box; the 2 mutating tools (`tempo_patch_tenant_overrides`, `tempo_apply_operator_cr`) are unregistered unless `--allow-write` / `MCP_ALLOW_WRITE=true` is enabled and still default to `dry_run=True` + ETag / confirmation gates.
-
----
-
-## 6 Bundled Agent Skills (`skills/`)
-
-| Skill Directory | Purpose | Offline Scripts (`scripts/`) | Reference Guides (`references/`) |
-|---|---|---|---|
-| `authoring-traceql-and-metrics-queries` | TraceQL 2.x/3.x search authoring, `compare()` cohort ranking, TraceQL Metrics (`rate`, `quantile_over_time`, `histogram_over_time`), and OTel SemConv mapping | `lint_traceql.py` | `traceql-syntax.md`, `traceql-metrics.md`, `otel-semconv-and-k8s-attributes.md`, `query-pack.md` |
-| `triaging-tempo-service-errors` | Metrics-first RED triage, Prometheus exemplar & Loki log-line trace pivots, correlated error-origin search, and structured incident briefs | `extract_trace_ids_from_logs.py`, `render_incident_report.py` | `triage-thresholds.md`, `cross-pillar-handoffs.md`, `incident-brief-template.md` |
-| `investigating-tempo-latency-regressions` | Critical-path & self-time hotspot analysis, 5-axis baseline vs. slow trace comparison, and `compare()` cohort root-cause isolation | `analyze_otlp_trace_critical_path.py` | `latency-heuristics.md`, `trace-diff-interpretation.md` |
-| `diagnosing-tempo-ingestion-and-health` | Missing-traces triage, Tempo 2.x/3.x ring & `/metrics` discarded-span diagnostics, multi-tenant header checks, and OTel exporter verification | `check_otel_exporter_config.py` | `no-traces-decision-tree.md`, `diagnosis-codes.md`, `multi-tenancy.md`, `tempo-3-architecture.md` |
-| `mapping-tempo-topology-and-alerts` | Upstream/downstream dependency mapping via service-graphs/TraceQL and spanmetrics Prometheus `PrometheusRule` generation | `generate_spanmetrics_prometheus_rule.py` | `service-graph-and-spanmetrics.md`, `alert-templates.md` |
-| `operating-tempo-deployments-and-tenants` | Per-tenant `/api/overrides` RFC 7386 merge patching with optimistic ETag concurrency and Kubernetes `TempoStack` / `TempoMonolithic` lifecycle | `build_overrides_patch.py`, `render_tempo_operator_cr.py` | `overrides-cookbook.md`, `operator-profiles.md`, `production-checklist.md` |
-
----
-
-## 18 MCP Tools Across 5 Selectable Toolsets
-
-Every tool enforces $\le 8$ parameters and carries explicit MCP `ToolAnnotations`. Control registered toolsets via `--toolsets` or `MCP_TOOLSETS` (`all`, `readonly`, `search`, `metrics`, `diagnostics`, `overrides`, `operator`).
-
-| Toolset | Tool Name | Mode | Max Params | Description |
-|---|---|---|---|---|
-| `search` | `tempo_traceql_search` | Read-Only | 8 | Search traces using raw TraceQL and/or structured `SearchFilters` with lookback, limit, and `spss` guardrails |
-| `search` | `tempo_get_trace` | Read-Only | 5 | Retrieve a trace by ID with optional span-count slicing and time bounds |
-| `search` | `tempo_summarize_trace` | Read-Only | 4 | Extract a factual trace summary: critical path, self-time hotspots, error spans, and Kubernetes context |
-| `search` | `tempo_query_a2ui` | Read-Only | 3 | Retrieve a DAG-pruned trace payload structured for TalkOps A2UI timeline rendering |
-| `search` | `tempo_find_related_traces` | Read-Only | 6 | Find traces correlated with a seed trace by error origin, endpoint, time window, or service cascade |
-| `search` | `tempo_compare_traces` | Read-Only | 5 | Compute a 5-axis structural, span-count, timing, error, and attribute diff between two traces |
-| `search` | `tempo_get_attribute_names` | Read-Only | 5 | Discover available trace attribute names grouped by scope (`resource`, `span`, `intrinsic`, `event`) |
-| `search` | `tempo_get_attribute_values` | Read-Only | 6 | Retrieve distinct values for a trace attribute scoped by time window and optional TraceQL filter |
-| `metrics` | `tempo_traceql_metrics_instant` | Read-Only | 7 | Execute a point-in-time TraceQL Metrics instant query (`vector` result) |
-| `metrics` | `tempo_traceql_metrics_range` | Read-Only | 8 | Execute a TraceQL Metrics range query returning time-series points and per-series statistics |
-| `metrics` | `tempo_analyze_service_red` | Read-Only | 6 | Compute service Rate, Error rate, and P50/P95/P99 latency metrics, optional baseline deltas, and exemplar trace IDs |
-| `metrics` | `tempo_compare_span_cohorts` | Read-Only | 6 | Execute a TraceQL `compare()` query to rank attribute values differentiating slow/failing spans from baseline |
-| `diagnostics` | `tempo_get_diagnostics` | Read-Only | 3 | Collect Tempo readiness, version (`2.x`/`3.x`), ring health, discarded-span counters, redacted config, and Operator CR status |
-| `diagnostics` | `tempo_get_service_dependencies` | Read-Only | 5 | Map `client -> server` call edges via Prometheus `traces_service_graph_*`, TraceQL Metrics, or trace DAG sampling |
-| `diagnostics` | `tempo_get_exemplar_traces` | Read-Only | 5 | Extract exemplar trace IDs directly from a TraceQL Metrics range query |
-| `diagnostics` | `tempo_get_trace_from_log` | Read-Only | 3 | Extract a trace ID (`traceparent`, JSON, logfmt, or 32-char hex) from a log line and summarize the trace |
-| `overrides` | `tempo_patch_tenant_overrides` | Write (`dry_run=True`) | 6 | Preview or apply an RFC 7386 JSON merge patch to Tempo `/api/overrides` with optimistic `expected_etag` concurrency |
-| `operator` | `tempo_apply_operator_cr` | Write (`dry_run=True`) | 4 | Validate, server-side dry-run diff, and apply a `TempoStack` or `TempoMonolithic` custom resource manifest |
-
----
-
-## 10 Live `tempo://` Resources
-
-| Resource URI | Type | Description |
-|---|---|---|
-| `tempo://server/capabilities` | Static | Server version, write gate status, active toolsets, query guardrails, and detected backend capabilities |
-| `tempo://system/backends` | Static | All configured Tempo backends with live health and readiness status |
-| `tempo://deployment/overview` | Static | Deployment topology combining configured Tempo HTTP backends and Kubernetes-discovered Tempo installs |
-| `tempo://system/backends/{backend_id}` | Template | Detailed live profile, version, and build metadata for `{backend_id}` |
-| `tempo://schema/{backend_id}/attributes` | Template | Live trace attribute inventory and detected OpenTelemetry Semantic Conventions (`v1.20` vs `v1.24+`) |
-| `tempo://traces/{backend_id}/{trace_id}` | Template | Compact trace summary and bounded spans for `{trace_id}` |
-| `tempo://overrides/{backend_id}/{tenant}` | Template | Current per-tenant `/api/overrides` payload and `ETag` header |
-| `tempo://operator/crs/{namespace}` | Template | Inventory of `TempoStack` and `TempoMonolithic` CRs in `{namespace}` (or `_all` for cluster-wide) |
-| `tempo://operator/manifests/{kind}/{namespace}/{name}` | Template | Sanitized, secret-redacted `TempoStack` or `TempoMonolithic` YAML manifest |
-| `tempo://operator/crd-schema/{kind}` | Template | Cluster-installed OpenAPI v3 `spec` schema for `TempoStack` or `TempoMonolithic` |
-
----
-
-## Configuration & CLI Usage
+Using Claude Code? Run this instead:
 
 ```bash
-# Default: Read-only mode over stdio (16 read-only tools + 10 resources)
-uv run tempo-mcp-server --tempo-url http://localhost:3200
-
-# Enable multi-tenant queries + Kubernetes Operator discovery + write tools
-uv run tempo-mcp-server \
-  --tempo-url http://localhost:3200 \
-  --tenant prod-traces \
-  --k8s-enabled \
-  --allow-write
-
-# Streamable HTTP transport on port 8768
-MCP_TRANSPORT=http MCP_PORT=8768 uv run tempo-mcp-server --transport http
+claude mcp add tempo -e TEMPO_URL=http://localhost:3200 -- uvx --from talkops-tempo-mcp-server tempo-mcp-server
 ```
 
-| CLI Flag | Environment Variable | Default | Description |
-|---|---|---|---|
-| `--transport` | `MCP_TRANSPORT` | `stdio` | Transport protocol: `stdio`, `http` (`streamable-http`), or `sse` |
-| `--toolsets` | `MCP_TOOLSETS` | `all` | Comma-separated toolsets: `all,readonly,search,metrics,diagnostics,overrides,operator` |
-| `--allow-write` | `MCP_ALLOW_WRITE` | `false` | Register mutating tools (`tempo_patch_tenant_overrides`, `tempo_apply_operator_cr`) |
-| `--read-only` | `MCP_READ_ONLY` | `false` | Force read-only mode (overrides `--allow-write`) |
-| `--tempo-url` | `TEMPO_BASE_URL` / `TEMPO_URL` | `http://localhost:3200` | Primary Tempo HTTP API base URL (or JSON array via `TEMPO_BACKENDS`) |
-| `--tenant` | `TEMPO_DEFAULT_TENANT` | *(none)* | Default `X-Scope-OrgID` header for multi-tenant Tempo / Grafana Enterprise Traces |
-| — | `PROMETHEUS_URL` | *(none)* | Optional Prometheus URL for `traces_service_graph_*` topology queries |
-| `--k8s-enabled` | `K8S_ENABLED` | `false` | Enable Kubernetes discovery and Tempo Operator CRD resources/tools |
-| `--kubeconfig` / `--context` | `K8S_KUBECONFIG` / `K8S_CONTEXT` | `~/.kube/config` | Kubernetes kubeconfig path and context |
-| — | `TEMPO_MAX_LOOKBACK` | `168h` | Maximum allowed TraceQL search lookback window |
-| — | `MCP_PORT` | `8768` | HTTP server bind port when `MCP_TRANSPORT=http` |
+`uvx` downloads [`talkops-tempo-mcp-server`](https://pypi.org/project/talkops-tempo-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-tempo-mcp-server` and use `tempo-mcp-server` as the command.
 
----
+**Prefer Docker?** Pull [`talkopsai/tempo-mcp-server`](https://hub.docker.com/r/talkopsai/tempo-mcp-server) from Docker Hub—no Python setup needed:
 
-## Development & Verification
+```json
+{
+  "mcpServers": {
+    "tempo": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "MCP_TRANSPORT=stdio",
+        "-e",
+        "TEMPO_BASE_URL",
+        "talkopsai/tempo-mcp-server:latest"
+      ],
+      "env": {
+        "TEMPO_BASE_URL": "http://host.docker.internal:3200"
+      }
+    }
+  }
+}
+```
+
+**2. Restart your client and try asking:**
+
+- *"Show me the slowest traces for `checkout` in the last hour."*
+- *"Why did p99 latency for `payments` jump today?"*
+- *"Which services does `frontend` call, and which one is failing?"*
+
+## Allowing changes
+
+Out of the box the server is read-only. To let your assistant make changes (changing per-tenant overrides and applying Tempo Operator resources), add `"--allow-write"` to `args` (or pass `-e MCP_ALLOW_WRITE=true` to `docker run`). Even then, changes are previewed first and destructive actions ask for confirmation.
+
+## Configuration
+
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
+
+| Variable | Flag | Default | What it does |
+| :--- | :--- | :--- | :--- |
+| `TEMPO_URL` / `TEMPO_BASE_URL` | `--tempo-url` | `http://localhost:3200` | Your Tempo URL |
+| `TEMPO_DEFAULT_TENANT` | `--tenant` | none | Tenant (`X-Scope-OrgID`) for multi-tenant Tempo |
+| `TEMPO_AUTH_HEADER` | — | none | Authorization header, e.g. `Bearer <token>` |
+| `PROMETHEUS_URL` | — | none | Prometheus for service-graph metrics (optional) |
+| `MCP_ALLOW_WRITE` | `--allow-write` | `false` | Enable tools that change Tempo |
+| `MCP_TOOLSETS` | `--toolsets` | `all` | Limit tools: `search`, `metrics`, `diagnostics`, `overrides`, `operator`, `readonly` |
+| `K8S_ENABLED` | `--k8s-enabled` | `false` | Turn on Tempo Operator (Kubernetes) features |
+| `MCP_TRANSPORT` | `--transport` | `stdio` | `stdio` or `http` |
+| `MCP_PORT` | — | `8768` | Port when using HTTP |
+
+Run `uvx --from talkops-tempo-mcp-server tempo-mcp-server --help` to see every option.
+
+### Running over HTTP
+
+To share one server between several clients or run it remotely, start it in HTTP mode with Docker or `uvx`:
 
 ```bash
-cd src/tempo-mcp-server
+# With Docker (starts in HTTP mode by default)
+docker run --rm -p 8768:8768 \
+  -e TEMPO_BASE_URL=http://host.docker.internal:3200 \
+  talkopsai/tempo-mcp-server:latest
+
+# Or with uvx
+MCP_TRANSPORT=http MCP_PORT=8768 uvx --from talkops-tempo-mcp-server tempo-mcp-server
+```
+
+Then point your client at `http://localhost:8768/mcp`:
+
+```json
+{
+  "mcpServers": {
+    "tempo": {
+      "url": "http://localhost:8768/mcp"
+    }
+  }
+}
+```
+
+## Agent Skills
+
+Skills live in [`skills/`](skills/). Each one is a `SKILL.md` playbook (plus optional `references/` and offline `scripts/`) that teaches your AI assistant *how* to do a job safely, while the MCP server does the actual work. Tools are the hands, skills are the know-how.
+
+To use them, copy the folders into your assistant's skills directory, for example:
+
+```bash
+git clone https://github.com/talkops-ai/talkops-mcp.git
+cp -r talkops-mcp/src/tempo-mcp-server/skills/* ~/.claude/skills/
+```
+
+This folder is also a portable [Agent Plugin](https://agent-plugins.org) (`plugin.json` + `mcp.json` + `skills/`), so plugin-aware clients can load the server and skills together.
+
+| Skill | Use it to |
+| :--- | :--- |
+| [`authoring-traceql-and-metrics-queries`](skills/authoring-traceql-and-metrics-queries/SKILL.md) | Write correct TraceQL searches and TraceQL metrics queries. |
+| [`triaging-tempo-service-errors`](skills/triaging-tempo-service-errors/SKILL.md) | Triage failing services and jump between metrics, logs, and traces. |
+| [`investigating-tempo-latency-regressions`](skills/investigating-tempo-latency-regressions/SKILL.md) | Find the spans behind a latency regression. |
+| [`diagnosing-tempo-ingestion-and-health`](skills/diagnosing-tempo-ingestion-and-health/SKILL.md) | Find out why traces are missing and check Tempo's health. |
+| [`mapping-tempo-topology-and-alerts`](skills/mapping-tempo-topology-and-alerts/SKILL.md) | Map service dependencies and generate span-metrics alerts. |
+| [`operating-tempo-deployments-and-tenants`](skills/operating-tempo-deployments-and-tenants/SKILL.md) | Manage tenant overrides and Tempo Operator resources. |
+
+## Reference
+
+<details>
+<summary><strong>All 18 tools</strong></summary>
+
+| Tool | Access | What it does |
+| :--- | :--- | :--- |
+| `tempo_analyze_service_red` | Read | Compute factual Rate, Error rate, and P50/P95/P99 latency metrics, optional baseline deltas, and exemplar IDs. |
+| `tempo_apply_operator_cr` | Write (destructive) | Validate and apply a TempoStack or TempoMonolithic custom resource manifest. |
+| `tempo_compare_span_cohorts` | Read | Execute a TraceQL compare() instant query to rank attribute values differentiating selection vs baseline spans. |
+| `tempo_compare_traces` | Read | Compute a 5-axis structural, span-count, timing, error, and attribute diff between two traces. |
+| `tempo_find_related_traces` | Read | Find traces correlated with a seed trace by error origin, endpoint, time, or cascade. |
+| `tempo_get_attribute_names` | Read | Discover trace attribute names grouped by scope from a Tempo backend. |
+| `tempo_get_attribute_values` | Read | Retrieve distinct values for a trace attribute on a Tempo backend. |
+| `tempo_get_diagnostics` | Read | Collect factual health, version (2.x/3.x), ring, discarded-span, config, and Operator CR observations. |
+| `tempo_get_exemplar_traces` | Read | Extract exemplar trace IDs from a TraceQL metrics range query. |
+| `tempo_get_service_dependencies` | Read | Discover service nodes and client->server call edges via Prometheus service-graphs, TraceQL metrics, or trace DAG sampling. |
+| `tempo_get_trace` | Read | Retrieve a trace by ID with optional span-count slicing and time bounds. |
+| `tempo_get_trace_from_log` | Read | Extract a trace ID (W3C traceparent, JSON, logfmt, or hex32) from text and summarize the trace. |
+| `tempo_patch_tenant_overrides` | Write (destructive) | Preview or apply an RFC 7386 JSON merge patch to Tempo's /api/overrides endpoint for a tenant. |
+| `tempo_query_a2ui` | Read | Retrieve a trace structured and DAG-pruned for A2UI trace timeline rendering. |
+| `tempo_summarize_trace` | Read | Extract factual summary of a trace: critical path, self-time hotspots, errors, and K8s context. |
+| `tempo_traceql_metrics_instant` | Read | Execute a point-in-time TraceQL metrics instant query (vector format). |
+| `tempo_traceql_metrics_range` | Read | Execute a TraceQL metrics range query returning time-series points and per-series stats. |
+| `tempo_traceql_search` | Read | Search traces using raw TraceQL and/or structured SearchFilters. |
+
+</details>
+
+<details>
+<summary><strong>All 10 resources</strong></summary>
+
+| Resource | What it returns |
+| :--- | :--- |
+| `tempo://deployment/overview` | Deployment topology: configured backends and Kubernetes-discovered Tempo installs |
+| `tempo://server/capabilities` | Server capabilities, write gate status, active toolsets, query guardrails, and detected backend features |
+| `tempo://system/backends` | All configured Tempo backends with live health status |
+| `tempo://operator/crd-schema/{kind}` | Installed CRD OpenAPI v3 spec schema for TempoStack or TempoMonolithic |
+| `tempo://operator/crs/{namespace}` | Inventory of TempoStack and TempoMonolithic CRs in a namespace (use '_all' for cluster-wide) |
+| `tempo://operator/manifests/{kind}/{namespace}/{name}` | Sanitized and secret-redacted TempoStack or TempoMonolithic manifest |
+| `tempo://overrides/{backend_id}/{tenant}` | Merged user-configurable overrides and current ETag for a Tempo tenant |
+| `tempo://schema/{backend_id}/attributes` | Live trace attribute presence and detected OTel Semantic Conventions for a backend |
+| `tempo://system/backends/{backend_id}` | Detailed live profile for a specific Tempo backend |
+| `tempo://traces/{backend_id}/{trace_id}` | Compact trace summary and bounded spans for a trace ID |
+
+</details>
+
+## Development
+
+```bash
+git clone https://github.com/talkops-ai/talkops-mcp.git
+cd talkops-mcp/src/tempo-mcp-server
 uv sync --dev
-
-# Run unit, in-memory MCP protocol, safety gate, and Agent Skill conformance tests
-uv run pytest tests/ -v --tb=short
-
-# Run static type checking
-uv run pyright .
-
-# Build wheel and sdist
-uv build
+uv run pytest
+uv run tempo-mcp-server --help
 ```
 
----
+## Get help
+
+- [Documentation](https://talkops.ai/docs/integrations/tempo-mcp-server/overview)
+- [Report a bug or request a feature](https://github.com/talkops-ai/talkops-mcp/issues/new?labels=tempo-mcp-server)
+- [Join the TalkOps community on Slack](https://talkops.ai/slack/)
 
 ## License
 
-Apache 2.0 — see [LICENSE](../../LICENSE).
+Apache 2.0. See [LICENSE](../../LICENSE).

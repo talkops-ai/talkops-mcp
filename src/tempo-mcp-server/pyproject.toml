@@ -1,6 +1,6 @@
 [project]
 name = "talkops-tempo-mcp-server"
-version = "0.2.0"
+version = "0.2.1"
 description = "A Model Context Protocol (MCP) server for Grafana Tempo distributed tracing and observability."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "fastmcp>=2.13.3",
+    "fastmcp>=3.3.1,<4",
     "httpx>=0.28.0",
     "kubernetes>=35.0.0",
     "pydantic>=2.12.5",

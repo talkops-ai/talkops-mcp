@@ -1,18 +1,19 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
-    "helm-mcp-server": {
+    "helm": {
       "type": "stdio",
-      "command": "helm-mcp-server",
+      "command": "uvx",
       "args": [
-        "--transport=stdio",
-        "--toolsets=all"
+        "--from",
+        "talkops-helm-mcp-server==0.5.1",
+        "helm-mcp-server",
+        "--transport",
+        "stdio"
       ],
-      "cwd": "./",
       "env": {
-        "MCP_TRANSPORT": "stdio",
+        "FASTMCP_LOG_LEVEL": "ERROR",
         "MCP_ALLOW_WRITE": "false",
-        "MCP_TOOLSETS": "all",
         "HELM_CACHE_HOME": "${PLUGIN_DATA}/helm-cache",
         "HELM_CONFIG_HOME": "${PLUGIN_DATA}/helm-config"
       }

@@ -1,7 +1,5 @@
 """Helm release inspection, manifest rendering, release planning (diff), and deployment health monitoring tools."""
 
-from __future__ import annotations
-
 from typing import Any, Dict, Literal, Optional
 from fastmcp import Context
 from mcp.types import ToolAnnotations

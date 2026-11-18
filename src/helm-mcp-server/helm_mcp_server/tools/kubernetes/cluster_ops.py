@@ -1,7 +1,5 @@
 """Kubernetes cluster prerequisite checking and session context management tools."""
 
-from __future__ import annotations
-
 from typing import Any, Dict, List, Optional
 from fastmcp import Context
 from mcp.types import ToolAnnotations

@@ -15,7 +15,7 @@ def test_default_config_safe_posture(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.allow_write is False
     assert cfg.toolsets == ["all"]
     assert cfg.argocd.server_url == "https://argocd-server.argocd.svc:443"
-    assert cfg.version == "0.4.0"
+    assert cfg.version == "0.4.1"
 
 
 def test_config_from_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:

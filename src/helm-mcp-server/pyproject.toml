@@ -1,6 +1,6 @@
 [project]
 name = "talkops-helm-mcp-server"
-version = "0.5.0"
+version = "0.5.1"
 description = "A Model Context Protocol (MCP) server for managing Kubernetes workloads via Helm."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "fastmcp>=2.13.3",
+    "fastmcp>=2.13.3,<3",
     "kubernetes>=34.1.0",
     "pydantic>=2.12.5",
     "pyyaml>=6.0.3",

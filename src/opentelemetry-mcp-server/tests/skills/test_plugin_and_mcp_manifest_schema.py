@@ -25,7 +25,7 @@ def test_plugin_json_schema_and_extensions():
     assert plugin_path.exists(), "plugin.json must exist at package root"
 
     data = json.loads(plugin_path.read_text(encoding="utf-8"))
-    assert data.get("$schema") == "https://agentplugins.io/schema/v1.0.0/plugin.json"
+    assert data.get("$schema") == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
     assert set(data.keys()).issubset(ALLOWED_PLUGIN_KEYS), (
         f"Unexpected top-level keys in plugin.json: {set(data.keys()) - ALLOWED_PLUGIN_KEYS}"
     )
@@ -35,22 +35,24 @@ def test_plugin_json_schema_and_extensions():
     assert not (ROOT_DIR / "com.anysphere.cursor").exists()
 
 
-def test_mcp_json_schema_and_safe_defaults():
-    mcp_path = ROOT_DIR / "mcp.json"
-    assert mcp_path.exists(), "mcp.json must exist at package root"
+def test_mcp_json_launches_pinned_pypi_release_read_only() -> None:
+    """mcp.json runs this package's exact PyPI release over stdio, read-only, with only portable variables."""
+    import json as _json
+    import re as _re
+    import tomllib as _tomllib
+    from pathlib import Path as _Path
 
-    data = json.loads(mcp_path.read_text(encoding="utf-8"))
-    assert data.get("$schema") == "https://agentplugins.io/schema/v1.0.0/mcp.json"
+    root = _Path(__file__).resolve().parents[2]
+    project = _tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    data = _json.loads((root / "mcp.json").read_text(encoding="utf-8"))
 
-    servers = data.get("mcpServers", {})
-    assert {"opentelemetry", "opentelemetry-staging", "opentelemetry-production"}.issubset(
-        set(servers.keys())
-    )
-    for name, entry in servers.items():
-        assert entry.get("type") in ("stdio", "http"), (
-            f"Server '{name}' must specify type in ('stdio', 'http')"
-        )
-        env = entry.get("env", {})
-        assert env.get("MCP_ALLOW_WRITE") == "false", (
-            f"Server '{name}' must default MCP_ALLOW_WRITE to 'false' for safety"
-        )
+    assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+    assert list(data["mcpServers"]) == ["opentelemetry"]
+    entry = data["mcpServers"]["opentelemetry"]
+    cli = next(iter(project["scripts"]))
+    assert entry["type"] == "stdio"
+    assert entry["command"] == "uvx"
+    assert entry["args"] == ["--from", f"{project['name']}=={project['version']}", cli, "--transport", "stdio"]
+    assert entry["env"]["MCP_ALLOW_WRITE"] == "false"
+    # Agent Plugins 1.0.0 only expands ${PLUGIN_ROOT} and ${PLUGIN_DATA} in portable configs.
+    assert not _re.search(r"\$\{(?!PLUGIN_ROOT\}|PLUGIN_DATA\})", _json.dumps(entry))

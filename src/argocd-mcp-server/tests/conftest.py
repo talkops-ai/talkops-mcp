@@ -52,7 +52,7 @@ def write_config(dummy_ssh_key_path: str) -> ServerConfig:
     """ServerConfig with MCP_ALLOW_WRITE=true and test credentials."""
     return ServerConfig(
         name="argocd-mcp-server",
-        version="0.4.0",
+        version="0.4.1",
         allow_write=True,
         toolsets=["all"],
         argocd=ArgoCDConfig(
@@ -75,7 +75,7 @@ def readonly_config(dummy_ssh_key_path: str) -> ServerConfig:
     """ServerConfig with MCP_ALLOW_WRITE=false (default safe posture)."""
     return ServerConfig(
         name="argocd-mcp-server",
-        version="0.4.0",
+        version="0.4.1",
         allow_write=False,
         toolsets=["all"],
         argocd=ArgoCDConfig(

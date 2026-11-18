@@ -6,8 +6,6 @@ Tools:
 - loki_delete_rule_group (`rules` toolset, write/destructive-gated, dry_run=True default + elicitation)
 """
 
-from __future__ import annotations
-
 from typing import Any, Dict, List, Optional
 
 from fastmcp import Context

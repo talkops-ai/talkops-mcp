@@ -127,7 +127,7 @@ class ServerConfig:
     """MCP server configuration."""
 
     name: str = "tempo-mcp-server"
-    version: str = "0.2.0"
+    version: str = "0.2.1"
     transport: str = "stdio"
     host: str = "0.0.0.0"
     port: int = 8768
@@ -265,7 +265,7 @@ class Config:
 
         return ServerConfig(
             name=_strip_env(os.getenv("MCP_SERVER_NAME")) or "tempo-mcp-server",
-            version=_strip_env(os.getenv("MCP_SERVER_VERSION")) or "0.2.0",
+            version=_strip_env(os.getenv("MCP_SERVER_VERSION")) or "0.2.1",
             transport=_strip_env(os.getenv("MCP_TRANSPORT")) or "stdio",
             host=_strip_env(os.getenv("MCP_HOST")) or "0.0.0.0",
             port=int(_strip_env(os.getenv("MCP_PORT")) or "8768"),

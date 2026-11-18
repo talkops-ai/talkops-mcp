@@ -402,7 +402,7 @@ spec:
     svc.get_server_capabilities = MagicMock(
         return_value={
             "server_name": "argo-rollout-mcp-server",
-            "server_version": "0.2.0",
+            "server_version": "0.2.1",
             "allow_write": True,
             "toolsets": ["all"],
             "cluster_connected": True,

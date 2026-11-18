@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agentplugins.io/schema/v1.0.0/plugin.json",
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "argo-rollout",
-  "version": "0.2.0",
-  "description": "Progressive delivery for Kubernetes with Argo Rollouts — canary, blue-green, Deployment-to-Rollout migration, Prometheus analysis gating, experiments, and rollout troubleshooting.",
+  "version": "0.2.1",
+  "description": "Progressive delivery for Kubernetes with Argo Rollouts \u2014 canary, blue-green, Deployment-to-Rollout migration, Prometheus analysis gating, experiments, and rollout troubleshooting.",
   "author": {
     "name": "TalkOps"
   },
