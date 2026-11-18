@@ -4,4 +4,5 @@ __pycache__/
 .vscode/
 .idea/
 .pytest_cache/
-references/
+# Local research notes & test certs (root-only; must NOT match skills/*/references/)
+/references/
