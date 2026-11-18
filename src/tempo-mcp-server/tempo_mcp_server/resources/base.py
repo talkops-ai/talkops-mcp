@@ -1,31 +1,28 @@
-"""Base class for all resources."""
+"""Base class for all dynamic Tempo MCP resources."""
 
 from abc import ABC, abstractmethod
 from typing import Any, Dict
 
-from tempo_mcp_server.services.tempo_service import TempoService
 from tempo_mcp_server.config import ServerConfig
+from tempo_mcp_server.services.kubernetes_service import KubernetesService
+from tempo_mcp_server.services.tempo_service import TempoService
 
 
 class BaseResource(ABC):
     """Abstract base class for all resources."""
 
     tempo_service: TempoService
+    kubernetes_service: KubernetesService
     config: ServerConfig
 
     def __init__(self, service_locator: Dict[str, Any]):
-        """Initialize resource with service locator.
-
-        Raises:
-            RuntimeError: If required services (tempo_service, config) are missing.
-        """
         tempo_service = service_locator.get("tempo_service")
         if tempo_service is None:
             raise RuntimeError(
                 "tempo_service not found in service_locator. "
                 "Ensure bootstrap.py provides it."
             )
-        self.tempo_service: TempoService = tempo_service
+        self.tempo_service = tempo_service
 
         config = service_locator.get("config")
         if config is None:
@@ -33,8 +30,10 @@ class BaseResource(ABC):
                 "config not found in service_locator. "
                 "Ensure bootstrap.py provides it."
             )
-        self.config: ServerConfig = config
+        self.config = config
+
+        self.kubernetes_service = service_locator.get("kubernetes_service")  # type: ignore[assignment]
 
     @abstractmethod
-    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
+    def register(self, mcp_instance: Any) -> None:
         pass

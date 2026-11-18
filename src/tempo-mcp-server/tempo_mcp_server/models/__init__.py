@@ -28,8 +28,11 @@ from tempo_mcp_server.models.schema import (
     K8sSemanticMapping,
 )
 from tempo_mcp_server.models.diagnostics import (
+    ALL_DIAGNOSIS_CODES,
+    ALL_OBSERVATION_CODES,
     DiagnosticFinding,
     DiagnosticsOutput,
+    ObservationFinding,
     QueryPolicyOutput,
 )
 from tempo_mcp_server.models.topology import (
@@ -44,6 +47,8 @@ from tempo_mcp_server.models.pivot import (
 )
 
 __all__ = [
+    "ALL_DIAGNOSIS_CODES",
+    "ALL_OBSERVATION_CODES",
     "BaseTempoModel",
     "BackendInfo",
     "BackendCapabilities",
@@ -67,6 +72,7 @@ __all__ = [
     "K8sSemanticMapping",
     "DiagnosticFinding",
     "DiagnosticsOutput",
+    "ObservationFinding",
     "QueryPolicyOutput",
     "ServiceDependenciesOutput",
     "ServiceEdge",

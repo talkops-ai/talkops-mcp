@@ -1,11 +1,11 @@
 """Application entry point."""
 
-import atexit
 import asyncio
+import atexit
 import sys
 from pathlib import Path
+from typing import Optional, Sequence
 
-# Add project root to Python path for direct execution with uv run
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -13,14 +13,13 @@ if str(project_root) not in sys.path:
 from tempo_mcp_server.server.bootstrap import ServerBootstrap
 
 
-def main():
+def main(argv: Optional[Sequence[str]] = None) -> None:
     """Run the MCP server."""
     try:
-        mcp, config, tempo_service = ServerBootstrap.initialize()
+        cli_args = list(argv) if argv is not None else sys.argv[1:]
+        mcp, config, tempo_service = ServerBootstrap.initialize(cli_args)
 
-        # H-06: Register graceful shutdown so HTTP clients are closed cleanly.
-        # This ensures connection pools are flushed and file descriptors released.
-        def _shutdown_handler():
+        def _shutdown_handler() -> None:
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
@@ -32,7 +31,6 @@ def main():
 
         atexit.register(_shutdown_handler)
 
-        # Run FastMCP server with the configured transport
         if config.transport in ("http", "sse", "streamable-http"):
             mcp.run(transport=config.transport, host=config.host, port=config.port, path=config.path)
         else:
@@ -44,7 +42,7 @@ def main():
         raise
 
 
-def cli():
+def cli() -> None:
     """CLI entry point for the tempo-mcp-server command."""
     main()
 

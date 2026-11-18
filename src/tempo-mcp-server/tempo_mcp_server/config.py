@@ -1,30 +1,52 @@
-"""Application configuration management."""
+"""Application configuration management for Tempo MCP Server."""
 
+import argparse
 import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Sequence
+
+VALID_TOOLSETS = frozenset({
+    "all",
+    "readonly",
+    "search",
+    "metrics",
+    "diagnostics",
+    "overrides",
+    "operator",
+})
 
 
 def _strip_env(value: Optional[str]) -> Optional[str]:
-    """Strip inline comments and surrounding whitespace from a .env value.
-
-    H-01: python-dotenv does not strip unquoted inline comments, so a line
-    like ``TEMPO_DEFAULT_TENANT=  # e.g. "my-org"`` is parsed as the literal
-    string ``  # e.g. "my-org"`` and injected verbatim into HTTP headers.
-
-    This helper removes everything from the first bare ``#`` character
-    (preceded by whitespace or at the start of the remaining text) and
-    strips any surrounding whitespace.  Quoted values are left intact.
-    Returns ``None`` when the result is empty so callers can use ``or``
-    defaulting naturally.
-    """
+    """Strip inline comments and surrounding whitespace from a .env value."""
     if value is None:
         return None
-    # Remove inline comment: whitespace followed by '#' through end of line
     cleaned = re.sub(r"\s*#.*$", "", value).strip()
     return cleaned if cleaned else None
+
+
+def _parse_bool_env(value: Optional[str], default: bool = False) -> bool:
+    cleaned = _strip_env(value)
+    if cleaned is None:
+        return default
+    return cleaned.lower() in ("1", "true", "yes", "on")
+
+
+def _parse_toolsets(raw: Optional[str]) -> List[str]:
+    cleaned = _strip_env(raw)
+    if not cleaned:
+        return ["all"]
+    items = [item.strip().lower() for item in cleaned.split(",") if item.strip()]
+    if not items:
+        return ["all"]
+    invalid = [t for t in items if t not in VALID_TOOLSETS]
+    if invalid:
+        raise ValueError(
+            f"Invalid toolset(s): {', '.join(invalid)}. "
+            f"Valid toolsets are: {', '.join(sorted(VALID_TOOLSETS))}"
+        )
+    return items
 
 
 @dataclass
@@ -51,6 +73,9 @@ class BackendConfig:
     # LLM format support (Tempo 2.9+)
     llm_format_supported: bool = True
 
+    # Optional Prometheus URL for precomputed service-graph metrics
+    prometheus_url: Optional[str] = None
+
 
 @dataclass
 class QueryPolicyConfig:
@@ -63,17 +88,13 @@ class QueryPolicyConfig:
     max_spss: int = 10
     require_time_range: bool = True
     require_filter_or_query: bool = True
-    default_metrics_sampling: Optional[str] = None  # e.g. "fixed-span:0.1"
-    max_metrics_duration: str = "3h"              # Tempo query_frontend.metrics.max_duration
+    default_metrics_sampling: Optional[str] = None
+    max_metrics_duration: str = "3h"
 
 
 @dataclass
 class TempoOperatorConfig:
-    """Tempo Operator CRD configuration.
-
-    Controls which API group/version is used when interacting with
-    TempoStack and TempoMonolithic custom resources.
-    """
+    """Tempo Operator CRD configuration."""
 
     crd_group: str = "tempo.grafana.com"
     crd_api_version: str = "v1alpha1"
@@ -85,6 +106,7 @@ class TempoOperatorConfig:
 class KubernetesConfig:
     """Kubernetes cluster configuration."""
 
+    kubeconfig: Optional[str] = None
     context_name: Optional[str] = None
     in_cluster: bool = False
     enabled: bool = False
@@ -105,11 +127,17 @@ class ServerConfig:
     """MCP server configuration."""
 
     name: str = "tempo-mcp-server"
-    version: str = "0.1.0"
+    version: str = "0.2.0"
     transport: str = "stdio"
     host: str = "0.0.0.0"
     port: int = 8768
     path: str = "/mcp"
+
+    # Security & toolset gates
+    allow_write: bool = False
+    toolsets: List[str] = field(default_factory=lambda: ["all"])
+    field_manager: str = "talkops-tempo-mcp"
+    debug: bool = False
 
     # HTTP server timeout settings (in seconds)
     http_timeout: int = 300
@@ -117,24 +145,43 @@ class ServerConfig:
     http_connect_timeout: int = 60
 
     # Response size limits (bytes)
-    # Soft limit: Primary defense. Tools compact and truncate their own results
-    # to fit within this budget. Set conservatively because FastMCP serializes
-    # results twice (TextContent + structured_content), roughly doubling the
-    # wire payload (~2.2x). With truncation, 40KB of compacted data carries
-    # significantly more information than raw verbose JSON.
     response_size_soft_limit: int = 40_000
-    # Hard limit: Safety net only. The ResponseLimitingMiddleware uses this
-    # as a last resort. Set generously high to avoid triggering on normally
-    # truncated results. When the old gap was only 10KB (soft / 100K hard),
-    # the hard limit fired routinely, stripping structuredContent and breaking
-    # MCP client-side outputSchema validation.
     response_size_hard_limit: int = 200_000
 
     backends: List[BackendConfig] = field(default_factory=lambda: [BackendConfig()])
+    prometheus_url: Optional[str] = None
     query_policy: QueryPolicyConfig = field(default_factory=QueryPolicyConfig)
     kubernetes: KubernetesConfig = field(default_factory=KubernetesConfig)
     tempo_operator: TempoOperatorConfig = field(default_factory=TempoOperatorConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.toolsets, str):
+            self.toolsets = _parse_toolsets(self.toolsets)
+        else:
+            normalized = [t.strip().lower() for t in self.toolsets if t and t.strip()]
+            if not normalized:
+                normalized = ["all"]
+            invalid = [t for t in normalized if t not in VALID_TOOLSETS]
+            if invalid:
+                raise ValueError(
+                    f"Invalid toolset(s): {', '.join(invalid)}. "
+                    f"Valid toolsets are: {', '.join(sorted(VALID_TOOLSETS))}"
+                )
+            self.toolsets = normalized
+        if "readonly" in self.toolsets:
+            self.allow_write = False
+
+    def should_register(self, toolset: str, is_write: bool = False) -> bool:
+        """Check whether a tool in the given toolset should be registered under this config."""
+        active = set(self.toolsets or ["all"])
+        if "readonly" in active and is_write:
+            return False
+        if is_write and not self.allow_write:
+            return False
+        if "all" in active or "readonly" in active:
+            return True
+        return toolset.lower() in active
 
 
 class Config:
@@ -142,17 +189,12 @@ class Config:
 
     @staticmethod
     def from_env() -> ServerConfig:
-        """Load configuration from environment variables.
-
-        Supports two modes:
-        - Single backend: TEMPO_BASE_URL sets a single default backend
-        - Multi backend: TEMPO_BACKENDS JSON array defines multiple backends
-        """
+        """Load configuration from environment variables."""
         from dotenv import load_dotenv
 
         load_dotenv()
 
-        # Parse backends
+        prom_env_url = _strip_env(os.getenv("PROMETHEUS_BASE_URL")) or _strip_env(os.getenv("PROMETHEUS_URL"))
         backends_json = os.getenv("TEMPO_BACKENDS")
         if backends_json:
             try:
@@ -172,17 +214,21 @@ class Config:
                         tenant_header=b.get("tenant_header", "X-Scope-OrgID"),
                         deployment_mode=b.get("deployment_mode", "unknown"),
                         llm_format_supported=b.get("llm_format_supported", True),
+                        prometheus_url=b.get("prometheus_url"),
                     )
                     for i, b in enumerate(raw_backends)
                 ]
             except (json.JSONDecodeError, TypeError):
                 backends = [BackendConfig()]
         else:
-            # Single backend mode
             backends = [
                 BackendConfig(
                     id=_strip_env(os.getenv("TEMPO_BACKEND_ID")) or "default",
-                    base_url=_strip_env(os.getenv("TEMPO_BASE_URL")) or "http://localhost:3200",
+                    base_url=(
+                        _strip_env(os.getenv("TEMPO_BASE_URL"))
+                        or _strip_env(os.getenv("TEMPO_URL"))
+                        or "http://localhost:3200"
+                    ),
                     type=_strip_env(os.getenv("TEMPO_TYPE")) or "tempo",  # type: ignore[arg-type]
                     display_name=_strip_env(os.getenv("TEMPO_DISPLAY_NAME")),
                     auth_header=_strip_env(os.getenv("TEMPO_AUTH_HEADER")),
@@ -193,47 +239,163 @@ class Config:
                     tenant_header=_strip_env(os.getenv("TEMPO_TENANT_HEADER")) or "X-Scope-OrgID",
                     deployment_mode=_strip_env(os.getenv("TEMPO_DEPLOYMENT_MODE")) or "unknown",  # type: ignore[arg-type]
                     llm_format_supported=(_strip_env(os.getenv("TEMPO_LLM_FORMAT")) or "true").lower() == "true",
+                    prometheus_url=prom_env_url,
                 )
             ]
 
-        # Parse query policy
         query_policy = QueryPolicyConfig(
-            max_lookback=os.getenv("TEMPO_MAX_LOOKBACK", "168h"),
-            default_search_limit=int(os.getenv("TEMPO_DEFAULT_SEARCH_LIMIT", "20")),
-            max_search_limit=int(os.getenv("TEMPO_MAX_SEARCH_LIMIT", "100")),
-            default_spss=int(os.getenv("TEMPO_DEFAULT_SPSS", "3")),
-            max_spss=int(os.getenv("TEMPO_MAX_SPSS", "10")),
-            require_time_range=os.getenv("TEMPO_REQUIRE_TIME_RANGE", "true").lower() == "true",
-            require_filter_or_query=os.getenv("TEMPO_REQUIRE_FILTER_OR_QUERY", "true").lower() == "true",
-            default_metrics_sampling=os.getenv("TEMPO_DEFAULT_METRICS_SAMPLING"),
-            max_metrics_duration=os.getenv("TEMPO_MAX_METRICS_DURATION", "3h"),
+            max_lookback=_strip_env(os.getenv("TEMPO_MAX_LOOKBACK")) or "168h",
+            default_search_limit=int(_strip_env(os.getenv("TEMPO_DEFAULT_SEARCH_LIMIT")) or "20"),
+            max_search_limit=int(_strip_env(os.getenv("TEMPO_MAX_SEARCH_LIMIT")) or "100"),
+            default_spss=int(_strip_env(os.getenv("TEMPO_DEFAULT_SPSS")) or "3"),
+            max_spss=int(_strip_env(os.getenv("TEMPO_MAX_SPSS")) or "10"),
+            require_time_range=(_strip_env(os.getenv("TEMPO_REQUIRE_TIME_RANGE")) or "true").lower() == "true",
+            require_filter_or_query=(_strip_env(os.getenv("TEMPO_REQUIRE_FILTER_OR_QUERY")) or "true").lower() == "true",
+            default_metrics_sampling=_strip_env(os.getenv("TEMPO_DEFAULT_METRICS_SAMPLING")),
+            max_metrics_duration=_strip_env(os.getenv("TEMPO_MAX_METRICS_DURATION")) or "3h",
         )
 
+        allow_write = _parse_bool_env(os.getenv("MCP_ALLOW_WRITE"), default=False)
+        if _parse_bool_env(os.getenv("MCP_READ_ONLY"), default=False):
+            allow_write = False
+
+        toolsets = _parse_toolsets(os.getenv("MCP_TOOLSETS", "all"))
+        if "readonly" in toolsets:
+            allow_write = False
+
         return ServerConfig(
-            name=os.getenv("MCP_SERVER_NAME", "tempo-mcp-server"),
-            version=os.getenv("MCP_SERVER_VERSION", "0.1.0"),
-            transport=os.getenv("MCP_TRANSPORT", "stdio"),
-            host=os.getenv("MCP_HOST", "0.0.0.0"),
-            port=int(os.getenv("MCP_PORT", "8768")),
-            path=os.getenv("MCP_PATH", "/mcp"),
-            http_timeout=int(os.getenv("MCP_HTTP_TIMEOUT", "300")),
-            http_keepalive_timeout=int(os.getenv("MCP_HTTP_KEEPALIVE_TIMEOUT", "5")),
-            http_connect_timeout=int(os.getenv("MCP_HTTP_CONNECT_TIMEOUT", "60")),
-            response_size_soft_limit=int(os.getenv('MCP_RESPONSE_SIZE_SOFT_LIMIT', '40000')),
-            response_size_hard_limit=int(os.getenv('MCP_RESPONSE_SIZE_HARD_LIMIT', '200000')),
+            name=_strip_env(os.getenv("MCP_SERVER_NAME")) or "tempo-mcp-server",
+            version=_strip_env(os.getenv("MCP_SERVER_VERSION")) or "0.2.0",
+            transport=_strip_env(os.getenv("MCP_TRANSPORT")) or "stdio",
+            host=_strip_env(os.getenv("MCP_HOST")) or "0.0.0.0",
+            port=int(_strip_env(os.getenv("MCP_PORT")) or "8768"),
+            path=_strip_env(os.getenv("MCP_PATH")) or "/mcp",
+            allow_write=allow_write,
+            toolsets=toolsets,
+            field_manager=_strip_env(os.getenv("MCP_FIELD_MANAGER")) or "talkops-tempo-mcp",
+            debug=_parse_bool_env(os.getenv("MCP_DEBUG"), default=False),
+            http_timeout=int(_strip_env(os.getenv("MCP_HTTP_TIMEOUT")) or "300"),
+            http_keepalive_timeout=int(_strip_env(os.getenv("MCP_HTTP_KEEPALIVE_TIMEOUT")) or "5"),
+            http_connect_timeout=int(_strip_env(os.getenv("MCP_HTTP_CONNECT_TIMEOUT")) or "60"),
+            response_size_soft_limit=int(_strip_env(os.getenv("MCP_RESPONSE_SIZE_SOFT_LIMIT")) or "40000"),
+            response_size_hard_limit=int(_strip_env(os.getenv("MCP_RESPONSE_SIZE_HARD_LIMIT")) or "200000"),
             backends=backends,
+            prometheus_url=prom_env_url,
             query_policy=query_policy,
             kubernetes=KubernetesConfig(
-                context_name=os.getenv("K8S_CONTEXT"),
-                in_cluster=os.getenv("K8S_IN_CLUSTER", "false").lower() == "true",
-                enabled=os.getenv("K8S_ENABLED", "false").lower() == "true",
+                kubeconfig=_strip_env(os.getenv("K8S_KUBECONFIG")) or _strip_env(os.getenv("KUBECONFIG")),
+                context_name=_strip_env(os.getenv("K8S_CONTEXT")),
+                in_cluster=_parse_bool_env(os.getenv("K8S_IN_CLUSTER"), default=False),
+                enabled=_parse_bool_env(os.getenv("K8S_ENABLED"), default=False),
             ),
             tempo_operator=TempoOperatorConfig(
-                crd_group=os.getenv("TEMPO_CRD_GROUP", "tempo.grafana.com"),
-                crd_api_version=os.getenv("TEMPO_CRD_API_VERSION", "v1alpha1"),
+                crd_group=_strip_env(os.getenv("TEMPO_CRD_GROUP")) or "tempo.grafana.com",
+                crd_api_version=_strip_env(os.getenv("TEMPO_CRD_API_VERSION")) or "v1alpha1",
             ),
             logging=LoggingConfig(
-                level=os.getenv("MCP_LOG_LEVEL", "INFO"),
-                format=os.getenv("MCP_LOG_FORMAT", "json"),
+                level=_strip_env(os.getenv("MCP_LOG_LEVEL")) or "INFO",
+                format=_strip_env(os.getenv("MCP_LOG_FORMAT")) or "json",
             ),
         )
+
+    @staticmethod
+    def build_arg_parser() -> argparse.ArgumentParser:
+        """Create CLI argument parser."""
+        parser = argparse.ArgumentParser(
+            prog="tempo-mcp-server",
+            description="Grafana Tempo Distributed Tracing & Operator MCP Execution Server",
+        )
+        parser.add_argument(
+            "--transport",
+            choices=["stdio", "http", "sse", "streamable-http"],
+            default=None,
+            help="MCP transport mode (default: stdio)",
+        )
+        parser.add_argument(
+            "--toolsets",
+            default=None,
+            help="Comma-separated toolsets: all,readonly,search,metrics,diagnostics,overrides,operator",
+        )
+        parser.add_argument(
+            "--allow-write",
+            action="store_true",
+            default=False,
+            help="Enable mutating tools (tempo_patch_tenant_overrides, tempo_apply_operator_cr)",
+        )
+        parser.add_argument(
+            "--read-only",
+            action="store_true",
+            default=False,
+            help="Force read-only mode (overrides --allow-write and MCP_ALLOW_WRITE)",
+        )
+        parser.add_argument(
+            "--tempo-url",
+            default=None,
+            help="Primary Tempo backend base URL override",
+        )
+        parser.add_argument(
+            "--tenant",
+            default=None,
+            help="Default tenant ID (X-Scope-OrgID) for the primary Tempo backend",
+        )
+        parser.add_argument(
+            "--kubeconfig",
+            default=None,
+            help="Path to kubeconfig file",
+        )
+        parser.add_argument(
+            "--context",
+            default=None,
+            help="Kubernetes kubeconfig context name",
+        )
+        parser.add_argument(
+            "--k8s-enabled",
+            action="store_true",
+            default=False,
+            help="Enable Kubernetes discovery and Tempo Operator CRD access",
+        )
+        parser.add_argument(
+            "--field-manager",
+            default=None,
+            help="Kubernetes Server-Side Apply fieldManager name (default: talkops-tempo-mcp)",
+        )
+        parser.add_argument(
+            "--debug",
+            action="store_true",
+            default=False,
+            help="Enable debug logging",
+        )
+        return parser
+
+    @classmethod
+    def from_cli_and_env(cls, argv: Optional[Sequence[str]] = None) -> ServerConfig:
+        """Load configuration from environment variables and apply CLI overrides."""
+        parser = cls.build_arg_parser()
+        args = parser.parse_args(list(argv) if argv is not None else [])
+        cfg = cls.from_env()
+
+        if args.transport:
+            cfg.transport = args.transport
+        if args.toolsets is not None:
+            cfg.toolsets = _parse_toolsets(args.toolsets)
+        if args.allow_write:
+            cfg.allow_write = True
+        if args.read_only or "readonly" in cfg.toolsets:
+            cfg.allow_write = False
+        if args.tempo_url and cfg.backends:
+            cfg.backends[0].base_url = args.tempo_url
+        if args.tenant and cfg.backends:
+            cfg.backends[0].default_tenant = args.tenant
+            cfg.backends[0].multi_tenant = True
+        if args.kubeconfig is not None:
+            cfg.kubernetes.kubeconfig = args.kubeconfig
+        if args.context is not None:
+            cfg.kubernetes.context_name = args.context
+        if args.k8s_enabled:
+            cfg.kubernetes.enabled = True
+        if args.field_manager is not None:
+            cfg.field_manager = args.field_manager
+        if args.debug:
+            cfg.debug = True
+
+        return cfg

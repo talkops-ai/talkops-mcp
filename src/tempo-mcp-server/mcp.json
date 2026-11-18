@@ -1,0 +1,25 @@
+{
+  "$schema": "https://agentplugins.io/schema/v1.0.0/mcp.json",
+  "mcpServers": {
+    "tempo": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "tempo-mcp-server",
+        "--transport",
+        "stdio",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_TOOLSETS": "all"
+      }
+    }
+  }
+}

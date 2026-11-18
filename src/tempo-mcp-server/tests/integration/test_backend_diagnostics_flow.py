@@ -1,6 +1,7 @@
 """Integration test: backend diagnostics flow.
 
-Validates: /ready + /status/buildinfo + /status/services → diagnostics output.
+Validates: /ready + /api/status/buildinfo + /status/services + /status/config + /metrics
+→ facts-only diagnostics output.
 """
 
 import os
@@ -18,16 +19,37 @@ def mock_status():
     with respx.mock(assert_all_called=False) as mock:
         base = "http://tempo-test:3200"
         mock.get(f"{base}/ready").mock(return_value=httpx.Response(200, text="ready"))
-        mock.get(f"{base}/api/status/buildinfo").mock(return_value=httpx.Response(200, json=_load_fixture("buildinfo.json")))
-        mock.get(f"{base}/status/services").mock(return_value=httpx.Response(200, json=_load_fixture("status_services.json")))
+        mock.get(f"{base}/api/status/buildinfo").mock(
+            return_value=httpx.Response(200, json=_load_fixture("buildinfo.json"))
+        )
+        mock.get(f"{base}/status/services").mock(
+            return_value=httpx.Response(200, json=_load_fixture("status_services.json"))
+        )
+        mock.get(f"{base}/status/config").mock(
+            return_value=httpx.Response(
+                200,
+                text="multitenancy_enabled: false\nmetrics_generator:\n  processors: [service-graphs, span-metrics, local-blocks]\n",
+            )
+        )
+        mock.get(f"{base}/metrics").mock(
+            return_value=httpx.Response(
+                200,
+                text='tempo_discarded_spans_total{reason="rate_limited",tenant="single-tenant"} 0\n',
+            )
+        )
         yield mock
 
 
 @pytest.fixture
-def mcp_app(mock_status):
-    env = {"TEMPO_BASE_URL": "http://tempo-test:3200", "TEMPO_BACKEND_ID": "test-backend", "K8S_ENABLED": "false"}
+def mcp_app():
+    env = {
+        "TEMPO_BASE_URL": "http://tempo-test:3200",
+        "TEMPO_BACKEND_ID": "test-backend",
+        "K8S_ENABLED": "false",
+    }
     with patch.dict(os.environ, env, clear=False):
         from tempo_mcp_server.server.bootstrap import ServerBootstrap
+
         mcp, _, _ = ServerBootstrap.initialize()
         return mcp
 
@@ -38,26 +60,40 @@ class TestBackendDiagnosticsFlow:
     @pytest.mark.asyncio
     async def test_diagnostics_returns_healthy(self, mcp_app, mock_status):
         from fastmcp import Client
+
         async with Client(mcp_app) as client:
-            result = await client.call_tool("tempo_get_diagnostics", {
-                "backend_id": "test-backend",
-            })
+            result = await client.call_tool(
+                "tempo_get_diagnostics",
+                {"backend_id": "test-backend"},
+            )
             text = _text(result.content[0]) if result.content else str(result)
-            assert "healthy" in text or "ready" in text
+            assert '"ready": true' in text.lower() or "ready" in text.lower()
 
     @pytest.mark.asyncio
     async def test_diagnostics_with_unhealthy_backend(self, mcp_app):
-        """Test diagnostics when /ready returns 503."""
+        """Test diagnostics when /ready returns 503 emits BACKEND_UNREACHABLE."""
         with respx.mock(assert_all_called=False) as mock:
             base = "http://tempo-test:3200"
-            mock.get(f"{base}/ready").mock(return_value=httpx.Response(503, text="not ready"))
-            mock.get(f"{base}/api/status/buildinfo").mock(return_value=httpx.Response(200, json=_load_fixture("buildinfo.json")))
-            mock.get(f"{base}/status/services").mock(return_value=httpx.Response(200, json=_load_fixture("status_services.json")))
+            mock.get(f"{base}/ready").mock(
+                return_value=httpx.Response(503, text="not ready")
+            )
+            mock.get(f"{base}/api/status/buildinfo").mock(
+                return_value=httpx.Response(200, json=_load_fixture("buildinfo.json"))
+            )
+            mock.get(f"{base}/status/services").mock(
+                return_value=httpx.Response(200, json=_load_fixture("status_services.json"))
+            )
+            mock.get(f"{base}/status/config").mock(
+                return_value=httpx.Response(200, text="multitenancy_enabled: false\n")
+            )
+            mock.get(f"{base}/metrics").mock(return_value=httpx.Response(200, text=""))
 
             from fastmcp import Client
+
             async with Client(mcp_app) as client:
-                result = await client.call_tool("tempo_get_diagnostics", {
-                    "backend_id": "test-backend",
-                })
+                result = await client.call_tool(
+                    "tempo_get_diagnostics",
+                    {"backend_id": "test-backend"},
+                )
                 text = _text(result.content[0]) if result.content else str(result)
-                assert "unhealthy" in text or "not ready" in text.lower() or "issues" in text
+                assert "BACKEND_UNREACHABLE" in text

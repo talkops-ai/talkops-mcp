@@ -1,546 +1,264 @@
-"""Tempo Operator CRD management tools.
+"""Write-gated Tempo Operator CRD and per-tenant overrides mutation tools."""
 
-Provides lifecycle management for TempoStack and TempoMonolithic custom
-resources via the Tempo Operator (tempo.grafana.com/v1alpha1).
-"""
-
-from typing import Any, Dict, List, Optional
+import copy
+from typing import Any, Dict, Optional, Union
 
 import yaml
-from mcp.types import ToolAnnotations
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 from pydantic import Field
+from pydantic.fields import FieldInfo
 
 from tempo_mcp_server.exceptions.custom import (
     TempoOperationError,
     TempoValidationError,
 )
-from tempo_mcp_server.tools.base import BaseTool
+from tempo_mcp_server.tools.base import BaseTool, confirm_destructive_action
+from tempo_mcp_server.utils.redaction import compute_unified_diff
 
-_VALID_KINDS = {"TempoStack", "TempoMonolithic"}
-_VALID_STORAGE_TYPES = {"s3", "gcs", "azure", "pv"}
+
+def _rfc7386_merge(target: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply RFC 7386 JSON Merge Patch to a copy of target for preview diffing."""
+    result = copy.deepcopy(target) if isinstance(target, dict) else {}
+    for k, v in patch.items():
+        if v is None:
+            result.pop(k, None)
+        elif isinstance(v, dict):
+            result[k] = _rfc7386_merge(result.get(k, {}), v)
+        else:
+            result[k] = copy.deepcopy(v)
+    return result
 
 
 class OperatorTools(BaseTool):
-    """Tempo Operator CRD lifecycle management tools."""
+    """Write-gated Tempo per-tenant overrides and Tempo Operator CRD apply tools."""
 
-    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
-
+    def register(self, mcp_instance: Any) -> None:
+        tempo_service = self.tempo_service
         kubernetes_service = self.kubernetes_service
 
-        @mcp_instance.tool(
-            annotations=ToolAnnotations(
-                title="List Tempo Operator CRs",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=True,
-            ),
-            output_schema=None,
-        )
-        async def tempo_list_operator_crs(
-            namespace: Optional[str] = Field(
-                default=None,
-                description=(
-                    "Filter to a specific namespace. "
-                    "If omitted, lists across all namespaces."
+        if self.should_register_tool("overrides", is_write=True):
+
+            @mcp_instance.tool(
+                annotations=ToolAnnotations(
+                    title="Patch Tempo Tenant Overrides",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=True,
+                    openWorldHint=True,
                 ),
-            ),
-            kind: Optional[str] = Field(
-                default=None,
-                description=(
-                    "Filter by CRD kind: 'TempoStack' or 'TempoMonolithic'. "
-                    "If omitted, lists both kinds."
+                output_schema=None,
+            )
+            async def tempo_patch_tenant_overrides(
+                backend_id: str = Field(..., min_length=1, description="Tempo backend ID"),
+                tenant: str = Field(..., min_length=1, description="Target tenant ID (X-Scope-OrgID)"),
+                merge_patch: Dict[str, Any] = Field(
+                    ...,
+                    description="RFC 7386 JSON merge patch for /api/overrides",
                 ),
-            ),
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> Dict[str, Any]:
-            """List Tempo Operator custom resources (TempoStack, TempoMonolithic).
-
-            Scans the cluster for Tempo Operator CRDs and returns a summary
-            of each instance. Read-only.
-
-            Returns:
-            - {"items": [{"name": str, "namespace": str, "kind": str, ...}], "total": int}
-
-            When NOT to use: For Tempo HTTP API backends, use tempo_list_backends.
-
-            Prerequisites: Tempo Operator must be installed and K8S_ENABLED=true.
-            """
-            try:
-                if ctx:
-                    await ctx.info("Listing Tempo Operator CRs...")
-                if kind and kind not in _VALID_KINDS:
-                    raise TempoValidationError(
-                        f"Invalid kind: '{kind}'. Supported: {sorted(_VALID_KINDS)}"
-                    )
-
-                crs = await kubernetes_service.list_tempo_operator_crs(
-                    namespace=namespace, kind=kind
-                )
-
-                items = []
-                for cr in crs:
-                    meta = cr.get("metadata", {})
-                    spec = cr.get("spec", {})
-                    status = cr.get("status", {})
-                    conditions = status.get("conditions", [])
-
-                    # Determine readiness from conditions
-                    ready = None
-                    status_phase = None
-                    for cond in conditions:
-                        if cond.get("type") == "Ready":
-                            ready = cond.get("status") == "True"
-                            status_phase = "Ready" if ready else "NotReady"
-                            break
-
-                    # Extract storage type
-                    storage = spec.get("storage", {})
-                    storage_type = (
-                        storage.get("secret", {}).get("type")
-                        or storage.get("tls", {}).get("type")
-                        or None
-                    )
-
-                    # Extract retention
-                    retention = spec.get("retention", {})
-                    global_retention = retention.get("global", {}).get("traces")
-
-                    items.append({
-                        "name": meta.get("name", ""),
-                        "namespace": meta.get("namespace", ""),
-                        "kind": cr.get("_kind", cr.get("kind", "unknown")),
-                        "storage_type": storage_type,
-                        "retention": global_retention,
-                        "status_phase": status_phase,
-                        "ready": ready,
-                    })
-
-                return {"items": items, "total": len(items)}
-
-            except (TempoValidationError, TempoOperationError):
-                raise
-            except Exception as e:
-                raise TempoOperationError(
-                    f"Failed to list Tempo Operator CRs: {e}"
-                )
-
-        @mcp_instance.tool(
-            annotations=ToolAnnotations(
-                title="Get Tempo Operator CR",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=True,
-            ),
-            output_schema=None,
-        )
-        async def tempo_get_operator_cr(
-            namespace: str = Field(
-                ..., min_length=1, description="Kubernetes namespace"
-            ),
-            name: str = Field(
-                ..., min_length=1, description="CR name"
-            ),
-            kind: str = Field(
-                ...,
-                description="CRD kind: 'TempoStack' or 'TempoMonolithic'",
-            ),
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> Dict[str, Any]:
-            """Get a Tempo Operator CR with full spec, status, and conditions.
-
-            Returns the complete CRD including storage config, retention
-            settings, resource sizing, and operator status. Read-only.
-
-            Returns:
-            - {"name": str, "namespace": str, "kind": str, "spec": {...},
-               "status": {...}, "conditions": [...]}
-
-            When NOT to use: For listing multiple CRs, use
-            tempo_list_operator_crs.
-
-            Common errors:
-            - Not found: Verify namespace and name with tempo_list_operator_crs.
-            """
-            try:
-                if ctx:
-                    await ctx.info(
-                        f"Fetching {kind} '{namespace}/{name}'..."
-                    )
-                if kind not in _VALID_KINDS:
-                    raise TempoValidationError(
-                        f"Invalid kind: '{kind}'. Supported: {sorted(_VALID_KINDS)}"
-                    )
-
-                cr = await kubernetes_service.get_tempo_operator_cr(
-                    namespace=namespace, name=name, kind=kind
-                )
-
-                meta = cr.get("metadata", {})
-                status = cr.get("status", {})
-
-                return {
-                    "name": meta.get("name", ""),
-                    "namespace": meta.get("namespace", ""),
-                    "kind": kind,
-                    "api_version": cr.get("apiVersion", ""),
-                    "labels": meta.get("labels", {}),
-                    "spec": cr.get("spec", {}),
-                    "status": status,
-                    "conditions": status.get("conditions", []),
-                }
-
-            except (TempoValidationError, TempoOperationError):
-                raise
-            except Exception as e:
-                raise TempoOperationError(
-                    f"Failed to get Tempo Operator CR '{namespace}/{name}': {e}"
-                )
-
-        @mcp_instance.tool(
-            annotations=ToolAnnotations(
-                title="Create Tempo Operator CR",
-                readOnlyHint=False,
-                destructiveHint=True,
-                idempotentHint=False,
-                openWorldHint=True,
-            ),
-            output_schema=None,
-        )
-        async def tempo_create_operator_cr(
-            namespace: str = Field(
-                ..., min_length=1, description="Target Kubernetes namespace"
-            ),
-            name: str = Field(
-                ..., min_length=1, description="CR name"
-            ),
-            kind: str = Field(
-                ...,
-                description="CRD kind: 'TempoStack' or 'TempoMonolithic'",
-            ),
-            storage_type: str = Field(
-                ...,
-                description="Storage backend: 's3', 'gcs', 'azure', or 'pv'",
-            ),
-            storage_secret: str = Field(
-                ...,
-                min_length=1,
-                description=(
-                    "Name of the K8s Secret containing storage credentials"
+                expected_etag: Optional[str] = Field(
+                    default=None,
+                    description="Optional If-Match ETag from tempo://overrides/{backend_id}/{tenant}",
                 ),
-            ),
-            retention: str = Field(
-                default="48h",
-                description="Global trace retention duration (e.g. '48h', '7d')",
-            ),
-            resources_total: Optional[Dict[str, Any]] = Field(
-                default=None,
-                description=(
-                    "Total resource limits. Example: "
-                    "{'limits': {'memory': '2Gi', 'cpu': '1000m'}}"
+                dry_run: bool = Field(
+                    default=True,
+                    description="Preview merged overrides and unified diff without mutating Tempo",
                 ),
-            ),
-            multi_tenancy: bool = Field(
-                default=False,
-                description="Enable multi-tenancy mode",
-            ),
-            search_defaults: Optional[Dict[str, Any]] = Field(
-                default=None,
-                description=(
-                    "Search configuration. Example: "
-                    "{'defaultResultLimit': 20, 'maxResultLimit': 100}"
+                confirm: bool = Field(
+                    default=False,
+                    description="Set True to confirm mutation when client lacks interactive elicitation",
                 ),
-            ),
-            jaeger_ui: bool = Field(
-                default=True,
-                description="Enable Jaeger query frontend UI",
-            ),
-            dry_run: bool = Field(
-                default=True,
-                description=(
-                    "If True, returns the generated YAML without applying. "
-                    "Set False only after reviewing the dry_run output."
-                ),
-            ),
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> Dict[str, Any]:
-            """Create a Tempo Operator CR (TempoStack or TempoMonolithic).
+                ctx: Context = None,  # type: ignore[assignment]
+            ) -> Dict[str, Any]:
+                """Preview or apply an RFC 7386 JSON merge patch to Tempo's /api/overrides endpoint for a tenant.
 
-            Generates a complete CRD manifest with storage, retention,
-            resources, and optional search/tenancy configuration.
+                Returns: {"action": str, "dry_run": bool, "tenant": str, "etag": str|null, "diff": str, "merged_preview": {...}}.
+                When NOT to use: To read current overrides, read resource 'tempo://overrides/{backend_id}/{tenant}'.
+                """
+                self.require_write_access("tempo_patch_tenant_overrides")
+                if isinstance(expected_etag, FieldInfo):
+                    expected_etag = expected_etag.default
+                if isinstance(dry_run, FieldInfo):
+                    dry_run = dry_run.default
+                if isinstance(confirm, FieldInfo):
+                    confirm = confirm.default
 
-            **WARNING: With dry_run=False, this creates a Kubernetes CRD
-            that deploys Tempo pods in the target namespace.**
+                if not isinstance(merge_patch, dict) or not merge_patch:
+                    raise TempoValidationError("merge_patch must be a non-empty dictionary.")
 
-            Returns:
-            - {"action": str, "dry_run": bool, "name": str,
-               "manifest_yaml": str, "message": str}
-
-            When NOT to use: For modifying an existing CR, use
-            tempo_patch_operator_cr.
-
-            Prerequisites: Tempo Operator must be installed.
-
-            Common errors:
-            - Secret not found: Ensure the storage secret exists in the namespace.
-            - Invalid storage_type: Must be 's3', 'gcs', 'azure', or 'pv'.
-            """
-            try:
-                if ctx:
-                    await ctx.info(
-                        f"{'Previewing' if dry_run else 'Creating'} {kind} "
-                        f"'{name}' in namespace '{namespace}'..."
+                try:
+                    current_data = await tempo_service.get_tenant_overrides(
+                        backend_id=backend_id,
+                        tenant=tenant,
+                        scope="api",
                     )
-                if kind not in _VALID_KINDS:
-                    raise TempoValidationError(
-                        f"Invalid kind: '{kind}'. Supported: {sorted(_VALID_KINDS)}"
-                    )
-                if storage_type not in _VALID_STORAGE_TYPES:
-                    raise TempoValidationError(
-                        f"Invalid storage_type: '{storage_type}'. "
-                        f"Supported: {sorted(_VALID_STORAGE_TYPES)}"
-                    )
+                    current_overrides = current_data.get("overrides") or {}
+                    current_etag = expected_etag or current_data.get("etag")
+                except Exception:
+                    current_overrides = {}
+                    current_etag = expected_etag
 
-                # Build spec
-                spec: Dict[str, Any] = {
-                    "storage": {
-                        "secret": {
-                            "name": storage_secret,
-                            "type": storage_type,
-                        },
-                    },
-                    "retention": {
-                        "global": {
-                            "traces": retention,
-                        },
-                    },
-                }
-
-                if resources_total:
-                    spec["resources"] = {"total": resources_total}
-
-                if search_defaults:
-                    spec["search"] = search_defaults
-
-                if multi_tenancy:
-                    spec["tenants"] = {"mode": "openshift"}
-
-                if jaeger_ui:
-                    spec["template"] = {
-                        "queryFrontend": {
-                            "jaegerQuery": {"enabled": True},
-                        },
-                    }
-
-                labels = {
-                    "app.kubernetes.io/managed-by": "talkops-mcp",
-                    "app.kubernetes.io/part-of": "tempo",
-                }
-
-                # Build preview manifest
-                op_cfg = self.config.tempo_operator
-                preview = {
-                    "apiVersion": f"{op_cfg.crd_group}/{op_cfg.crd_api_version}",
-                    "kind": kind,
-                    "metadata": {
-                        "name": name,
-                        "namespace": namespace,
-                        "labels": labels,
-                    },
-                    "spec": spec,
-                }
-                manifest_yaml = yaml.dump(
-                    preview, default_flow_style=False, sort_keys=False
+                merged_preview = _rfc7386_merge(current_overrides, merge_patch)
+                diff_text = compute_unified_diff(
+                    current_overrides,
+                    merged_preview,
+                    fromfile=f"overrides/{tenant} (current)",
+                    tofile=f"overrides/{tenant} (desired)",
                 )
 
                 if dry_run:
                     return {
                         "action": "dry_run",
                         "dry_run": True,
-                        "name": name,
-                        "namespace": namespace,
-                        "kind": kind,
-                        "manifest_yaml": manifest_yaml,
-                        "message": (
-                            "🔍 Review the generated manifest above. "
-                            "Set dry_run=False to apply to the cluster."
-                        ),
+                        "backend_id": backend_id,
+                        "tenant": tenant,
+                        "etag": current_etag,
+                        "diff": diff_text,
+                        "merged_preview": merged_preview,
                     }
 
-                # Apply to cluster
-                result = await kubernetes_service.create_or_patch_tempo_cr(
-                    namespace=namespace,
-                    name=name,
-                    kind=kind,
-                    spec=spec,
-                    labels=labels,
-                    dry_run=False,
+                confirmed = await confirm_destructive_action(
+                    ctx,
+                    f"Patch Tempo overrides for tenant '{tenant}' on backend '{backend_id}'",
+                    confirm=confirm,
                 )
-
-                return {
-                    "action": "created",
-                    "dry_run": False,
-                    "name": name,
-                    "namespace": namespace,
-                    "kind": kind,
-                    "uid": result.get("metadata", {}).get("uid"),
-                    "resource_version": result.get("metadata", {}).get(
-                        "resourceVersion"
-                    ),
-                    "message": (
-                        f"✅ {kind} '{name}' created in namespace "
-                        f"'{namespace}'. The Tempo Operator will begin "
-                        "reconciling shortly."
-                    ),
-                }
-
-            except (TempoValidationError, TempoOperationError):
-                raise
-            except Exception as e:
-                raise TempoOperationError(
-                    f"Failed to create Tempo Operator CR: {e}"
-                )
-
-        @mcp_instance.tool(
-            annotations=ToolAnnotations(
-                title="Patch Tempo Operator CR",
-                readOnlyHint=False,
-                destructiveHint=True,
-                idempotentHint=False,
-                openWorldHint=True,
-            ),
-            output_schema=None,
-        )
-        async def tempo_patch_operator_cr(
-            namespace: str = Field(
-                ..., min_length=1, description="Kubernetes namespace"
-            ),
-            name: str = Field(
-                ..., min_length=1, description="CR name"
-            ),
-            kind: str = Field(
-                ...,
-                description="CRD kind: 'TempoStack' or 'TempoMonolithic'",
-            ),
-            retention: Optional[str] = Field(
-                default=None,
-                description="New global trace retention (e.g. '48h', '7d')",
-            ),
-            resources_total: Optional[Dict[str, Any]] = Field(
-                default=None,
-                description=(
-                    "New total resource limits. Example: "
-                    "{'limits': {'memory': '4Gi', 'cpu': '2000m'}}"
-                ),
-            ),
-            search_defaults: Optional[Dict[str, Any]] = Field(
-                default=None,
-                description="New search configuration",
-            ),
-            dry_run: bool = Field(
-                default=True,
-                description=(
-                    "If True, returns the patch without applying. "
-                    "Set False only after review."
-                ),
-            ),
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> Dict[str, Any]:
-            """Patch specific fields of an existing Tempo Operator CR.
-
-            Applies a strategic merge patch — only the fields you specify
-            are updated; all other fields remain unchanged.
-
-            **WARNING: With dry_run=False, this modifies a live Tempo CR
-            which may trigger the operator to restart components.**
-
-            Returns:
-            - {"action": str, "dry_run": bool, "patch_spec": {...},
-               "message": str}
-
-            When NOT to use: For creating a new CR, use
-            tempo_create_operator_cr.
-
-            Common errors:
-            - CR not found: Verify it exists with tempo_get_operator_cr.
-            - No fields to patch: Provide at least one of retention,
-              resources_total, or search_defaults.
-            """
-            try:
-                if ctx:
-                    await ctx.info(
-                        f"{'Previewing patch for' if dry_run else 'Patching'} "
-                        f"{kind} '{namespace}/{name}'..."
-                    )
-                if kind not in _VALID_KINDS:
-                    raise TempoValidationError(
-                        f"Invalid kind: '{kind}'. Supported: {sorted(_VALID_KINDS)}"
-                    )
-
-                # Build patch spec
-                patch_spec: Dict[str, Any] = {}
-
-                if retention is not None:
-                    patch_spec["retention"] = {
-                        "global": {"traces": retention}
-                    }
-
-                if resources_total is not None:
-                    patch_spec["resources"] = {"total": resources_total}
-
-                if search_defaults is not None:
-                    patch_spec["search"] = search_defaults
-
-                if not patch_spec:
-                    raise TempoValidationError(
-                        "No fields to patch. Provide at least one of: "
-                        "retention, resources_total, search_defaults."
-                    )
-
-                if dry_run:
+                if not confirmed:
                     return {
-                        "action": "dry_run",
-                        "dry_run": True,
-                        "name": name,
-                        "namespace": namespace,
-                        "kind": kind,
-                        "patch_spec": patch_spec,
-                        "message": (
-                            "🔍 Review the patch above. "
-                            "Set dry_run=False to apply."
-                        ),
+                        "action": "aborted",
+                        "dry_run": False,
+                        "backend_id": backend_id,
+                        "tenant": tenant,
+                        "diff": diff_text,
+                        "message": "Operation cancelled or confirmation not granted. Re-run with dry_run=True or confirm=True.",
                     }
 
-                result = await kubernetes_service.create_or_patch_tempo_cr(
-                    namespace=namespace,
-                    name=name,
-                    kind=kind,
-                    spec=patch_spec,
-                    overwrite=False,
-                    dry_run=False,
-                )
+                try:
+                    applied = await tempo_service.patch_tenant_overrides(
+                        backend_id=backend_id,
+                        tenant=tenant,
+                        merge_patch=merge_patch,
+                        expected_etag=current_etag,
+                    )
+                    return {
+                        "action": "patched",
+                        "dry_run": False,
+                        "backend_id": backend_id,
+                        "tenant": tenant,
+                        "etag": applied.get("etag"),
+                        "diff": diff_text,
+                        "overrides": applied.get("overrides"),
+                    }
+                except Exception as e:
+                    self.handle_error(e, "tempo_patch_tenant_overrides", backend_id=backend_id, resource_name=tenant)
+                    raise
 
-                return {
-                    "action": "patched",
-                    "dry_run": False,
-                    "name": name,
-                    "namespace": namespace,
-                    "kind": kind,
-                    "patch_spec": patch_spec,
-                    "resource_version": result.get("metadata", {}).get(
-                        "resourceVersion"
-                    ),
-                    "message": (
-                        f"✅ {kind} '{name}' patched. The Tempo Operator "
-                        "will reconcile the changes."
-                    ),
-                }
+        if self.should_register_tool("operator", is_write=True):
 
-            except (TempoValidationError, TempoOperationError):
-                raise
-            except Exception as e:
-                raise TempoOperationError(
-                    f"Failed to patch Tempo Operator CR: {e}"
-                )
+            @mcp_instance.tool(
+                annotations=ToolAnnotations(
+                    title="Apply Tempo Operator CR Manifest",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=True,
+                    openWorldHint=True,
+                ),
+                output_schema=None,
+            )
+            async def tempo_apply_operator_cr(
+                manifest: Union[str, Dict[str, Any]] = Field(
+                    ...,
+                    description="Complete TempoStack or TempoMonolithic manifest as YAML string or dict",
+                ),
+                dry_run: bool = Field(
+                    default=True,
+                    description="Validate via Kubernetes API server dryRun=All and return unified diff without persisting",
+                ),
+                field_manager: str = Field(
+                    default="talkops-tempo-mcp",
+                    description="Kubernetes fieldManager label",
+                ),
+                confirm: bool = Field(
+                    default=False,
+                    description="Set True to confirm cluster apply when client lacks interactive elicitation",
+                ),
+                ctx: Context = None,  # type: ignore[assignment]
+            ) -> Dict[str, Any]:
+                """Validate and apply a TempoStack or TempoMonolithic custom resource manifest.
+
+                Returns: {"action": str, "dry_run": bool, "name": str, "namespace": str, "kind": str, "diff": str, "manifest_yaml": str}.
+                When NOT to use: To inspect existing CRs, read 'tempo://operator/crs/{namespace}' or 'tempo://operator/manifests/{kind}/{namespace}/{name}'.
+                """
+                self.require_write_access("tempo_apply_operator_cr")
+                if isinstance(dry_run, FieldInfo):
+                    dry_run = dry_run.default
+                if isinstance(field_manager, FieldInfo):
+                    field_manager = field_manager.default
+                if isinstance(confirm, FieldInfo):
+                    confirm = confirm.default
+
+                if isinstance(manifest, str):
+                    try:
+                        parsed_manifest = yaml.safe_load(manifest)
+                    except Exception as e:
+                        raise TempoValidationError(f"Invalid YAML manifest: {e}") from e
+                elif isinstance(manifest, dict):
+                    parsed_manifest = manifest
+                else:
+                    raise TempoValidationError("manifest must be a YAML string or dict.")
+
+                if not isinstance(parsed_manifest, dict):
+                    raise TempoValidationError("manifest must parse to a mapping object.")
+
+                kind = parsed_manifest.get("kind", "")
+                meta = parsed_manifest.get("metadata") or {}
+                name = meta.get("name", "<unknown>")
+                namespace = meta.get("namespace", "default")
+
+                try:
+                    if dry_run:
+                        if ctx:
+                            await ctx.info(f"Running server-side dry-run for {kind} '{namespace}/{name}'...")
+                        return await kubernetes_service.apply_tempo_cr_manifest(
+                            manifest=parsed_manifest,
+                            dry_run=True,
+                            field_manager=field_manager,
+                        )
+
+                    confirmed = await confirm_destructive_action(
+                        ctx,
+                        f"Apply {kind} '{name}' in namespace '{namespace}'",
+                        confirm=confirm,
+                    )
+                    if not confirmed:
+                        preview = await kubernetes_service.apply_tempo_cr_manifest(
+                            manifest=parsed_manifest,
+                            dry_run=True,
+                            field_manager=field_manager,
+                        )
+                        preview["action"] = "aborted"
+                        preview["dry_run"] = False
+                        preview["message"] = (
+                            "Operation cancelled or confirmation not granted. "
+                            "Review the diff and pass confirm=True after operator approval."
+                        )
+                        return preview
+
+                    if ctx:
+                        await ctx.info(f"Applying {kind} '{namespace}/{name}'...")
+                    return await kubernetes_service.apply_tempo_cr_manifest(
+                        manifest=parsed_manifest,
+                        dry_run=False,
+                        field_manager=field_manager,
+                    )
+                except (ValueError, TempoValidationError) as e:
+                    raise TempoValidationError(str(e)) from e
+                except TempoOperationError:
+                    raise
+                except Exception as e:
+                    self.handle_error(
+                        e,
+                        "tempo_apply_operator_cr",
+                        namespace=namespace,
+                        resource_name=name,
+                    )
+                    raise

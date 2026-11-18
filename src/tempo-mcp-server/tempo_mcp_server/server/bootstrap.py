@@ -1,51 +1,58 @@
-"""Server initialization and bootstrap."""
+"""Server initialization and dependency-injected bootstrap."""
 
-from tempo_mcp_server.config import Config
-from tempo_mcp_server.server.core import create_mcp_server
-from tempo_mcp_server.services.tempo_service import TempoService
-from tempo_mcp_server.services.kubernetes_service import KubernetesService
-from tempo_mcp_server.tools import initialize_tools
+from typing import Any, Dict, Optional, Sequence, Tuple
+
+from tempo_mcp_server.config import Config, ServerConfig
 from tempo_mcp_server.resources import initialize_resources
-from tempo_mcp_server.prompts import initialize_prompts
+from tempo_mcp_server.server.core import create_mcp_server
+from tempo_mcp_server.services.kubernetes_service import KubernetesService
+from tempo_mcp_server.services.tempo_service import TempoService
+from tempo_mcp_server.tools import initialize_tools
 
 
 class ServerBootstrap:
-    """Bootstrap the MCP server with all components."""
+    """Bootstrap the Tempo MCP server with tools and dynamic resources (zero prompts)."""
 
     @staticmethod
-    def initialize() -> tuple:
-        """Initialize server and all components.
+    def build(
+        config: Optional[ServerConfig] = None,
+        services: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Any, ServerConfig, TempoService]:
+        """Build the FastMCP server instance with optional injected services for testing."""
+        cfg = config or Config.from_env()
+        mcp = create_mcp_server(cfg)
 
-        Returns:
-            Tuple of (mcp_instance, config, tempo_service)
-        """
-        # 1. Load configuration
-        config = Config.from_env()
+        if services is not None and "tempo_service" in services:
+            tempo_service = services["tempo_service"]
+        else:
+            tempo_service = TempoService(cfg)
 
-        # 2. Create FastMCP instance
-        mcp = create_mcp_server(config)
+        if services is not None and "kubernetes_service" in services:
+            kubernetes_service = services["kubernetes_service"]
+        else:
+            kubernetes_service = KubernetesService(
+                cfg.kubernetes,
+                operator_config=cfg.tempo_operator,
+            )
 
-        # 3. Create service locator (dependency injection)
-        tempo_service = TempoService(config)
         service_locator = {
             "tempo_service": tempo_service,
-            "kubernetes_service": KubernetesService(
-                config.kubernetes,
-                operator_config=config.tempo_operator,
-            ),
-            "config": config,
+            "kubernetes_service": kubernetes_service,
+            "config": cfg,
         }
 
-        # 4. Initialize and register tools
         tool_registry = initialize_tools(service_locator)
         tool_registry.register_all_tools(mcp)
 
-        # 5. Initialize and register resources
         resource_registry = initialize_resources(service_locator)
         resource_registry.register_all_resources(mcp)
 
-        # 6. Initialize and register prompts
-        prompt_registry = initialize_prompts(service_locator)
-        prompt_registry.register_all_prompts(mcp)
+        return mcp, cfg, tempo_service
 
-        return mcp, config, tempo_service
+    @staticmethod
+    def initialize(
+        argv: Optional[Sequence[str]] = None,
+    ) -> Tuple[Any, ServerConfig, TempoService]:
+        """Initialize server from CLI arguments and environment variables."""
+        cfg = Config.from_cli_and_env(argv) if argv is not None else Config.from_env()
+        return ServerBootstrap.build(config=cfg)
