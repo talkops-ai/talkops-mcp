@@ -1,18 +1,19 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/cncf/artwork/main/projects/prometheus/stacked/color/prometheus-stacked-color.svg" alt="Prometheus MCP Server" width="140" onError="this.style.display='none'"/>
+  <img src="https://raw.githubusercontent.com/cncf/artwork/main/projects/prometheus/icon/color/prometheus-icon-color.svg" alt="Prometheus logo" height="100"/>
 </p>
 
-<h1 align="center">Prometheus MCP Server & Agent Plugin (v0.2.0)</h1>
+<h1 align="center">Prometheus MCP Server &amp; Agent Plugin</h1>
 
 <p align="center">
   An Agent Plugins v1.0.0 compliant Prometheus observability suite combining <strong>6 Progressive-Disclosure Agent Skills</strong> (methodology, runbooks, and zero-network local CLI generators) with a focused <strong>19-Tool / 11-Resource MCP Execution Server</strong> for Prometheus 3.0+, Thanos, Mimir, Cortex, and VictoriaMetrics.
 </p>
 
 <p align="center">
-  <a href="https://github.com/talkops-ai/talkops-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License"/></a>
+  <a href="https://pypi.org/project/talkops-prometheus-mcp-server/"><img src="https://img.shields.io/pypi/v/talkops-prometheus-mcp-server.svg?style=flat-square&logo=pypi&logoColor=white&label=PyPI" alt="PyPI"/></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12%2B-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+"/></a>
+  <a href="https://github.com/talkops-ai/talkops-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License"/></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-4A90D9.svg?style=flat-square" alt="MCP"/></a>
-  <a href="https://prometheus.io/"><img src="https://img.shields.io/badge/Prometheus-3.0%2B%20Compatible-E6522C.svg?style=flat-square&logo=prometheus&logoColor=white" alt="Prometheus"/></a>
+  <a href="https://prometheus.io/"><img src="https://img.shields.io/badge/Prometheus-3.0%2B-E6522C.svg?style=flat-square&logo=prometheus&logoColor=white" alt="Prometheus 3.0+"/></a>
 </p>
 
 ---

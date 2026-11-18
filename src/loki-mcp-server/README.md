@@ -1,6 +1,20 @@
-# TalkOps Grafana Loki Agent Plugin & MCP Server (`v0.2.0`)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/grafana/loki/main/docs/sources/logo.png" alt="Grafana Loki logo" height="100"/>
+</p>
 
-Production-ready **Agent Plugin (`v1.0.0`)** and **FastMCP Execution Server** for **Grafana Loki 3.x** and the **Kubernetes Loki Operator (`loki.grafana.com/v1`)**.
+<h1 align="center">Grafana Loki MCP Server &amp; Agent Plugin</h1>
+
+<p align="center">
+  Production-ready <strong>Agent Plugin (v1.0.0)</strong> and <strong>FastMCP Execution Server</strong> for <strong>Grafana Loki 3.x</strong> and the <strong>Kubernetes Loki Operator</strong> (<code>loki.grafana.com/v1</code>).
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/talkops-loki-mcp-server/"><img src="https://img.shields.io/pypi/v/talkops-loki-mcp-server.svg?style=flat-square&logo=pypi&logoColor=white&label=PyPI" alt="PyPI"/></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12%2B-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+"/></a>
+  <a href="https://github.com/talkops-ai/talkops-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License"/></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-4A90D9.svg?style=flat-square" alt="MCP"/></a>
+  <a href="https://grafana.com/oss/loki/"><img src="https://img.shields.io/badge/Grafana%20Loki-3.x-F46800.svg?style=flat-square&logo=grafana&logoColor=white" alt="Grafana Loki 3.x"/></a>
+</p>
 
 Following the TalkOps **Skill & Execution Layer Separation** architecture:
 - **Procedural Intelligence (`skills/`)**: 6 modular Agent Skills containing progressive-disclosure SOPs (`SKILL.md` $\le 250$ lines), deep domain references (`references/*.md`), and deterministic local Python CLI helpers (`scripts/*.py`).
