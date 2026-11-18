@@ -1,8 +1,8 @@
-"""Integration tests for resources (v4).
+"""Integration tests for dynamic runtime resources (v0.2.0).
 
-Per test guide §6 & §10: Every resource tested through FastMCP client.
-
-v4 Resources tested: 8 resources
+Verifies all 9 dynamic loki:// resources and confirms that static
+markdown reference resources (loki://reference/*) have been migrated
+out of the MCP execution server into Agent Skills.
 """
 
 import json
@@ -12,8 +12,19 @@ import pytest
 from tests.conftest import get_text
 
 
-class TestSystemResources:
-    """Tests for system and config resources."""
+class TestSystemAndConfigResources:
+    """Tests for dynamic system, capability, schema, and config resources."""
+
+    @pytest.mark.asyncio
+    async def test_capabilities_resource(self, mcp_client):
+        result = await mcp_client.read_resource("loki://server/capabilities")
+        text = get_text(result)
+        data = json.loads(text)
+        assert data["server"] == "loki-mcp-server"
+        assert data["version"] == "0.2.0"
+        assert "allow_write" in data
+        assert "toolsets" in data
+        assert "backend" in data
 
     @pytest.mark.asyncio
     async def test_health_resource(self, mcp_client):
@@ -54,38 +65,49 @@ class TestSystemResources:
         assert "auth_type" in backend
 
 
-class TestReferenceResources:
-    """Tests for reference/documentation resources."""
+class TestRulesCompactorAndOperatorResources:
+    """Tests for dynamic Ruler, Compactor, and Kubernetes Operator resources."""
 
     @pytest.mark.asyncio
-    async def test_logql_reference(self, mcp_client):
-        result = await mcp_client.read_resource("loki://reference/logql")
+    async def test_rules_groups_resource(self, mcp_client):
+        result = await mcp_client.read_resource("loki://rules/groups")
         text = get_text(result)
-        assert len(text) > 100
-        assert "LogQL" in text or "logql" in text.lower()
+        data = json.loads(text)
+        assert "namespaces" in data
+        assert "total_groups" in data
+        assert "rules" in data
 
     @pytest.mark.asyncio
-    async def test_best_practices(self, mcp_client):
+    async def test_compactor_delete_requests_resource(self, mcp_client):
+        result = await mcp_client.read_resource("loki://compactor/delete-requests")
+        text = get_text(result)
+        data = json.loads(text)
+        assert "requests" in data
+        assert data["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_operator_crs_template_resource(self, mcp_client):
+        result = await mcp_client.read_resource("loki://operator/crs/logging")
+        text = get_text(result)
+        data = json.loads(text)
+        assert data["namespace"] == "logging"
+        assert "items" in data
+        assert "total" in data
+
+    @pytest.mark.asyncio
+    async def test_operator_manifest_template_resource(self, mcp_client):
         result = await mcp_client.read_resource(
-            "loki://reference/best-practices"
+            "loki://operator/manifests/LokiStack/logging/loki-prod"
         )
         text = get_text(result)
-        assert len(text) > 100
+        data = json.loads(text)
+        assert isinstance(data, dict)
 
     @pytest.mark.asyncio
-    async def test_query_templates(self, mcp_client):
-        result = await mcp_client.read_resource(
-            "loki://reference/query-templates"
-        )
-        text = get_text(result)
-        assert len(text) > 100
-        assert "logql" in text.lower() or "query" in text.lower()
-
-    @pytest.mark.asyncio
-    async def test_label_governance(self, mcp_client):
-        result = await mcp_client.read_resource(
-            "loki://reference/label-governance"
-        )
-        text = get_text(result)
-        assert len(text) > 100
-        assert "cardinality" in text.lower() or "label" in text.lower()
+    async def test_static_reference_resources_removed(self, mcp_client):
+        resources = await mcp_client.list_resources()
+        uris = {str(r.uri) for r in resources}
+        assert "loki://reference/logql" not in uris
+        assert "loki://reference/best-practices" not in uris
+        assert "loki://reference/query-templates" not in uris
+        assert "loki://reference/label-governance" not in uris

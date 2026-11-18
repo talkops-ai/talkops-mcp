@@ -54,6 +54,8 @@ class JsonCoercionMiddleware(Middleware):
         if args:
             coerced_keys: list[str] = []
             for key, value in list(args.items()):
+                if key.endswith("_yaml") and isinstance(value, str):
+                    continue
                 if isinstance(value, str):
                     parsed = self._try_parse(value)
                     if parsed is not value:
@@ -139,8 +141,8 @@ def setup_middleware(mcp: FastMCP, config: ServerConfig) -> None:
 
     # 3. Rate Limiting
     mcp.add_middleware(RateLimitingMiddleware(
-        max_requests_per_second=10.0,
-        burst_capacity=20,
+        max_requests_per_second=50.0,
+        burst_capacity=100,
         global_limit=True,
     ))
 

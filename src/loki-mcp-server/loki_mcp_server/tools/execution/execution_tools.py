@@ -1,50 +1,60 @@
-"""Execution tools — LogQL instant and range query execution.
+"""Execution tools — LogQL instant, range, and A2UI query execution.
 
-v4 Tools: execute_logql_instant, execute_logql_query
+Tools (`query` toolset, read-only):
+- loki_query_instant
+- loki_query_range
+- loki_query_a2ui
 """
 
+import json as _json
+import re as _re
 from typing import Any, Dict, List, Optional
 
-from mcp.server.fastmcp import Context
+from fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from loki_mcp_server.exceptions import LokiQueryTooExpensiveError
 from loki_mcp_server.tools.base import BaseTool
 from loki_mcp_server.utils.error_handling import tool_error_boundary
-from loki_mcp_server.utils.response_size import enforce_structured_size_limit
 from loki_mcp_server.utils.logql_helpers import (
+    _MAX_LINE_CHARS,
+    _MAX_PAYLOAD_BYTES,
     detect_high_cardinality_in_selector,
     format_log_entries,
     validate_stream_selector,
-    _MAX_PAYLOAD_BYTES,
-    _MAX_LINE_CHARS,
 )
+from loki_mcp_server.utils.response_size import enforce_structured_size_limit
 from loki_mcp_server.utils.time_utils import (
+    _parse_to_datetime,
     parse_relative_time,
     validate_time_window,
 )
 
+_METRIC_QUERY_RE = _re.compile(
+    r"\b(?:rate|rate_counter|count_over_time|bytes_over_time|bytes_rate|"
+    r"absent_over_time|sum_over_time|avg_over_time|min_over_time|max_over_time|"
+    r"stddev_over_time|stdvar_over_time|quantile_over_time|first_over_time|"
+    r"last_over_time)\s*\("
+)
+
 
 class ExecutionTools(BaseTool):
-    """LogQL query execution tools.
-
-    These tools actually execute queries against Loki and return
-    real log/metric data. All expensive queries should be
-    preflight-checked with get_query_stats first.
-    """
+    """LogQL query execution tools (`query` toolset)."""
 
     def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
         """Register all execution tools with the MCP instance."""
         loki = self.loki_service
         config = self.config
+        if not config.should_register("query", is_write=False):
+            return
 
         # ──────────────────────────────────────────
-        # Tool 7: execute_logql_instant
+        # Tool 7: loki_query_instant
         # ──────────────────────────────────────────
         @mcp_instance.tool(
             annotations=ToolAnnotations(
-                title="Execute LogQL Instant Query",
+                title="Execute Loki Instant Query",
                 readOnlyHint=True,
                 destructiveHint=False,
                 idempotentHint=True,
@@ -53,19 +63,11 @@ class ExecutionTools(BaseTool):
             output_schema=None,
         )
         @tool_error_boundary
-        async def execute_logql_instant(
+        async def loki_query_instant(
             query: str = Field(
                 ...,
                 min_length=1,
-                description=(
-                    "LogQL query string. CRITICAL: The query MUST contain a stream "
-                    "selector wrapped in curly braces {label=\"value\"}. "
-                    "CORRECT: '{service_name=\"my-service\"}' or "
-                    "'rate({app=\"checkout\"} |= \"error\" [5m])'. "
-                    "WRONG: 'service_name=\"my-service\"' (missing braces). "
-                    "WRONG: '{{app=\"checkout\"}}' (double braces). "
-                    "The curly braces are NOT optional."
-                ),
+                description="LogQL query containing a stream selector wrapped in braces (e.g., 'rate({app=\"checkout\"} |= \"error\" [5m])')",
             ),
             time: Optional[str] = Field(
                 default=None,
@@ -85,32 +87,14 @@ class ExecutionTools(BaseTool):
             ),
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Execute a point-in-time LogQL query for scalar answers.
-
-            **For quick checks and current-state questions** — evaluates
-            a LogQL query at a single timestamp. Best for count, rate,
-            avg aggregations that answer "what is the current value?".
-            Read-only.
-
-            Returns:
-            - {"result_type": "vector"|"streams", "result": [...],
-               "warnings": [str]}
-
-            When NOT to use: For time-series or log ranges use
-            execute_logql_query. For pre-checking cost use get_query_stats.
-
-            Common errors:
-            - High-cardinality label in selector: Warnings returned inline.
-            - Empty result: No data at the evaluation timestamp.
-            """
+            """Evaluate a LogQL metric or stream query at a single point in time. Read-only."""
             query = validate_stream_selector(query)
 
             warnings: List[str] = []
             hc_labels = detect_high_cardinality_in_selector(query)
             if hc_labels:
                 warnings.append(
-                    f"High-cardinality labels in stream selector: {hc_labels}. "
-                    f"Move to structured metadata filter or line filter."
+                    f"High-cardinality labels in stream selector: {hc_labels}."
                 )
 
             t = parse_relative_time(time) if time else None
@@ -122,7 +106,7 @@ class ExecutionTools(BaseTool):
                 params["direction"] = direction
 
             if ctx:
-                await ctx.info(f"Executing instant query...")
+                await ctx.info("Executing instant query...")
 
             data = await loki.query_instant(query=query, time=t, org_id=org_id, **params)
 
@@ -160,11 +144,11 @@ class ExecutionTools(BaseTool):
             )
 
         # ──────────────────────────────────────────
-        # Tool 8: execute_logql_query
+        # Tool 8: loki_query_range
         # ──────────────────────────────────────────
         @mcp_instance.tool(
             annotations=ToolAnnotations(
-                title="Execute LogQL Range Query",
+                title="Execute Loki Range Query",
                 readOnlyHint=True,
                 destructiveHint=False,
                 idempotentHint=True,
@@ -173,20 +157,11 @@ class ExecutionTools(BaseTool):
             output_schema=None,
         )
         @tool_error_boundary
-        async def execute_logql_query(
+        async def loki_query_range(
             query: str = Field(
                 ...,
                 min_length=1,
-                description=(
-                    "LogQL query string. CRITICAL: The query MUST contain a stream "
-                    "selector wrapped in curly braces {label=\"value\"}. "
-                    "CORRECT: '{service_name=\"my-service\"}' or "
-                    "'{app=\"checkout\"} |= \"error\" | json' or "
-                    "'rate({app=\"checkout\"} [5m])'. "
-                    "WRONG: 'service_name=\"my-service\"' (missing braces). "
-                    "WRONG: '{{app=\"checkout\"}}' (double braces). "
-                    "The curly braces are NOT optional."
-                ),
+                description="LogQL query containing a stream selector wrapped in braces (e.g., '{app=\"checkout\"} |= \"error\" | json')",
             ),
             start: str = Field(
                 default="now-1h",
@@ -200,10 +175,7 @@ class ExecutionTools(BaseTool):
                 default=100,
                 ge=1,
                 le=1000,
-                description=(
-                    "Max log lines to return for stream queries (default: 100, max: 1000). "
-                    "Keep low to avoid exceeding MCP context limits."
-                ),
+                description="Max log lines to return for stream queries (default: 100, max: 1000)",
             ),
             step: Optional[str] = Field(
                 default=None,
@@ -219,55 +191,23 @@ class ExecutionTools(BaseTool):
             ),
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Execute a LogQL range query for log lines or metric time-series.
-
-            **Unified execution tool for all range queries.** Handles
-            both log queries (returns streams) and metric queries with
-            rate(), count_over_time(), etc. (returns matrix). Includes
-            guardrails: time window validation, cardinality checks,
-            and cost-based rejection. Read-only.
-
-            Returns (logs):
-            - {"result_type": "streams", "streams": [...],
-               "total_lines": int, "truncated": bool, "warnings": [str]}
-
-            Returns (metrics):
-            - {"result_type": "matrix", "series": [...],
-               "total_series": int, "truncated_series": bool,
-               "warnings": [str]}
-
-            If `truncated=true` or `truncated_series=true`, results were
-            capped. Narrow the time range, add label filters, or increase
-            max_log_lines to retrieve more.
-
-            When NOT to use: For instant/scalar queries use
-            execute_logql_instant. For pre-checking cost use
-            get_query_stats.
-
-            Common errors:
-            - Query too expensive: Use get_query_stats first to check cost.
-            - Time window too large: Narrow the range (max configurable).
-            - High-cardinality label in selector: Move to metadata filter.
-            """
+            """Execute a LogQL range query returning log streams or metric time-series matrices with cost guardrails. Read-only."""
             query = validate_stream_selector(query)
 
             warnings: List[str] = []
             hc_labels = detect_high_cardinality_in_selector(query)
             if hc_labels:
                 warnings.append(
-                    f"High-cardinality labels in stream selector: {hc_labels}. "
-                    f"Move to structured metadata filter or line filter."
+                    f"High-cardinality labels in stream selector: {hc_labels}."
                 )
 
             s = parse_relative_time(start)
             e = parse_relative_time(end)
 
-            # Validate time window
             validate_time_window(
                 s, e, max_hours=config.guardrails.max_time_window_hours
             )
 
-            # Preflight cost check
             try:
                 stats = await loki.get_index_stats(query=query, start=s, end=e, org_id=org_id)
                 query_bytes = stats.get("bytes", 0)
@@ -280,11 +220,20 @@ class ExecutionTools(BaseTool):
             except LokiQueryTooExpensiveError:
                 raise
             except Exception:
-                # Stats endpoint may not be available — proceed without check
                 pass
 
-            # Clamp requested log lines against guardrail ceiling
             clamped_limit = min(max_log_lines, config.guardrails.max_log_limit)
+            is_metric_q = bool(_METRIC_QUERY_RE.search(query))
+            effective_step = step
+            if is_metric_q and not effective_step:
+                try:
+                    win_sec = max(
+                        60.0,
+                        (_parse_to_datetime(e) - _parse_to_datetime(s)).total_seconds(),
+                    )
+                    effective_step = f"{max(15, int(win_sec // 60))}s"
+                except Exception:
+                    effective_step = "60s"
 
             if ctx:
                 await ctx.info(f"Executing range query ({start} → {end})...")
@@ -294,26 +243,23 @@ class ExecutionTools(BaseTool):
                 start=s,
                 end=e,
                 limit=clamped_limit,
-                step=step,
-                direction=direction,
+                step=effective_step,
+                direction=None if is_metric_q and direction is None else direction,
                 org_id=org_id,
             )
 
             result_type = data.get("resultType", "unknown")
             raw_result = data.get("result", [])
 
-            # ── Stream (log) response ──────────────────────────────────
             if result_type == "streams":
                 formatted = format_log_entries(
                     raw_result, max_lines=clamped_limit
                 )
                 total_lines = sum(
-                    len(s.get("entries", [])) for s in formatted
+                    len(st.get("entries", [])) for st in formatted
                 )
-                # Truncated if the line limit OR the byte budget was hit.
                 truncated = total_lines >= clamped_limit
 
-                import json as _json
                 approx_bytes = len(_json.dumps(formatted, ensure_ascii=False))
                 payload_truncated = approx_bytes >= _MAX_PAYLOAD_BYTES * 0.95
                 if payload_truncated and not truncated:
@@ -338,7 +284,6 @@ class ExecutionTools(BaseTool):
                     query_hint=query,
                 )
 
-            # ── Matrix (metric) response ───────────────────────────────
             max_series = config.guardrails.max_series
             max_pts = config.guardrails.max_points_per_series
 
@@ -347,9 +292,7 @@ class ExecutionTools(BaseTool):
             if truncated_series:
                 raw_result = raw_result[:max_series]
                 warnings.append(
-                    f"Result capped at {max_series} series "
-                    f"(query returned {total_raw_series}). "
-                    f"Add more label filters to narrow results."
+                    f"Result capped at {max_series} series (query returned {total_raw_series})."
                 )
 
             series: List[Dict[str, Any]] = []
@@ -357,7 +300,7 @@ class ExecutionTools(BaseTool):
                 values: List[Any] = item.get("values", [])
                 truncated_pts = len(values) > max_pts
                 if truncated_pts:
-                    values = values[-max_pts:]  # keep the most-recent points
+                    values = values[-max_pts:]
                 series.append({
                     "metric": item.get("metric", {}),
                     "values": values,
@@ -396,13 +339,7 @@ class ExecutionTools(BaseTool):
             query: str = Field(
                 ...,
                 min_length=1,
-                description=(
-                    "LogQL query string. CRITICAL: The query MUST contain a stream "
-                    "selector wrapped in curly braces {label=\"value\"}. "
-                    "CRITICAL FOR A2UI: ALWAYS append `| json` (or `| logfmt`) and `| line_format` "
-                    "to extract and display clean parsed fields in the UI! "
-                    "CORRECT: '{app=\"checkout\"} | json | line_format \"{{.method}} {{.status}}\"'. "
-                ),
+                description="LogQL stream query formatted with '| json' or '| logfmt' and '| line_format' for A2UI table rendering",
             ),
             title: str = Field(..., description="The title for the A2UI log table"),
             start: str = Field(
@@ -425,24 +362,7 @@ class ExecutionTools(BaseTool):
             ),
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Execute a LogQL range query and format the result for A2UI log tables.
-
-            Use this tool when the coordinator or a subagent needs to render interactive
-            log tables directly in the frontend UI. The tool handles query execution,
-            truncation, and data flattening into the expected A2UI schema. Read-only.
-
-            Returns:
-            - {"title": str, "query": str, "logLines": [{"message": str, "severity": str, "timestamp": str}, ...]}
-
-            When NOT to use: For raw log streams or scalar point-in-time metrics,
-            use execute_logql_query or execute_logql_instant instead.
-
-            Common errors:
-            - Expected log streams, got matrix: Occurs if the LogQL query returns metrics 
-              (e.g., using rate() or count_over_time()). Use execute_logql_query for those.
-            - Payload truncated: Occurs if the resulting logs hit the soft byte limit.
-              Narrow the time window or add label filters.
-            """
+            """Execute a LogQL range query and flatten results into an interactive A2UI log table payload. Read-only."""
             query = validate_stream_selector(query)
 
             s = parse_relative_time(start)
@@ -450,6 +370,17 @@ class ExecutionTools(BaseTool):
             validate_time_window(s, e, max_hours=config.guardrails.max_time_window_hours)
 
             clamped_limit = min(max_log_lines, config.guardrails.max_log_limit)
+            is_metric_a2ui = bool(_METRIC_QUERY_RE.search(query))
+            a2ui_step: Optional[str] = None
+            if is_metric_a2ui:
+                try:
+                    win_sec = max(
+                        60.0,
+                        (_parse_to_datetime(e) - _parse_to_datetime(s)).total_seconds(),
+                    )
+                    a2ui_step = f"{max(15, int(win_sec // 60))}s"
+                except Exception:
+                    a2ui_step = "60s"
 
             if ctx:
                 await ctx.info(f"Executing A2UI range query ({start} → {end})...")
@@ -459,57 +390,74 @@ class ExecutionTools(BaseTool):
                 start=s,
                 end=e,
                 limit=clamped_limit,
+                step=a2ui_step,
+                direction=None if is_metric_a2ui else "backward",
                 org_id=org_id,
             )
 
             result_type = data.get("resultType", "unknown")
             raw_result = data.get("result", [])
-            
-            if result_type != "streams":
-                return {
-                    "title": title,
-                    "query": query,
-                    "error": f"Expected log streams, got {result_type}. Use prom_query_a2ui_chart or metrics builder for this.",
-                }
 
-            # Map to A2UI LogLines
+            if result_type != "streams":
+                chart_series = []
+                max_pts = config.guardrails.max_points_per_series
+                for item in raw_result[: config.guardrails.max_series]:
+                    vals = item.get("values") or (
+                        [item["value"]] if "value" in item else []
+                    )
+                    chart_series.append(
+                        {
+                            "metric": item.get("metric", {}),
+                            "values": vals[-max_pts:],
+                        }
+                    )
+                return enforce_structured_size_limit(
+                    {
+                        "title": title,
+                        "query": query,
+                        "widgetType": "timeseries",
+                        "result_type": result_type,
+                        "series": chart_series,
+                    },
+                    truncatable_key="series",
+                    max_bytes=config.response_size_soft_limit,
+                    query_hint=query,
+                )
+
             log_lines = []
             payload_bytes = 0
-            
-            # Helper for getting severity
+
             def get_severity(labels: dict) -> str:
-                for key in ["level", "severity", "lvl"]:
-                    if key in labels:
+                for key in ["level", "severity", "severity_text", "detected_level", "lvl"]:
+                    if key in labels and labels[key]:
                         return str(labels[key])
                 return "unknown"
-                
-            import json as _json
 
             for stream in raw_result:
                 labels = stream.get("stream", {})
                 sev = get_severity(labels)
                 values = stream.get("values", [])
-                
+
                 for entry in values:
                     if len(log_lines) >= clamped_limit:
                         break
-                        
+
                     ts = entry[0] if len(entry) > 0 else ""
                     line_body = entry[1] if len(entry) > 1 else ""
-                    
+
                     if len(line_body) > _MAX_LINE_CHARS:
                         line_body = line_body[:_MAX_LINE_CHARS] + "…[truncated]"
-                        
+
                     log_entry = {
                         "timestamp": ts,
                         "severity": sev,
-                        "message": line_body
+                        "message": line_body,
                     }
-                    
+
                     entry_bytes = len(_json.dumps(log_entry, ensure_ascii=False))
                     if payload_bytes + entry_bytes > _MAX_PAYLOAD_BYTES:
                         break
-                        
+
                     log_lines.append(log_entry)
                     payload_bytes += entry_bytes
 
@@ -519,7 +467,7 @@ class ExecutionTools(BaseTool):
             a2ui_payload = {
                 "title": title,
                 "query": query,
-                "logLines": log_lines
+                "logLines": log_lines,
             }
 
             return enforce_structured_size_limit(
@@ -528,5 +476,3 @@ class ExecutionTools(BaseTool):
                 max_bytes=config.response_size_soft_limit,
                 query_hint=query,
             )
-
-

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "loki": {
+      "type": "stdio",
+      "command": "loki-mcp-server",
+      "args": [
+        "--transport",
+        "stdio",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "cwd": "./",
+      "env": {
+        "LOKI_URL": "http://localhost:3100",
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "LOKI_TOOLSETS": "all"
+      }
+    }
+  }
+}

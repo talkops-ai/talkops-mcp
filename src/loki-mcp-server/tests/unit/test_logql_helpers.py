@@ -39,6 +39,10 @@ class TestValidateStreamSelector:
         with pytest.raises(LokiValidationError, match="unbalanced"):
             validate_stream_selector('{app="checkout"')
 
+    def test_empty_curly_braces_raises(self):
+        with pytest.raises(LokiValidationError, match="Empty stream selector"):
+            validate_stream_selector('{} |= "OutOfMemoryError"')
+
 
 class TestDetectHighCardinality:
     def test_no_high_cardinality(self):

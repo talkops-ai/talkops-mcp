@@ -1,6 +1,6 @@
 [project]
 name = "talkops-loki-mcp-server"
-version = "0.1.12"
+version = "0.2.0"
 description = "A Model Context Protocol (MCP) server for Grafana Loki log observability."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -36,6 +36,7 @@ dependencies = [
     "httpx>=0.28.0",
     "pydantic>=2.12.5",
     "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
 ]
 
 [project.urls]
