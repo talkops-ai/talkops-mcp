@@ -1,549 +1,128 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/cncf/artwork/main/projects/prometheus/stacked/color/prometheus-stacked-color.svg" alt="Alertmanager MCP Server" width="140" onError="this.style.display='none'"/>
-</p>
+# TalkOps Alertmanager MCP Server & Agent Plugin (`v0.2.0`)
 
-<h1 align="center">Alertmanager MCP Server</h1>
-
-<p align="center">
-  An MCP server that gives AI assistants the power to triage alerts, manage silences, inspect routing, and govern Alertmanager operations — from on-call summarization to notification pipeline testing.
-</p>
-
-<p align="center">
-  <a href="https://github.com/talkops-ai/talkops-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square" alt="License"/></a>
-  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12%2B-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+"/></a>
-  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Model%20Context%20Protocol-4A90D9.svg?style=flat-square" alt="MCP"/></a>
-  <a href="https://prometheus.io/docs/alerting/latest/alertmanager/"><img src="https://img.shields.io/badge/Alertmanager-Compatible-E6522C.svg?style=flat-square&logo=prometheus&logoColor=white" alt="Alertmanager"/></a>
-  <a href="https://discord.gg/tSN2Qn9uM8"><img src="https://img.shields.io/badge/Discord-Join%20Us-5865F2.svg?style=flat-square&logo=discord&logoColor=white" alt="Discord"/></a>
-</p>
-
-<p align="center">
-  <a href="#getting-started">Quick Start</a> · <a href="https://github.com/talkops-ai/talkops-mcp">Docs</a> · <a href="https://github.com/talkops-ai/talkops-mcp/issues/new?template=bug_report.md">Report Bug</a> · <a href="https://github.com/talkops-ai/talkops-mcp/issues/new?template=feature_request.md">Request Feature</a>
-</p>
+A Model Context Protocol (MCP) execution server and **Agent Plugins v1.0.0** skill package for Prometheus Alertmanager incident triage, routing & inhibition simulation, silence governance (`SP001`–`SP010`), and SRE alert hygiene.
 
 ---
 
-## Why Alertmanager MCP Server?
+## Architecture: Skill Layer vs. Execution Layer
 
-**The problem:** Alertmanager is the notification brain of the Prometheus ecosystem, but operating it effectively requires deep knowledge. Understanding the routing tree to know who gets paged, creating silences with the right matchers and durations, auditing why an alert didn't reach the right receiver, and managing maintenance windows — each of these requires familiarity with Alertmanager's configuration model. If you ask an AI assistant to help, it typically guesses at matcher syntax, creates overly broad silences, or can't explain the routing logic.
-
-**The solution:** The Alertmanager MCP Server gives AI assistants (like Claude, Cline, or Cursor) structured, safe tools to operate Alertmanager natively. Instead of guessing at matchers or writing silence payloads from memory, your AI can now confidently manage the entire alert lifecycle:
-
-1. **On-Call Triage:** The AI summarizes active alerts grouped by severity and service, explains routing paths, and identifies alerts falling into the default route — all in one guided workflow.
-2. **Safe Silence Management:** Mandatory preview dry-runs before creating silences, duplicate detection, 24-hour duration caps, blast-radius warnings, and policy validation — preventing overly broad silences that could mask real incidents.
-3. **Routing Introspection:** Simulate routing for any label set (`amtool config routes test`-equivalent), inspect the full routing tree, list receivers with integration types, and audit which alerts hit the default route.
-4. **Governance & Compliance:** Export effective configuration for Git storage, audit recent silence changes with author tracking, and validate proposed silences against organizational policy.
-5. **Multi-Backend Support:** Manage multiple Alertmanager backends with explicit `backend_id` on every call — no hidden defaults.
-
----
-
-## Key Features
-
-**Backend Discovery & Multi-Backend**
-- Discover and inspect multiple Alertmanager backends
-- Health checks, version info, cluster peer status
-- Supports standalone and clustered Alertmanager deployments
-
-**Alert Triage & On-Call**
-- List and filter alerts by label, severity, state, and receiver
-- Alert group inspection (Alertmanager's native grouping)
-- Human-readable on-call summaries with severity/service breakdowns
-- Push test alerts to verify notification integrations
-
-**Silence Lifecycle Management**
-- Full CRUD: create, update (extend), expire silences
-- Mandatory preview dry-run before broad silences
-- Duplicate silence detection — blocks creating equivalent active silences
-- 24-hour duration cap (configurable)
-- LLM-friendly `silence_alert` helper with scope control (instance/service/env)
-- Policy validation for compliance checks
-
-**Routing & Notification Introspection**
-- Full nested routing tree inspection
-- Receiver enumeration with integration type detection (Slack, PagerDuty, email, webhook)
-- Route simulation for any label set with human-readable explanations
-- Default route audit — identifies misconfigured alerts
-
-**Governance & Audit**
-- Export effective configuration as YAML or JSON
-- Track recent silence lifecycle changes with author attribution
-- In-memory audit log for all MCP-initiated operations
-- Silence policy validation (duration caps, comment requirements, blast radius)
-
-**Production-Ready**
-- Structured logging (JSON/text)
-- Environment-based configuration with multi-backend JSON support
-
----
-
-## Architecture
-
-```
-                    ┌─────────────────────────┐
-                    │     MCP Client          │
-                    │ (Claude, Cline, Cursor) │
-                    └──────────┬──────────────┘
-                               │
-                    ┌──────────▼──────────────┐
-                    │   FastMCP Server Core   │
-                    │  (HTTP / SSE / stdio)   │
-                    └──────────┬──────────────┘
-                               │
-      ┌────────────┬───────────┼───────────┬────────────┐
-      │            │           │           │            │
- ┌────▼────┐ ┌────▼────┐ ┌────▼────┐ ┌────▼────┐ ┌────▼────┐
- │  Tools  │ │Resources│ │ Prompts │ │  Utils  │ │ Models  │
- │ (6 grp) │ │ (11)    │ │ (3)     │ │         │ │         │
- └────┬────┘ └────┬────┘ └─────────┘ └─────────┘ └─────────┘
-      │            │
-      └──────┬─────┘
-             │
-  ┌──────────▼──────────┐
-  │    Service Layer     │
-  │                      │
-  │ alertmanager_service │
-  └──────────┬──────────┘
-             │
-  ┌──────────▼──────────┐
-  │ Alertmanager HTTP API│
-  │ (v2 API)             │
-  └─────────────────────┘
-```
-
-**How it works:**
-
-1. An AI assistant connects via HTTP, SSE, or stdio.
-2. The AI loads `am://system/backends` resource to discover available backends.
-3. Every subsequent tool call requires an explicit `backend_id` — no hidden state.
-4. The service layer interacts with Alertmanager's v2 HTTP API.
-5. Safety guardrails enforce silence duration caps and blast-radius warnings.
-
----
-
-## Table of Contents
-
-- [Why Alertmanager MCP Server?](#why-alertmanager-mcp-server)
-- [Key Features](#key-features)
-- [Architecture](#architecture)
-- [Tech Stack](#tech-stack)
-- [Getting Started](#getting-started)
-- [Configuration](#configuration)
-- [Available Tools](#available-tools)
-- [Available Resources](#available-resources)
-- [Available Prompts](#available-prompts)
-- [Usage](#usage)
-- [Project Structure](#project-structure)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [FAQ](#faq)
-- [Troubleshooting](#troubleshooting)
-- [Security Considerations](#security-considerations)
-- [License](#license)
-- [Contact](#contact)
-- [Acknowledgments](#acknowledgments)
-
----
-
-## Tech Stack
-
-| Category | Technologies |
-|----------|-------------|
-| **Language** | Python 3.12+ |
-| **MCP Framework** | [FastMCP](https://github.com/jlowin/fastmcp) ≥2.13.3 |
-| **Protocol** | [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) |
-| **Alertmanager** | HTTP API v2 · Silence API · Route Simulation |
-| **Transport** | HTTP · SSE · Streamable-HTTP · stdio |
-| **Infrastructure** | Docker · [uv](https://github.com/astral-sh/uv) |
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- **Docker** (recommended) or **Python 3.12+** (for local dev)
-- **Access to an Alertmanager instance** (standalone or clustered)
-
-### Quick Start with Docker (recommended)
-
-```bash
-docker run --rm -it \
-  -p 8769:8769 \
-  -e ALERTMANAGER_BASE_URL=http://host.docker.internal:9093 \
-  -e MCP_TRANSPORT=http \
-  talkopsai/alertmanager-mcp-server:latest
-```
-
-The server is now listening on `http://localhost:8769/mcp`.
-
-Point your MCP client at it:
-
-```json
-{
-  "mcpServers": {
-    "alertmanager": {
-      "url": "http://localhost:8769/mcp",
-      "description": "MCP Server for Alertmanager alert triage, silence management, and routing"
-    }
-  }
-}
-```
-
-### From Source (Python)
-
-1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) for dependency management.
-
-2. Clone and set up:
-
-```bash
-git clone https://github.com/talkops-ai/talkops-mcp.git
-cd talkops-mcp/src/alertmanager-mcp-server
-uv venv
-source .venv/bin/activate
-uv pip install -e ".[dev]"
-```
-
-3. Configure your `.env`:
-
-```bash
-ALERTMANAGER_BASE_URL=http://localhost:9093
-MCP_TRANSPORT=http
-MCP_LOG_LEVEL=INFO
-```
-
-4. Run the server:
-
-```bash
-uv run alertmanager-mcp-server
-```
-
-Or, with the venv activated: `alertmanager-mcp-server`.
-
-5. Run tests:
-
-```bash
-source .venv/bin/activate
-pytest tests/
-```
-
----
-
-## Configuration
-
-All configuration is via environment variables (loaded from `.env` via python-dotenv).
-
-### Server Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MCP_SERVER_NAME` | `alertmanager-mcp-server` | Server name identifier |
-| `MCP_SERVER_VERSION` | `0.1.0` | Server version string |
-| `MCP_TRANSPORT` | `stdio` | Transport mode: `http`, `sse`, `streamable-http`, or `stdio` |
-| `MCP_HOST` | `0.0.0.0` | Host address for HTTP server |
-| `MCP_PORT` | `8769` | Port for HTTP server |
-| `MCP_PATH` | `/mcp` | MCP endpoint path |
-| `MCP_LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `MCP_LOG_FORMAT` | `json` | Log format: `json` or `text` |
-
-### Alertmanager Backend (Single)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ALERTMANAGER_BASE_URL` | `http://localhost:9093` | Alertmanager HTTP API base URL |
-| `ALERTMANAGER_BACKEND_ID` | `default` | Backend identifier used in all tool calls |
-| `ALERTMANAGER_DISPLAY_NAME` | *(empty)* | Human-readable backend name |
-| `ALERTMANAGER_AUTH_HEADER` | *(empty)* | Authorization header value (e.g. `Bearer <token>`) |
-| `ALERTMANAGER_VERIFY_SSL` | `true` | Verify SSL certificates |
-| `ALERTMANAGER_TIMEOUT` | `30` | HTTP timeout for Alertmanager API calls (seconds) |
-
-### Alertmanager Backends (Multi)
-
-For multiple backends, set `ALERTMANAGER_BACKENDS` as a JSON array:
-
-```bash
-ALERTMANAGER_BACKENDS='[
-  {"id": "prod", "base_url": "https://alertmanager-prod.example.com", "labels": {"env": "prod"}},
-  {"id": "staging", "base_url": "https://alertmanager-staging.example.com", "labels": {"env": "staging"}}
-]'
-```
-
-### Silence Safety
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AM_MAX_SILENCE_MINUTES` | `1440` | Maximum silence duration in minutes (24h) |
-| `AM_SILENCE_WARNING_THRESHOLD` | `50` | Warn if a silence would affect ≥ N alerts |
-
----
-
-## Available Tools
-
-### Alert Triage
-| Tool | Description |
-|------|-------------|
-| `am_list_alerts` | List alerts with label/state filters and pagination. |
-| `am_list_alert_groups` | List alert groups as computed by Alertmanager for high-level triage. |
-| `am_push_test_alert` | Fire a synthetic test alert to verify notification integrations. |
-
-### Silence Lifecycle
-| Tool | Description |
-|------|-------------|
-| `am_list_silences` | List silences with optional state filter and pagination. |
-| `am_create_silence` | Create a silence to suppress matching alerts (with duplicate detection). |
-| `am_update_silence` | Update an existing silence (extend duration or modify end time). |
-| `am_expire_silence` | Expire a silence to reactivate alert notifications. |
-
-### Silence Helpers
-| Tool | Description |
-|------|-------------|
-| `am_preview_silence` | Preview the blast radius of a silence before creating it. |
-| `am_silence_alert` | Create a narrowly-scoped silence for a specific alert (fingerprint or labels). |
-
-### Routing & Notifications
-| Tool | Description |
-|------|-------------|
-| `am_explain_routing` | Simulate routing and inhibition for a given label set with explanation. |
-| `am_audit_default_route` | Show alerts falling into the default route, highlighting misconfigurations. |
-
-### Governance & Audit
-| Tool | Description |
-|------|-------------|
-| `am_list_recent_changes` | List recent silence changes (created, expired, updated) within a time window. |
-| `am_validate_silence_policy` | Validate a proposed silence against organizational policy before creation. |
-
-### On-Call Triage
-| Tool | Description |
-|------|-------------|
-| `am_summarize_oncall` | Generate a human-readable on-call summary of active alerts. |
-
----
-
-## Available Resources
-
-| Resource URI | Description |
-|--------------|-------------|
-| `am://system/backends` | All known backends with health status — use this as the **first step** in any workflow |
-| `am://system/backends/{backend_id}` | Detailed status, version, cluster info, and health for a specific backend |
-| `am://system/status` | Alertmanager version, uptime, cluster info, and config summary |
-| `am://system/receivers` | Configured receivers (Slack, PagerDuty, email, webhook) with redacted config |
-| `am://system/config` | Routing tree and inhibition rules (secrets redacted) |
-| `am://system/audit-log` | Recent MCP-initiated operations (create/expire/extend silence, push test alert) |
-| `am://alerts/active` | Bounded snapshot of active alerts for default backend |
-| `am://alerts/groups` | Snapshot of alert groups as computed by Alertmanager |
-| `am://silences/active` | Snapshot of active silences for default backend |
-| `am://best-practices` | Alerting best practices |
-| `am://onboarding-guide` | Alert onboarding guide |
-
----
-
-## Available Prompts
-
-Guided workflow prompts that orchestrate multiple tools into step-by-step journeys:
-
-| Prompt Name | Description | Parameters |
-|-------------|-------------|------------|
-| `am-alert-triage-guided` | Guided workflow for triaging active alerts | `backend_id`, `service`, `env` |
-| `am-maintenance-silence-guided` | Guided workflow for creating a maintenance silence | `backend_id`, `service`, `env`, `duration` |
-| `am-integration-test-guided` | Guided workflow for testing notification integrations (Slack, PagerDuty) | `backend_id`, `team`, `receiver` |
-
----
-
-## Usage
-
-Supported workflows with prompt examples and links to detailed guides:
-
-| Workflow | Prompt Example | Documentation |
-|----------|----------------|---------------|
-| **On-Call Triage** | `"Summarize what's firing right now for the checkout service in prod."` | [AM_TRIAGE_TEST_GUIDE.md](docs/AM_TRIAGE_TEST_GUIDE.md) |
-| **Maintenance Silence** | `"Silence alerts for the payments service in prod for 2 hours during deployment."` | [AM_SILENCE_TEST_GUIDE.md](docs/AM_SILENCE_TEST_GUIDE.md) |
-| **Routing Audit** | `"Who gets paged when a critical alert fires for the api-server?"` | [AM_GOVERNANCE_TEST_GUIDE.md](docs/AM_GOVERNANCE_TEST_GUIDE.md) |
-| **Integration Testing** | `"Push a test alert to verify that the slack-sre receiver is working."` | [AM_GOVERNANCE_TEST_GUIDE.md](docs/AM_GOVERNANCE_TEST_GUIDE.md) |
-| **Governance Review** | `"Show me all silence changes in the last 24 hours and who created them."` | [AM_GOVERNANCE_TEST_GUIDE.md](docs/AM_GOVERNANCE_TEST_GUIDE.md) |
-
-See [WORKFLOW_JOURNEYS.md](docs/WORKFLOW_JOURNEYS.md) for the full workflow reference and [PROMPT_REFERENCE.md](docs/PROMPT_REFERENCE.md) for natural-language prompts.
-
----
-
-## Project Structure
+`talkops-alertmanager-mcp-server` strictly separates **procedural SRE playbooks** (Agent Skills) from **deterministic API execution** (FastMCP server):
 
 ```text
-alertmanager-mcp-server/
-├── alertmanager_mcp_server/        # Main package
-│   ├── tools/                      # MCP Tools (6 active tool groups, 14 tools)
-│   │   ├── alert_tools.py          # Alert listing, grouping, test alerts
-│   │   ├── silence_tools.py        # Silence CRUD lifecycle
-│   │   ├── helper_tools.py         # Preview & quick silence helpers
-│   │   ├── routing_tools.py        # Routing simulation, default route audit
-│   │   ├── governance_tools.py     # Audit, policy validation
-│   │   └── triage_tools.py         # On-call summarization
-│   ├── resources/                  # MCP Resources (11 URIs)
-│   │   ├── backend_resources.py    # Backend health & capabilities
-│   │   ├── alert_resources.py      # Active alerts & groups
-│   │   ├── silence_resources.py    # Active silences
-│   │   ├── config_resources.py     # Receivers & routing config
-│   │   ├── status_resources.py     # Version, uptime, cluster info
-│   │   ├── audit_resources.py      # MCP operation audit log
-│   │   └── static_resources.py     # Best practices & onboarding guide
-│   ├── prompts/                    # MCP Prompts (3 guided workflows)
-│   │   ├── triage_prompts.py       # Alert triage workflow
-│   │   ├── silence_prompts.py      # Maintenance silence workflow
-│   │   └── onboarding_prompts.py   # Integration test workflow
-│   ├── services/                   # Business logic
-│   │   └── alertmanager_service.py # Alertmanager HTTP API wrapper
-│   ├── server/                     # FastMCP server setup
-│   │   ├── core.py                 # Server creation
-│   │   └── bootstrap.py            # Component initialization
-│   ├── models/                     # Pydantic data models
-│   │   ├── alert.py                # Alert & AlertMatcher
-│   │   ├── silence.py              # Silence & PostableSilence
-│   │   ├── backend.py              # BackendDescriptor
-│   │   ├── config.py               # ConfigSnapshot, RouteNode, Receiver
-│   │   └── audit.py                # AuditEntry
-│   ├── utils/                      # Helpers
-│   │   ├── __init__.py             # Matcher logic, silence window calc
-│   │   └── audit.py                # In-memory audit log
-│   ├── static/                     # Static documentation
-│   │   ├── ALERTMANAGER_BEST_PRACTICES.md
-│   │   ├── ALERTMANAGER_ONBOARDING_GUIDE.md
-│   │   └── ALERTMANAGER_MCP_INSTRUCTIONS.md
-│   ├── exceptions/                 # Custom exception hierarchy
-│   ├── config.py                   # Environment parsing
-│   └── main.py                     # Entry point
-├── tests/                          # Test suites
-├── docs/                           # Documentation
-├── pyproject.toml                  # Package definitions (Python 3.12)
-└── README.md                       # This documentation
+src/alertmanager-mcp-server/
+├── plugin.json                              # Agent Plugins v1.0.0 manifest (talkops-alertmanager v0.2.0)
+├── mcp.json                                 # Default stdio MCP server wiring (read-only by default)
+├── skills/                                  # 5 Progressive-Disclosure Agent Skills (4 scripts, 11 references)
+│   ├── triaging-alertmanager-alerts/
+│   ├── diagnosing-missed-notifications/
+│   ├── managing-alert-silences/
+│   ├── validating-alertmanager-routing/
+│   └── auditing-alertmanager-governance/
+└── alertmanager_mcp_server/                 # FastMCP Execution Plane
+    ├── domain/                              # Matcher grammar, recursive route tree, inhibition algebra, SP001-SP010
+    ├── services/                            # Multi-backend Alertmanager v2 HTTP client & /metrics exposition parser
+    ├── resources/                           # 10 live am:// URI resources (deeply redacted)
+    └── tools/                               # 14 tools across 4 selectable toolsets (all <= 8 params, 0 prompts)
 ```
 
 ---
 
-## Roadmap
+## 5 Bundled Agent Skills (`skills/`)
 
-**Shipped:**
-
-- [x] Multi-backend discovery with health checks
-- [x] Alert listing with label/state filtering and pagination
-- [x] Alert group inspection (Alertmanager native grouping)
-- [x] Full silence lifecycle (create, update, expire) with safety guardrails
-- [x] Silence preview dry-run with blast-radius analysis
-- [x] Duplicate silence detection
-- [x] LLM-friendly silence_alert helper with scope control
-- [x] Full routing tree introspection
-- [x] Route simulation with human-readable explanations
-- [x] Receiver enumeration with integration type detection
-- [x] Default route audit for misconfiguration detection
-- [x] On-call alert summarization grouped by severity/service
-- [x] Silence policy validation (duration caps, comment requirements)
-- [x] Config export (YAML/JSON) for Git storage
-- [x] Silence change audit with author tracking
-- [x] Test alert injection for integration verification
-- [x] In-memory audit log for all MCP operations
-- [x] 3 guided workflow prompts (triage, silence, integration test)
-
-**Coming next:**
-
-- [ ] Prometheus MCP cross-integration for metric-level diagnostics
-- [ ] AlertmanagerConfig CRD management for Prometheus Operator
-- [ ] Silence templates for recurring maintenance windows
-- [ ] Webhook receiver testing with response validation
-- [ ] Multi-tenant silence policies with team-scoped permissions
-
-See [open issues](https://github.com/talkops-ai/talkops-mcp/issues) for the full list of proposed features.
+| Skill Directory | Purpose | Offline Scripts (`scripts/`) | Reference Guides (`references/`) |
+|---|---|---|---|
+| `triaging-alertmanager-alerts` | Structured on-call alert triage, storm correlation, inhibition awareness, and shift handovers | *(uses `am_summarize_oncall`)* | `severity-response-matrix.md`, `handover-template.md` |
+| `diagnosing-missed-notifications` | 6-gate missed-notification decision tree across Prometheus firing state, route tree, mute intervals, inhibition, silences, and receiver `/metrics` | *(uses `am_explain_routing` & `am_check_notification_health`)* | `notification-pipeline-decision-tree.md`, `integration-failure-catalog.md` |
+| `managing-alert-silences` | Safe maintenance window planning, blast-radius preview, `SP001`–`SP010` policy enforcement, atomic in-place updates, and controlled expiration | `plan_maintenance_window.py`, `validate_silence_request.py` | `silence-policy.md`, `matcher-cookbook.md` |
+| `validating-alertmanager-routing` | Static Alertmanager YAML linting (`LINT001`–`LINT010`), recursive `continue: true` route simulation, and time-interval testing | `lint_alertmanager_config.py`, `test_routes.py` | `config-lint-rules.md`, `routing-best-practices.md` |
+| `auditing-alertmanager-governance` | Fleet governance audit across default-route leakage, missing `summary`/`runbook_url` annotations, Watchdog health, and silence debt | *(uses `am_audit_alert_hygiene` & `am_audit_silences`)* | `alert-hygiene-standards.md`, `governance-checklist.md`, `governance-report-template.md` |
 
 ---
 
-## Contributing
+## 14 MCP Tools Across 4 Selectable Toolsets
 
-Contributions are welcome. The process is straightforward:
+Control exposed toolsets via `--toolsets` or `MCP_TOOLSETS` (`all` or comma-separated `triage,routing,silences,governance`). Mutating tools are unregistered when `MCP_ALLOW_WRITE=false` (the default).
 
-1. Fork the repo
-2. Create a branch (`git checkout -b feature/SilenceTemplates`)
-3. Make your changes and commit
-4. Push and open a PR
-
-If you're considering something bigger, open an issue first so we can align on the approach.
-
----
-
-## FAQ
-
-<details>
-<summary><b>Which MCP clients work with this?</b></summary>
-Any MCP-compatible client including Claude Desktop, Cline, Cursor, and custom clients. Connect via <code>http://localhost:8769/mcp</code> for HTTP transport, or configure stdio for direct process communication.
-</details>
-
-<details>
-<summary><b>Does this modify my Alertmanager configuration?</b></summary>
-Most tools are read-only. The exceptions are: <code>am_create_silence</code>/<code>am_update_silence</code>/<code>am_expire_silence</code>/<code>am_silence_alert</code> (create/expire silences), and <code>am_push_test_alert</code> (fires a real alert into Alertmanager). Governance and routing tools are strictly read-only — they inspect but never modify configuration.
-</details>
-
-<details>
-<summary><b>Why does the server enforce silence duration caps?</b></summary>
-Unbounded silences are a leading cause of missed incidents. The default 24-hour cap ensures silences are time-boxed. If a maintenance window needs to be extended, use <code>am_update_silence</code> to incrementally extend. Override the cap via <code>AM_MAX_SILENCE_MINUTES</code>.
-</details>
-
-<details>
-<summary><b>Can I use this with a clustered Alertmanager?</b></summary>
-Yes. Point <code>ALERTMANAGER_BASE_URL</code> at any cluster member or a load balancer. The server uses the standard Alertmanager v2 API, which handles cluster replication internally.
-</details>
-
-<details>
-<summary><b>How does it relate to the Prometheus MCP Server?</b></summary>
-They are complementary. The Prometheus MCP Server handles metric querying, exporter deployment, and TSDB management. The Alertmanager MCP Server handles alert triage, silences, routing, and notification management. Use both together for full observability coverage.
-</details>
+| Toolset | Tool | Access | Max Params | Description |
+|---|---|---|---|---|
+| `triage` | `am_list_alerts` | Read-only | 8 | Query alerts from Alertmanager with full matcher grammar (`=`, `!=`, `=~`, `!~`), receiver/state filters, and pagination |
+| `triage` | `am_list_alert_groups` | Read-only | 6 | List Alertmanager dispatch groups from `/api/v2/alerts/groups` grouped by route `group_by` labels |
+| `triage` | `am_summarize_oncall` | Read-only | 5 | Generate a structured on-call triage summary of active and suppressed alerts filtered by `env`, `service`, `team`, or `severity` |
+| `routing` | `am_explain_routing` | Read-only | 5 | Simulate Alertmanager's nested routing tree (`continue`, inherited `group_by`/timers, `mute_time_intervals`) and live inhibition rules for labels or a live `fingerprint` |
+| `routing` | `am_check_notification_health` | Read-only | 2 | Inspect Alertmanager readiness, config reload status, HA gossip cluster peers, and `/metrics` receiver delivery failure counters |
+| `routing` | `am_push_test_alert` | Write (`confirm=True`) | 6 | Push a time-bounded synthetic test alert tagged with `mcp_test=true` to verify end-to-end receiver delivery |
+| `silences` | `am_list_silences` | Read-only | 7 | List silences by state (`active`, `pending`, `expired`), matcher filter, `created_by`, or comment substring |
+| `silences` | `am_preview_silence` | Read-only | 7 | Dry-run a silence against active alerts, affected receivers, overlapping silences, and `SilencePolicy` (`SP001`–`SP010`) |
+| `silences` | `am_create_silence` | Write | 8 | Create a silence after enforcing `SilencePolicy` (`SP001`–`SP010`), overlapping-silence deduplication, and blast-radius confirmation |
+| `silences` | `am_silence_alert` | Write | 8 | Derive scoped matchers (`instance` or `service`) from a firing alert's `fingerprint` or labels and create a policy-validated silence |
+| `silences` | `am_update_silence` | Write | 7 | Atomically update/extend an active silence in-place (`POST /api/v2/silences` with `id`), enforcing the total lifetime cap (`SP007`) |
+| `silences` | `am_expire_silence` | Destructive (`confirm=True`) | 5 | Expire an active silence after previewing how many suppressed alerts will immediately resume paging |
+| `governance` | `am_audit_alert_hygiene` | Read-only | 5 | Audit active alerts for default-route leakage, missing `summary`/`runbook_url` annotations, invalid severities, chronic long-firing alerts, and `Watchdog` presence |
+| `governance` | `am_audit_silences` | Read-only | 3 | Audit silence history, active silence policy compliance (`SP001`–`SP009`), stale 0-match silences, and silences expiring soon |
 
 ---
 
-## Troubleshooting
+## 10 Live `am://` Resources
 
-### Backend Connection Issues
-
-1. Verify `ALERTMANAGER_BASE_URL` points to a reachable Alertmanager instance.
-2. Load the `am://system/backends` resource to check health status.
-3. If using auth, verify `ALERTMANAGER_AUTH_HEADER` is set correctly.
-4. For SSL issues, try `ALERTMANAGER_VERIFY_SSL=false` (development only).
-
-### Silence Creation Failures
-
-1. **Duration cap exceeded**: The default cap is 24 hours (1440 minutes). Increase `AM_MAX_SILENCE_MINUTES` or use shorter durations.
-2. **Duplicate silence**: An equivalent active silence already exists. Use `am_list_silences` to find it.
-3. **Missing matchers**: At least one matcher is required. Use `am_preview_silence` first to validate.
-
-### Routing Simulation Issues
-
-1. **Empty routing tree**: The Alertmanager instance may not have a configuration loaded. Check `am://system/config`.
-2. **No receivers found**: Verify Alertmanager has receivers configured in its `alertmanager.yml`.
-3. **Unexpected routing**: Use `am_explain_routing` with the specific alert labels to trace the routing path.
+| URI | Description |
+|---|---|
+| `am://backends` | Configured Alertmanager backends with live health, version, and default flag |
+| `am://backends/{backend_id}` | Detailed status, readiness, version, uptime, and HA gossip cluster peers for `{backend_id}` |
+| `am://backends/{backend_id}/config` | Deeply redacted Alertmanager YAML configuration, nested routing tree, inhibition rules, and time intervals |
+| `am://backends/{backend_id}/receivers` | Configured receivers (Slack, PagerDuty, email, webhook, OpsGenie) with redacted integration credentials |
+| `am://backends/{backend_id}/alerts/active` | Bounded live snapshot of active firing alerts on `{backend_id}` |
+| `am://backends/{backend_id}/alerts/groups` | Live snapshot of Alertmanager dispatch groups on `{backend_id}` |
+| `am://backends/{backend_id}/alerts/{fingerprint}` | Full labels, annotations, receivers, and suppression status for alert `{fingerprint}` |
+| `am://backends/{backend_id}/silences/active` | Live snapshot of active silences on `{backend_id}` |
+| `am://backends/{backend_id}/silences/{silence_id}` | Full matcher details, author, comment, and status for `{silence_id}` |
+| `am://audit-log` | Recent MCP-initiated operations (create/update/expire silence, push test alert, policy denials) |
 
 ---
 
-## Security Considerations
+## Quick Start & Configuration
 
-- **Never expose the MCP server to the public internet** without proper authentication.
-- **Silences affect real alert notifications** — always preview before creating silences in production.
-- **Test alerts fire real notifications** — `am_push_test_alert` will trigger downstream integrations (Slack, PagerDuty, email).
-- **Configuration export may contain sensitive routing rules** — treat exported configs as confidential.
+### CLI Usage
+
+```bash
+# Default safe mode: Read-only over stdio
+uv run alertmanager-mcp-server --transport stdio --alertmanager-url http://localhost:9093
+
+# Enable mutating tools (silence creation/updates & synthetic test alerts)
+uv run alertmanager-mcp-server --allow-write --alertmanager-url http://localhost:9093
+
+# Restrict to specific toolsets
+uv run alertmanager-mcp-server --read-only --toolsets triage,routing,governance
+
+# Run over Streamable HTTP on port 8769
+uv run alertmanager-mcp-server --transport http --host 0.0.0.0 --port 8769
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ALERTMANAGER_BASE_URL` / `ALERTMANAGER_URL` | `http://localhost:9093` | Single-backend Alertmanager base URL |
+| `ALERTMANAGER_BACKENDS` | `""` | JSON array of multi-backend configs (`id`, `base_url`, `auth_header`, `headers`, `path_prefix`, `is_default`) |
+| `MCP_ALLOW_WRITE` | `false` | Set `true` (or pass `--allow-write`) to register mutating silence and test-alert tools |
+| `MCP_READ_ONLY` | *(unset)* | When `true`, forces read-only mode (overrides `MCP_ALLOW_WRITE=true`) |
+| `MCP_TOOLSETS` | `all` | Comma-separated toolsets (`triage,routing,silences,governance` or `all`) |
+| `MCP_TRANSPORT` | `stdio` | Transport protocol (`stdio` or `http`) |
+| `MCP_PORT` | `8769` | HTTP bind port when `MCP_TRANSPORT=http` |
+| `AM_MAX_SILENCE_MINUTES` | `1440` | Maximum allowed silence lifetime in minutes (`SP007`) |
+| `AM_SILENCE_CONFIRM_THRESHOLD` | `50` | Matched-alert blast-radius threshold requiring explicit confirmation (`SP010`) |
+| `AM_AUDIT_LOG_PATH` | `""` | Optional JSONL file path for durable write audit logging |
 
 ---
 
-## License
+## Development & Verification
 
-Apache 2.0 — see [LICENSE](../../LICENSE).
+```bash
+# Run full unit, tool, regression, and skill/manifest test suite
+uv run pytest -v
 
----
+# Run static type checking
+uv run pyright .
 
-## Contact
-
-**TalkOps AI** — [github.com/talkops-ai](https://github.com/talkops-ai)
-
-**Project:** [github.com/talkops-ai/talkops-mcp](https://github.com/talkops-ai/talkops-mcp)
-
-**Discord:** [Join the community](https://discord.gg/tSN2Qn9uM8)
-
----
-
-## Acknowledgments
-
-- [Model Context Protocol](https://modelcontextprotocol.io/) for enabling AI-native tool interfaces.
-- [FastMCP](https://github.com/jlowin/fastmcp) for the Python MCP server framework.
-- [Alertmanager](https://prometheus.io/docs/alerting/latest/alertmanager/) for the alert notification engine.
-- [Prometheus](https://prometheus.io/) for the foundational monitoring ecosystem.
+# Build wheel and sdist
+uv build
+```

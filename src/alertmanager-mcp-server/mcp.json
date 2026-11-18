@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "alertmanager": {
+      "type": "stdio",
+      "command": "alertmanager-mcp-server",
+      "args": [
+        "--transport=stdio",
+        "--toolsets=all"
+      ],
+      "cwd": "./",
+      "env": {
+        "ALERTMANAGER_BASE_URL": "http://localhost:9093",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_LOG_LEVEL": "INFO",
+        "AM_MAX_SILENCE_MINUTES": "1440",
+        "AM_SILENCE_CONFIRM_THRESHOLD": "50",
+        "AM_AUDIT_LOG_PATH": "${PLUGIN_DATA}/audit.jsonl"
+      }
+    }
+  }
+}
