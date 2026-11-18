@@ -1,0 +1,36 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: api-service
+  namespace: default
+  labels:
+    app: api-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api-service
+  template:
+    metadata:
+      labels:
+        app: api-service
+    spec:
+      containers:
+        - name: api-service
+          image: nginx:1.25.0
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: DB_PASSWORD
+              value: top-secret-db-pass
+  strategy:
+    canary:
+      canaryService: api-service-canary
+      stableService: api-service-stable
+      steps:
+        - setWeight: 10
+        - pause:
+            duration: 5m
+        - setWeight: 50
+        - pause: {}
