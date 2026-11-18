@@ -11,8 +11,6 @@ Tools (`analysis` toolset, all read-only, <= 8 parameters):
   /loki/api/v1/index/volume with automatic bytes_over_time fallback.
 """
 
-from __future__ import annotations
-
 import re
 from collections import Counter
 from typing import Any, Dict, List, Literal, Optional
