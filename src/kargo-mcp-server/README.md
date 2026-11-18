@@ -190,38 +190,6 @@ This folder is also a portable [Agent Plugin](https://agent-plugins.org) (`plugi
 
 </details>
 
-<details>
-<summary><strong>Upgrading from an older version</strong></summary>
-
-### Migration Guide (`v0.1.0` → `v0.2.0`)
-
-| Legacy `v0.1.0` Primitive | New `v0.2.0` Replacement |
-|---------------------------|--------------------------|
-| `kargo_project_mgmt(action="list"\|"get")` | Read `kargo://projects` or `kargo://projects/{project}` |
-| `kargo_project_mgmt(action="create"\|"delete")` | `kargo_manage_project(action="create"\|"delete", ...)` |
-| `kargo_project_mgmt(promotion_policies=...)` | `kargo_apply_project_config(project=..., promotion_policies=...)` |
-| `kargo_warehouse_mgmt(action="list"\|"get")` | Read `kargo://projects/{project}/pipeline` or `kargo://projects/{project}/warehouses/{warehouse}` |
-| `kargo_warehouse_mgmt(action="create"\|"update")` | `kargo_apply_warehouse(...)` |
-| `kargo_warehouse_mgmt(action="refresh")` | `kargo_refresh(project=..., kind="warehouse", name=...)` |
-| `kargo_warehouse_mgmt(action="delete")` | `kargo_delete_resource(project=..., kind="Warehouse", name=...)` |
-| `kargo_stage_mgmt(action="list"\|"get")` | Read `kargo://projects/{project}/pipeline` or `kargo://projects/{project}/stages/{stage}` |
-| `kargo_stage_mgmt(action="create"\|"update")` | `kargo_apply_stage(...)` |
-| `kargo_stage_mgmt(action="refresh")` | `kargo_refresh(project=..., kind="stage", name=...)` |
-| `kargo_stage_mgmt(action="reverify"\|"abort_verification")` | `kargo_manage_verification(action="reverify"\|"abort", ...)` |
-| `kargo_stage_mgmt(action="delete")` | `kargo_delete_resource(project=..., kind="Stage", name=...)` |
-| `kargo_describe_topology` | Read `kargo://projects/{project}/pipeline` |
-| `kargo_freight_mgmt(action="list"\|"get")` | `kargo_query_freight(...)` or read `kargo://projects/{project}/freight/{freight_or_alias}` |
-| `kargo_freight_mgmt(action="approve")` | `kargo_approve_freight(...)` |
-| `kargo_promotion_mgmt(action="promote"\|"promote_Subscribers")` | `kargo_promote(..., downstream=False\|True)` |
-| `kargo_promotion_mgmt(action="abort")` | `kargo_manage_promotion(action="abort", ...)` |
-| `kargo_promotion_mgmt(action="list"\|"get")` | Read `kargo://projects/{project}/promotions` or `kargo://projects/{project}/promotions/{promotion}` |
-| `kargo_promotion_task_mgmt` | `kargo_apply_promotion_task` / `kargo_delete_resource(kind="PromotionTask")` / `kargo://projects/{project}/promotion-tasks/{task}` |
-| `kargo_credentials_mgmt` | `kargo_manage_credentials` (with `secret_ref`) / `kargo://projects/{project}/credentials` |
-| `kargo://best-practices`, `kargo://promotion-steps` | Agent Skills under `skills/*/SKILL.md` and `skills/*/references/*.md` |
-| MCP Prompts (`kargo_onboard_project`, etc.) | Agent Skills under `skills/*/SKILL.md` |
-
-</details>
-
 ## Development
 
 ```bash

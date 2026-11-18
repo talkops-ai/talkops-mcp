@@ -33,7 +33,7 @@ def test_plugin_json_adheres_to_closed_v1_schema(server_root: Path) -> None:
 
     data = json.loads(plugin_path.read_text(encoding="utf-8"))
     assert set(data.keys()) <= ALLOWED_PLUGIN_KEYS
-    assert data["$schema"] == "https://agentplugins.io/schema/v1.0.0/plugin.json"
+    assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
     assert re.fullmatch(r"[a-z0-9-]+", data["name"])
     assert data["name"] == "kargo"
     assert re.fullmatch(r"\d+\.\d+\.\d+", data["version"])
@@ -41,25 +41,31 @@ def test_plugin_json_adheres_to_closed_v1_schema(server_root: Path) -> None:
     assert not (server_root / "com.anysphere.cursor").exists()
 
 
-def test_mcp_json_defines_multi_environment_read_only_servers(
-    server_root: Path,
-) -> None:
-    mcp_path = server_root / "mcp.json"
-    assert mcp_path.is_file(), "mcp.json must exist at repository root"
-
-    data = json.loads(mcp_path.read_text(encoding="utf-8"))
-    assert data["$schema"] == "https://agentplugins.io/schema/v1.0.0/mcp.json"
-    servers = data.get("mcpServers") or {}
-    assert "kargo" in servers
-    assert len(servers) >= 2
-
-    for name, entry in servers.items():
-        assert entry["type"] == "stdio", f"Server '{name}' must use stdio transport"
-        assert "--read-only" in entry["args"]
-        assert entry["env"]["MCP_ALLOW_WRITE"] == "false"
-
 
 def test_all_5_skill_directories_exist(server_root: Path) -> None:
     skills_dir = server_root / "skills"
     found = {p.name for p in skills_dir.iterdir() if p.is_dir()}
     assert found == EXPECTED_SKILL_DIRS
+
+
+def test_mcp_json_launches_pinned_pypi_release_read_only() -> None:
+    """mcp.json runs this package's exact PyPI release over stdio, read-only, with only portable variables."""
+    import json as _json
+    import re as _re
+    import tomllib as _tomllib
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[2]
+    project = _tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    data = _json.loads((root / "mcp.json").read_text(encoding="utf-8"))
+
+    assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+    assert list(data["mcpServers"]) == ["kargo"]
+    entry = data["mcpServers"]["kargo"]
+    cli = next(iter(project["scripts"]))
+    assert entry["type"] == "stdio"
+    assert entry["command"] == "uvx"
+    assert entry["args"] == ["--from", f"{project['name']}=={project['version']}", cli, "--transport", "stdio"]
+    assert entry["env"]["MCP_ALLOW_WRITE"] == "false"
+    # Agent Plugins 1.0.0 only expands ${PLUGIN_ROOT} and ${PLUGIN_DATA} in portable configs.
+    assert not _re.search(r"\$\{(?!PLUGIN_ROOT\}|PLUGIN_DATA\})", _json.dumps(entry))

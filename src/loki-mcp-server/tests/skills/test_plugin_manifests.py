@@ -42,14 +42,25 @@ class TestPluginManifests:
         assert "com.anysphere.cursor" not in data.get("extensions", {})
         assert not (ROOT_DIR / "com.anysphere.cursor").exists()
 
-    def test_mcp_json_is_valid_and_read_only_by_default(self):
-        assert MCP_JSON.exists(), "mcp.json must exist at package root"
-        data = json.loads(MCP_JSON.read_text(encoding="utf-8"))
 
-        assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
-        assert "loki" in data["mcpServers"]
-        loki_srv = data["mcpServers"]["loki"]
-        assert loki_srv["type"] == "stdio"
-        assert loki_srv["command"] == "loki-mcp-server"
-        assert loki_srv["cwd"] == "./"
-        assert loki_srv["env"]["MCP_ALLOW_WRITE"] == "false"
+def test_mcp_json_launches_pinned_pypi_release_read_only() -> None:
+    """mcp.json runs this package's exact PyPI release over stdio, read-only, with only portable variables."""
+    import json as _json
+    import re as _re
+    import tomllib as _tomllib
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[2]
+    project = _tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    data = _json.loads((root / "mcp.json").read_text(encoding="utf-8"))
+
+    assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+    assert list(data["mcpServers"]) == ["loki"]
+    entry = data["mcpServers"]["loki"]
+    cli = next(iter(project["scripts"]))
+    assert entry["type"] == "stdio"
+    assert entry["command"] == "uvx"
+    assert entry["args"] == ["--from", f"{project['name']}=={project['version']}", cli, "--transport", "stdio"]
+    assert entry["env"]["MCP_ALLOW_WRITE"] == "false"
+    # Agent Plugins 1.0.0 only expands ${PLUGIN_ROOT} and ${PLUGIN_DATA} in portable configs.
+    assert not _re.search(r"\$\{(?!PLUGIN_ROOT\}|PLUGIN_DATA\})", _json.dumps(entry))

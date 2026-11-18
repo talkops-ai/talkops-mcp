@@ -1,5 +1,5 @@
 {
-  "$schema": "https://agentplugins.io/schema/v1.0.0/plugin.json",
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "kargo",
   "version": "0.2.1",
   "description": "Agent Skills and execution-only MCP server for Kargo v1.12 progressive delivery pipelines, freight promotions, rollbacks, credentials, and troubleshooting.",

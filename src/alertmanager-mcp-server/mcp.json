@@ -3,19 +3,18 @@
   "mcpServers": {
     "alertmanager": {
       "type": "stdio",
-      "command": "alertmanager-mcp-server",
+      "command": "uvx",
       "args": [
-        "--transport=stdio",
-        "--toolsets=all"
+        "--from",
+        "talkops-alertmanager-mcp-server==0.2.1",
+        "alertmanager-mcp-server",
+        "--transport",
+        "stdio"
       ],
-      "cwd": "./",
       "env": {
-        "ALERTMANAGER_BASE_URL": "http://localhost:9093",
+        "FASTMCP_LOG_LEVEL": "ERROR",
         "MCP_ALLOW_WRITE": "false",
-        "MCP_LOG_LEVEL": "INFO",
-        "AM_MAX_SILENCE_MINUTES": "1440",
-        "AM_SILENCE_CONFIRM_THRESHOLD": "50",
-        "AM_AUDIT_LOG_PATH": "${PLUGIN_DATA}/audit.jsonl"
+        "AM_AUDIT_LOG_PATH": "${PLUGIN_DATA}/alertmanager-audit.jsonl"
       }
     }
   }

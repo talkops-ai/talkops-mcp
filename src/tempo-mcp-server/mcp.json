@@ -1,24 +1,19 @@
 {
-  "$schema": "https://agentplugins.io/schema/v1.0.0/mcp.json",
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
     "tempo": {
       "type": "stdio",
-      "command": "uv",
+      "command": "uvx",
       "args": [
-        "run",
-        "--directory",
-        "${PLUGIN_ROOT}",
+        "--from",
+        "talkops-tempo-mcp-server==0.2.1",
         "tempo-mcp-server",
         "--transport",
-        "stdio",
-        "--read-only",
-        "--toolsets",
-        "all"
+        "stdio"
       ],
       "env": {
-        "MCP_TRANSPORT": "stdio",
-        "MCP_ALLOW_WRITE": "false",
-        "MCP_TOOLSETS": "all"
+        "FASTMCP_LOG_LEVEL": "ERROR",
+        "MCP_ALLOW_WRITE": "false"
       }
     }
   }

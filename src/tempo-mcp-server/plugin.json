@@ -1,5 +1,5 @@
 {
-  "$schema": "https://agentplugins.io/schema/v1.0.0/plugin.json",
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "tempo",
   "version": "0.2.1",
   "description": "Grafana Tempo 2.x/3.x and Tempo Operator (v1alpha1) plugin for TalkOps: TraceQL search, TraceQL Metrics (RED & compare() cohorts), cross-pillar exemplar/log trace pivots, service topology, per-tenant /api/overrides, and Kubernetes TempoStack/TempoMonolithic management.",

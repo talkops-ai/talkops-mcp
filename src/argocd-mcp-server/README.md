@@ -186,23 +186,6 @@ This folder is also a portable [Agent Plugin](https://agent-plugins.org) (`plugi
 
 </details>
 
-<details>
-<summary><strong>Upgrading from an older version</strong></summary>
-
-### Migration Guide: v0.3.0 -> v0.4.0
-
-| v0.3.0 Component | v0.4.0 Replacement | Reason |
-|---|---|---|
-| Required `cluster_name` parameter on per-app tools | Removed (`list_applications` retains optional `cluster` filter; `argocd://clusters` resource added) | ArgoCD REST API identifies applications by `app_name`; `cluster_name` was unused in per-app endpoints |
-| `rollback_application` + `rollback_to_revision` | Consolidated `rollback_application(app_name, history_id=None, dry_run=True, prune=False, confirm=False)` | Fixes Git-SHA-as-integer-history-ID bug (`N2`) and detects auto-sync blockers |
-| `validate_application_config` | `get_application_diff(app_name, revision=None, validate=True)` | N-to-1 consolidation: computes live-vs-target diffs and validates via dry-run in one call |
-| `onboard_repository_https` + `onboard_repository_ssh` | `onboard_repository(repo_url, repo_type="git", project=None, ...)` | Infers HTTPS vs. SSH from `repo_url` and resolves credentials from server env vars |
-| `generate_application_manifest` + `create_applicationset_manifest` | `skills/deploying-argocd-applications/scripts/generate_argocd_manifests.py` | Pure offline YAML templating moved to deterministic skill script |
-| `generate_repository_secret_manifest` | Removed | Security hardening: prevents secret material from entering LLM context (`N8`) |
-| 7 `@mcp.prompt()` workflows + `argocd://workflow` | 4 Agent Skills under `skills/` | Progressive disclosure via Agent Skills Open Spec |
-
-</details>
-
 ## Development
 
 ```bash

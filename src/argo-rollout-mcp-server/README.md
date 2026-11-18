@@ -40,7 +40,7 @@ Let your AI assistant run progressive delivery with Argo Rollouts: move Deployme
 ```json
 {
   "mcpServers": {
-    "rollouts": {
+    "argo-rollout": {
       "command": "uvx",
       "args": [
         "--from",
@@ -59,7 +59,7 @@ Let your AI assistant run progressive delivery with Argo Rollouts: move Deployme
 Using Claude Code? Run this instead:
 
 ```bash
-claude mcp add rollouts -e KUBECONFIG=/path/to/your/kubeconfig -e PROMETHEUS_URL=http://prometheus.monitoring:9090 -- uvx --from talkops-argo-rollout-mcp-server argo-rollout-mcp-server
+claude mcp add argo-rollout -e KUBECONFIG=/path/to/your/kubeconfig -e PROMETHEUS_URL=http://prometheus.monitoring:9090 -- uvx --from talkops-argo-rollout-mcp-server argo-rollout-mcp-server
 ```
 
 `uvx` downloads [`talkops-argo-rollout-mcp-server`](https://pypi.org/project/talkops-argo-rollout-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-argo-rollout-mcp-server` and use `argo-rollout-mcp-server` as the command.
@@ -103,7 +103,7 @@ Then point your client at `http://localhost:8768/mcp`:
 ```json
 {
   "mcpServers": {
-    "rollouts": {
+    "argo-rollout": {
       "url": "http://localhost:8768/mcp"
     }
   }
@@ -173,37 +173,6 @@ This folder is also a portable [Agent Plugin](https://agent-plugins.org) (`plugi
 | `argorollout://rollouts/{namespace}/{name}/analysisruns` | Get the 5 most recent AnalysisRuns for a Rollout. |
 | `argorollout://rollouts/{namespace}/{name}/detail` | Get concise Rollout status (phase, step, weights, hashes, healthScore, conditions) without YAML bloat. |
 | `argorollout://rollouts/{namespace}/{name}/manifest` | Get sanitized YAML manifest for a Rollout (strips managedFields and redacts literal env values). |
-
-</details>
-
-<details>
-<summary><strong>Upgrading from an older version</strong></summary>
-
-### Migration Guide: `v0.1.x` → `v0.2.0` (Clean Break)
-
-### Tool Migration Table
-
-| `v0.1.x` Tool Name | `v0.2.0` Replacement | Notes |
-|--------------------|----------------------|-------|
-| `argo_update_rollout(update_type="image", ...)` | `argo_set_rollout_image` | Dedicated runtime tool (`dry_run=False` default) |
-| `argo_update_rollout(update_type="strategy" \| "traffic_routing" \| "workload_ref_scale_down" \| "remove_conflicting_strategy")` | `argo_configure_rollout_strategy` | Dedicated strategy/routing configuration tool (`dry_run=True` default) |
-| `validate_deployment_ready` | `argo_validate_deployment_readiness` | Live cluster readiness validator; use `scripts/lint_deployment_manifest.py` for offline files |
-| `convert_deployment_to_rollout` | `argo_convert_deployment_to_rollout` | Live cluster converter (`dry_run=True` default); use `scripts/convert_deployment_to_rollout.py` for offline files |
-| `convert_rollout_to_deployment` | `argo_convert_rollout_to_deployment` | Live cluster reverse converter (`dry_run=True` default); use `scripts/convert_rollout_to_deployment.py` for offline files |
-| `create_stable_canary_services` | `argo_create_rollout` / `argo_configure_rollout_strategy` | Services are created automatically or via `scripts/convert_deployment_to_rollout.py --include-services` |
-| `generate_argocd_ignore_differences` | `skills/onboarding-and-migrating-to-argo-rollouts/scripts/generate_argocd_ignore_differences.py` | Moved to deterministic offline skill script |
-| `argo_configure_analysis_template(mode="generate_yaml")` | `argo_configure_analysis_template(dry_run=True)` or `scripts/generate_analysis_template.py` | Unified around `dry_run=True` preview and offline script |
-
-### Resource & Prompt Migration Table
-
-| `v0.1.x` Resource / Prompt | `v0.2.0` Replacement |
-|----------------------------|----------------------|
-| `argorollout://health/summary` | Folded into `argorollout://rollouts/list` (`health_score` per rollout) |
-| `argorollout://health/{ns}/{name}/details` | Replaced by `argo_diagnose_rollout` tool and `argorollout://rollouts/{ns}/{name}/detail` |
-| `argorollout://history/all` | Removed (avoid O(N) cluster-wide ReplicaSet scan); use `argorollout://history/{ns}/{name}` |
-| `onboard_application_guided` prompt | `skills/onboarding-and-migrating-to-argo-rollouts/SKILL.md` |
-| `canary_deployment_guided` / `blue_green_deployment_guided` / `rolling_update_guided` / `multi_cluster_canary_guided` prompts | `skills/progressing-argo-rollouts/SKILL.md` |
-| `cost_optimized_deployment_guided` prompt | Removed (simulated `orch_*` dead code removed) |
 
 </details>
 

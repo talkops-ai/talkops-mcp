@@ -3,20 +3,17 @@
   "mcpServers": {
     "loki": {
       "type": "stdio",
-      "command": "loki-mcp-server",
+      "command": "uvx",
       "args": [
+        "--from",
+        "talkops-loki-mcp-server==0.2.1",
+        "loki-mcp-server",
         "--transport",
-        "stdio",
-        "--read-only",
-        "--toolsets",
-        "all"
+        "stdio"
       ],
-      "cwd": "./",
       "env": {
-        "LOKI_URL": "http://localhost:3100",
-        "MCP_TRANSPORT": "stdio",
-        "MCP_ALLOW_WRITE": "false",
-        "LOKI_TOOLSETS": "all"
+        "FASTMCP_LOG_LEVEL": "ERROR",
+        "MCP_ALLOW_WRITE": "false"
       }
     }
   }

@@ -1,68 +1,19 @@
 {
-  "$schema": "https://agentplugins.io/schema/v1.0.0/mcp.json",
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
     "traefik": {
       "type": "stdio",
-      "command": "uv",
+      "command": "uvx",
       "args": [
-        "--directory",
-        "${PLUGIN_ROOT}",
-        "run",
+        "--from",
+        "talkops-traefik-mcp-server==0.2.1",
         "traefik-mcp-server",
-        "--read-only",
-        "--toolsets",
-        "all"
+        "--transport",
+        "stdio"
       ],
       "env": {
-        "MCP_TRANSPORT": "stdio",
-        "MCP_ALLOW_WRITE": "false",
-        "MCP_TOOLSETS": "all",
-        "PROMETHEUS_URL": "${PROMETHEUS_URL}",
-        "TRAEFIK_NAMESPACE": "traefik"
-      }
-    },
-    "traefik-us-west": {
-      "type": "stdio",
-      "command": "uv",
-      "args": [
-        "--directory",
-        "${PLUGIN_ROOT}",
-        "run",
-        "traefik-mcp-server",
-        "--context",
-        "${KUBE_CONTEXT_US_WEST}",
-        "--read-only",
-        "--toolsets",
-        "all"
-      ],
-      "env": {
-        "MCP_TRANSPORT": "stdio",
-        "MCP_ALLOW_WRITE": "false",
-        "MCP_TOOLSETS": "all",
-        "PROMETHEUS_URL": "${PROMETHEUS_URL_US_WEST}",
-        "TRAEFIK_NAMESPACE": "traefik"
-      }
-    },
-    "traefik-eu-central": {
-      "type": "stdio",
-      "command": "uv",
-      "args": [
-        "--directory",
-        "${PLUGIN_ROOT}",
-        "run",
-        "traefik-mcp-server",
-        "--context",
-        "${KUBE_CONTEXT_EU_CENTRAL}",
-        "--read-only",
-        "--toolsets",
-        "all"
-      ],
-      "env": {
-        "MCP_TRANSPORT": "stdio",
-        "MCP_ALLOW_WRITE": "false",
-        "MCP_TOOLSETS": "all",
-        "PROMETHEUS_URL": "${PROMETHEUS_URL_EU_CENTRAL}",
-        "TRAEFIK_NAMESPACE": "traefik"
+        "FASTMCP_LOG_LEVEL": "ERROR",
+        "MCP_ALLOW_WRITE": "false"
       }
     }
   }
