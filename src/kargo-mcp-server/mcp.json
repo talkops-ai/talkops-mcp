@@ -1,0 +1,62 @@
+{
+  "$schema": "https://agentplugins.io/schema/v1.0.0/mcp.json",
+  "mcpServers": {
+    "kargo": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "kargo-mcp-server",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "KARGO_API_URL": "${KARGO_API_URL:-https://localhost:8443}",
+        "KARGO_AUTH_MODE": "${KARGO_AUTH_MODE:-bearer}",
+        "KARGO_DEFAULT_PROJECT": "${KARGO_DEFAULT_PROJECT:-default}",
+        "MCP_ALLOW_WRITE": "false"
+      }
+    },
+    "kargo-staging": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "kargo-mcp-server",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "KARGO_API_URL": "${KARGO_STAGING_API_URL:-https://kargo.staging.internal:8443}",
+        "KARGO_AUTH_MODE": "${KARGO_STAGING_AUTH_MODE:-bearer}",
+        "KARGO_DEFAULT_PROJECT": "${KARGO_STAGING_PROJECT:-staging}",
+        "MCP_ALLOW_WRITE": "false"
+      }
+    },
+    "kargo-prod": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "kargo-mcp-server",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "KARGO_API_URL": "${KARGO_PROD_API_URL:-https://kargo.prod.internal:8443}",
+        "KARGO_AUTH_MODE": "${KARGO_PROD_AUTH_MODE:-bearer}",
+        "KARGO_DEFAULT_PROJECT": "${KARGO_PROD_PROJECT:-production}",
+        "MCP_ALLOW_WRITE": "false"
+      }
+    }
+  }
+}

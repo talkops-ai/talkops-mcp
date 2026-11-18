@@ -1,0 +1,27 @@
+{
+  "apiVersion": "kargo.akuity.io/v1alpha1",
+  "kind": "Promotion",
+  "metadata": {
+    "name": "dev.01j9abc.abcd123",
+    "namespace": "guestbook"
+  },
+  "spec": {
+    "stage": "dev",
+    "freight": "abcd1234567890"
+  },
+  "status": {
+    "phase": "Errored",
+    "message": "step 'argocd-update' failed: Application guestbook-dev is not authorized for stage guestbook:dev (missing annotation kargo.akuity.io/authorized-stage)",
+    "stepExecutionMetadata": [
+      {
+        "alias": "git-clone",
+        "status": "Succeeded"
+      },
+      {
+        "alias": "argocd-update",
+        "status": "Errored",
+        "message": "Application guestbook-dev is not authorized for stage guestbook:dev (missing annotation kargo.akuity.io/authorized-stage)"
+      }
+    ]
+  }
+}

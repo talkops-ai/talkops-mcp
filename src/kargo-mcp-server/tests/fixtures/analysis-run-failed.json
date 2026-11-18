@@ -1,0 +1,19 @@
+{
+  "apiVersion": "argoproj.io/v1alpha1",
+  "kind": "AnalysisRun",
+  "metadata": {
+    "name": "dev.01j9abc.verify",
+    "namespace": "guestbook"
+  },
+  "status": {
+    "phase": "Failed",
+    "message": "Metric 'success-rate' failed threshold check",
+    "metricResults": [
+      {
+        "name": "success-rate",
+        "phase": "Failed",
+        "message": "result 0.82 below 0.95 threshold"
+      }
+    ]
+  }
+}

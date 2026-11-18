@@ -1,59 +1,67 @@
-"""Warehouse spec builder.
+"""Warehouse spec builder and validator for Kargo v1.10–v1.12.
 
 Constructs a valid Kargo WarehouseSpec from user-friendly subscription
-parameters. Handles the mapping from simplified flat fields to the nested
-Kargo API subscription structure.
-
-Supported subscription types:
-  - image: Container image repository (Docker, ECR, GHCR, etc.)
-  - git: Git repository (GitHub, GitLab, Bitbucket, etc.)
-  - chart: Helm chart repository (OCI or HTTP)
+parameters or passthrough Kargo subscription dicts, and detects deprecated/removed
+fields that break discovery in Kargo v1.9–v1.12:
+  - image.semverConstraint (removed in v1.9 -> use image.constraint)
+  - image.gitRepoURL (removed in v1.7 -> use OCI annotation)
+  - allowTags / ignoreTags (break discovery in v1.11+ -> use allowTagsRegexes / ignoreTagsRegexes)
 """
 
 from typing import Any, Dict, List, Optional
 
 from kargo_mcp_server.exceptions import KargoValidationError
 
-
-# ---- Subscription type constants ----
-
 SUBSCRIPTION_TYPES = frozenset({"image", "git", "chart"})
 
 IMAGE_SELECTION_STRATEGIES = frozenset({
-    "SemVer", "Lexical", "NewestBuild", "Digest",
+    "SemVer",
+    "Lexical",
+    "NewestBuild",
+    "Digest",
+})
+
+GIT_COMMIT_SELECTION_STRATEGIES = frozenset({
+    "NewestFromBranch",
+    "SemVer",
+    "Lexical",
+    "NewestTag",
 })
 
 FREIGHT_CREATION_POLICIES = frozenset({"Automatic", "Manual"})
 
 
-# ---- Individual subscription builders ----
+def _normalize_regex_list(val: Any) -> List[str]:
+    if isinstance(val, str):
+        return [val] if val else []
+    if isinstance(val, list):
+        return [str(x) for x in val if x]
+    return []
 
 
 def _build_image_subscription(sub: Dict[str, Any]) -> Dict[str, Any]:
-    """Build an image subscription entry.
-
-    Required fields:
-        repo_url: Container image repository URL.
-
-    Optional fields:
-        semver_constraint: SemVer constraint string (e.g. "^1.26.0").
-        image_selection_strategy: One of SemVer, Lexical, NewestBuild, Digest.
-        platform: Target platform (e.g. "linux/amd64").
-        allow_tags: Regex pattern for allowed tags.
-        ignore_tags: List of regex patterns for tags to ignore.
-    """
-    repo_url = sub.get("repo_url")
+    """Build a Kargo v1.12 image subscription entry."""
+    repo_url = sub.get("repo_url") or sub.get("repoURL")
     if not repo_url:
-        raise KargoValidationError(
-            "Image subscription requires 'repo_url'."
-        )
+        raise KargoValidationError("Image subscription requires 'repo_url'.")
 
     image: Dict[str, Any] = {"repoURL": repo_url}
 
-    if semver := sub.get("semver_constraint"):
-        image["semverConstraint"] = semver
+    # Kargo v1.9+ uses 'constraint' instead of removed 'semverConstraint'
+    constraint = (
+        sub.get("constraint")
+        or sub.get("semver_constraint")
+        or sub.get("semverConstraint")
+    )
+    if constraint:
+        image["constraint"] = constraint
 
-    if strategy := sub.get("image_selection_strategy"):
+    if strategy := (
+        sub.get("image_selection_strategy")
+        or sub.get("imageSelectionStrategy")
+        or sub.get("selection_strategy")
+        or sub.get("selectionStrategy")
+    ):
         if strategy not in IMAGE_SELECTION_STRATEGIES:
             raise KargoValidationError(
                 f"Invalid image_selection_strategy '{strategy}'. "
@@ -64,79 +72,166 @@ def _build_image_subscription(sub: Dict[str, Any]) -> Dict[str, Any]:
     if platform := sub.get("platform"):
         image["platform"] = platform
 
-    if allow_tags := sub.get("allow_tags"):
-        image["allowTags"] = allow_tags
+    # Kargo v1.11+ requires allowTagsRegexes / ignoreTagsRegexes (allowTags/ignoreTags break discovery)
+    allow_regexes = _normalize_regex_list(
+        sub.get("allow_tags_regexes")
+        or sub.get("allowTagsRegexes")
+        or sub.get("allow_tags")
+        or sub.get("allowTags")
+    )
+    if allow_regexes:
+        image["allowTagsRegexes"] = allow_regexes
 
-    if ignore_tags := sub.get("ignore_tags"):
-        image["ignoreTags"] = ignore_tags
+    ignore_regexes = _normalize_regex_list(
+        sub.get("ignore_tags_regexes")
+        or sub.get("ignoreTagsRegexes")
+        or sub.get("ignore_tags")
+        or sub.get("ignoreTags")
+    )
+    if ignore_regexes:
+        image["ignoreTagsRegexes"] = ignore_regexes
 
-    return {"image": image}
+    if "strict_semvers" in sub or "strictSemvers" in sub:
+        image["strictSemvers"] = bool(
+            sub.get("strict_semvers", sub.get("strictSemvers"))
+        )
+
+    if "cache_by_tag" in sub or "cacheByTag" in sub:
+        image["cacheByTag"] = bool(sub.get("cache_by_tag", sub.get("cacheByTag")))
+
+    if discovery_limit := (sub.get("discovery_limit") or sub.get("discoveryLimit")):
+        image["discoveryLimit"] = int(discovery_limit)
+
+    if "insecure_skip_tls_verify" in sub or "insecureSkipTLSVerify" in sub:
+        image["insecureSkipTLSVerify"] = bool(
+            sub.get("insecure_skip_tls_verify", sub.get("insecureSkipTLSVerify"))
+        )
+
+    entry: Dict[str, Any] = {"image": image}
+    if sub.get("name"):
+        entry["name"] = sub["name"]
+    return entry
 
 
 def _build_git_subscription(sub: Dict[str, Any]) -> Dict[str, Any]:
-    """Build a git subscription entry.
-
-    Required fields:
-        repo_url: Git repository URL.
-
-    Optional fields:
-        branch: Branch to track (default: inferred by Kargo).
-        semver_constraint: Tag semver constraint for tag-based tracking.
-        include_paths: List of paths to include in change detection.
-        exclude_paths: List of paths to exclude from change detection.
-    """
-    repo_url = sub.get("repo_url")
+    """Build a Kargo v1.12 git subscription entry."""
+    repo_url = sub.get("repo_url") or sub.get("repoURL")
     if not repo_url:
-        raise KargoValidationError(
-            "Git subscription requires 'repo_url'."
-        )
+        raise KargoValidationError("Git subscription requires 'repo_url'.")
 
     git: Dict[str, Any] = {"repoURL": repo_url}
 
     if branch := sub.get("branch"):
         git["branch"] = branch
 
-    if semver := sub.get("semver_constraint"):
+    if commit_strategy := (
+        sub.get("commit_selection_strategy")
+        or sub.get("commitSelectionStrategy")
+        or sub.get("selection_strategy")
+        or sub.get("selectionStrategy")
+    ):
+        if commit_strategy not in GIT_COMMIT_SELECTION_STRATEGIES:
+            raise KargoValidationError(
+                f"Invalid commit_selection_strategy '{commit_strategy}'. "
+                f"Valid options: {', '.join(sorted(GIT_COMMIT_SELECTION_STRATEGIES))}"
+            )
+        git["commitSelectionStrategy"] = commit_strategy
+
+    if semver := (
+        sub.get("semver_constraint")
+        or sub.get("semverConstraint")
+        or sub.get("constraint")
+    ):
         git["semverConstraint"] = semver
 
-    if include_paths := sub.get("include_paths"):
+    allow_regexes = _normalize_regex_list(
+        sub.get("allow_tags_regexes")
+        or sub.get("allowTagsRegexes")
+        or sub.get("allow_tags")
+        or sub.get("allowTags")
+    )
+    if allow_regexes:
+        git["allowTagsRegexes"] = allow_regexes
+
+    ignore_regexes = _normalize_regex_list(
+        sub.get("ignore_tags_regexes")
+        or sub.get("ignoreTagsRegexes")
+        or sub.get("ignore_tags")
+        or sub.get("ignoreTags")
+    )
+    if ignore_regexes:
+        git["ignoreTagsRegexes"] = ignore_regexes
+
+    if include_paths := (sub.get("include_paths") or sub.get("includePaths")):
         git["includePaths"] = include_paths
 
-    if exclude_paths := sub.get("exclude_paths"):
+    if exclude_paths := (sub.get("exclude_paths") or sub.get("excludePaths")):
         git["excludePaths"] = exclude_paths
 
-    return {"git": git}
+    if expr_filter := (sub.get("expression_filter") or sub.get("expressionFilter")):
+        git["expressionFilter"] = expr_filter
+
+    if since := sub.get("since"):
+        git["since"] = since
+
+    if "blobless" in sub:
+        git["blobless"] = bool(sub["blobless"])
+
+    if "strict_semvers" in sub or "strictSemvers" in sub:
+        git["strictSemvers"] = bool(sub.get("strict_semvers", sub.get("strictSemvers")))
+
+    if discovery_limit := (sub.get("discovery_limit") or sub.get("discoveryLimit")):
+        git["discoveryLimit"] = int(discovery_limit)
+
+    if "insecure_skip_tls_verify" in sub or "insecureSkipTLSVerify" in sub:
+        git["insecureSkipTLSVerify"] = bool(
+            sub.get("insecure_skip_tls_verify", sub.get("insecureSkipTLSVerify"))
+        )
+
+    entry: Dict[str, Any] = {"git": git}
+    if sub.get("name"):
+        entry["name"] = sub["name"]
+    return entry
 
 
 def _build_chart_subscription(sub: Dict[str, Any]) -> Dict[str, Any]:
-    """Build a Helm chart subscription entry.
-
-    Required fields:
-        repo_url: Chart repository URL (HTTP/S or OCI).
-
-    Optional fields:
-        chart_name: Chart name within the repository (required for HTTP repos,
-                     not needed for OCI).
-        semver_constraint: SemVer constraint string (e.g. "^1.0.0").
-    """
-    repo_url = sub.get("repo_url")
+    """Build a Kargo v1.12 Helm chart subscription entry."""
+    repo_url = sub.get("repo_url") or sub.get("repoURL")
     if not repo_url:
-        raise KargoValidationError(
-            "Chart subscription requires 'repo_url'."
-        )
+        raise KargoValidationError("Chart subscription requires 'repo_url'.")
 
     chart: Dict[str, Any] = {"repoURL": repo_url}
 
-    if chart_name := sub.get("chart_name"):
+    if chart_name := (sub.get("chart_name") or sub.get("chartName")):
         chart["name"] = chart_name
 
-    if semver := sub.get("semver_constraint"):
+    if semver := (
+        sub.get("semver_constraint")
+        or sub.get("semverConstraint")
+        or sub.get("constraint")
+        or sub.get("version")
+    ):
         chart["semverConstraint"] = semver
 
-    return {"chart": chart}
+    if discovery_limit := (sub.get("discovery_limit") or sub.get("discoveryLimit")):
+        chart["discoveryLimit"] = int(discovery_limit)
 
+    if "insecure_skip_tls_verify" in sub or "insecureSkipTLSVerify" in sub:
+        chart["insecureSkipTLSVerify"] = bool(
+            sub.get("insecure_skip_tls_verify", sub.get("insecureSkipTLSVerify"))
+        )
 
-# ---- Subscription router ----
+    entry: Dict[str, Any] = {"chart": chart}
+    if sub.get("name") and not chart_name:
+        # If 'name' was meant as chart name for HTTP chart repo vs subscription name
+        if not repo_url.startswith("oci://"):
+            chart["name"] = sub["name"]
+        else:
+            entry["name"] = sub["name"]
+    elif sub.get("subscription_name"):
+        entry["name"] = sub["subscription_name"]
+    return entry
+
 
 _SUBSCRIPTION_BUILDERS = {
     "image": _build_image_subscription,
@@ -146,76 +241,86 @@ _SUBSCRIPTION_BUILDERS = {
 
 
 def _build_single_subscription(sub: Dict[str, Any]) -> Dict[str, Any]:
-    """Route a subscription dict to the appropriate builder.
+    """Route a subscription dict (either flat user-friendly or nested Kargo format) to the builder."""
+    if not isinstance(sub, dict):
+        raise KargoValidationError("Each subscription must be a dictionary.")
 
-    Args:
-        sub: Subscription dict with a 'type' key.
+    # Support nested Kargo format e.g. {"image": {"repoURL": ...}} directly (upgrading deprecated keys)
+    for k in ("image", "git", "chart"):
+        if k in sub and isinstance(sub[k], dict):
+            flat = dict(sub[k])
+            flat["type"] = k
+            if "name" in sub and k != "chart":
+                flat["name"] = sub["name"]
+            elif "name" in sub and k == "chart":
+                flat["subscription_name"] = sub["name"]
+            if k == "chart" and "name" in sub[k]:
+                flat["chart_name"] = sub[k]["name"]
+            return _SUBSCRIPTION_BUILDERS[k](flat)
 
-    Returns:
-        Kargo-format subscription dict.
-
-    Raises:
-        KargoValidationError: If type is missing or invalid.
-    """
-    sub_type = sub.get("type", "").lower()
+    sub_type = str(sub.get("type", "")).lower()
     if sub_type not in SUBSCRIPTION_TYPES:
         raise KargoValidationError(
             f"Invalid subscription type '{sub_type}'. "
             f"Valid types: {', '.join(sorted(SUBSCRIPTION_TYPES))}"
         )
 
-    builder = _SUBSCRIPTION_BUILDERS[sub_type]
-    return builder(sub)
+    return _SUBSCRIPTION_BUILDERS[sub_type](sub)
 
 
-# ---- Public API ----
+def detect_deprecated_warehouse_fields(spec: Dict[str, Any]) -> List[str]:
+    """Inspect a raw Warehouse spec for deprecated/removed Kargo v1.7–v1.12 fields."""
+    issues: List[str] = []
+    if not isinstance(spec, dict):
+        return issues
+    for idx, sub in enumerate(spec.get("subscriptions") or []):
+        if not isinstance(sub, dict):
+            continue
+        img = sub.get("image")
+        if isinstance(img, dict):
+            if "semverConstraint" in img:
+                issues.append(
+                    f"subscriptions[{idx}].image.semverConstraint was removed in Kargo v1.9; use image.constraint instead."
+                )
+            if "gitRepoURL" in img:
+                issues.append(
+                    f"subscriptions[{idx}].image.gitRepoURL was removed in Kargo v1.7; use OCI annotation org.opencontainers.image.source."
+                )
+            if "allowTags" in img:
+                issues.append(
+                    f"subscriptions[{idx}].image.allowTags breaks discovery in Kargo v1.11+; use image.allowTagsRegexes (list of regexes)."
+                )
+            if "ignoreTags" in img:
+                issues.append(
+                    f"subscriptions[{idx}].image.ignoreTags breaks discovery in Kargo v1.11+; use image.ignoreTagsRegexes (list of regexes)."
+                )
+        git = sub.get("git")
+        if isinstance(git, dict):
+            if "allowTags" in git:
+                issues.append(
+                    f"subscriptions[{idx}].git.allowTags breaks discovery in Kargo v1.11+; use git.allowTagsRegexes."
+                )
+            if "ignoreTags" in git:
+                issues.append(
+                    f"subscriptions[{idx}].git.ignoreTags breaks discovery in Kargo v1.11+; use git.ignoreTagsRegexes."
+                )
+    return issues
 
 
 def build_warehouse_spec(
     subscriptions: List[Dict[str, Any]],
     freight_creation_policy: Optional[str] = None,
     interval: Optional[str] = None,
+    freight_creation_criteria: Optional[str] = None,
+    shard: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build a complete Kargo WarehouseSpec from user-friendly parameters.
-
-    Converts a list of simplified subscription dicts into a valid Kargo
-    WarehouseSpec. Each subscription dict must have a 'type' key (image,
-    git, or chart) and a 'repo_url' key, plus type-specific optional fields.
-
-    Args:
-        subscriptions: List of subscription dicts, each with:
-            - type: "image", "git", or "chart"
-            - repo_url: Repository URL (required for all types)
-            - Plus type-specific optional fields (see individual builders)
-        freight_creation_policy: "Automatic" (default) or "Manual".
-        interval: Polling interval, e.g. "5m0s" (default).
-
-    Returns:
-        Dict suitable for use as a Kargo Warehouse spec body.
-
-    Raises:
-        KargoValidationError: For invalid inputs.
-
-    Example:
-        >>> build_warehouse_spec([
-        ...     {"type": "image", "repo_url": "ghcr.io/org/app", "semver_constraint": "^1.0.0"},
-        ...     {"type": "git", "repo_url": "https://github.com/org/repo.git", "branch": "main"},
-        ... ])
-        {
-            "subscriptions": [
-                {"image": {"repoURL": "ghcr.io/org/app", "semverConstraint": "^1.0.0"}},
-                {"git": {"repoURL": "https://github.com/org/repo.git", "branch": "main"}},
-            ],
-            "freightCreationPolicy": "Automatic",
-        }
-    """
+    """Build a complete Kargo v1.12 WarehouseSpec from user-friendly parameters."""
     if not subscriptions:
         raise KargoValidationError(
             "At least one subscription is required. Provide image, git, "
             "or chart subscriptions."
         )
 
-    # Validate freight creation policy
     policy = freight_creation_policy or "Automatic"
     if policy not in FREIGHT_CREATION_POLICIES:
         raise KargoValidationError(
@@ -223,10 +328,7 @@ def build_warehouse_spec(
             f"Valid options: {', '.join(sorted(FREIGHT_CREATION_POLICIES))}"
         )
 
-    # Build each subscription
-    kargo_subscriptions = [
-        _build_single_subscription(sub) for sub in subscriptions
-    ]
+    kargo_subscriptions = [_build_single_subscription(sub) for sub in subscriptions]
 
     spec: Dict[str, Any] = {
         "subscriptions": kargo_subscriptions,
@@ -235,5 +337,11 @@ def build_warehouse_spec(
 
     if interval:
         spec["interval"] = interval
+
+    if freight_creation_criteria:
+        spec["freightCreationCriteria"] = {"expression": freight_creation_criteria}
+
+    if shard:
+        spec["shard"] = shard
 
     return spec

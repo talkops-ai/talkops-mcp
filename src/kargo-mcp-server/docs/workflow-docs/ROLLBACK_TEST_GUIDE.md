@@ -1,71 +1,15 @@
-# Emergency Rollback Guided Workflow
+# Workflow 4 Test Guide: Emergency Stage Rollback (`v0.2.0`)
 
-**Goal**: Return a broken environment to a stable state using the "Roll Forward" paradigm.
+Companion Skill: [`skills/rolling-back-kargo-stages/SKILL.md`](../../skills/rolling-back-kargo-stages/SKILL.md)
 
-> **Prompt**: `kargo-rollback-guided(project="demo-project", stage="env-prod")`
+## Step-by-Step Verification
 
----
-
-## The "Roll Forward" Paradigm
-
-Kargo does not have a native "rollback" button. Instead, it uses a **Roll Forward** paradigm. To roll back, you simply create a *new* promotion of an *old*, previously stable Freight ID.
-
----
-
-## 1. Abort Current Chaos
-
-If a promotion is currently stuck or failing, kill it to prevent further degradation.
-
-**Natural Language Prompt:**
-```text
-Abort the stuck promotion '<stuck-promotion-name>' in project 'demo-project'.
-```
-
-**Tool Execution:**
-```python
-kargo_promotion_mgmt(action="abort", 
-    project="demo-project",
-    promotion_name="<stuck-promotion-name>"
-)
-```
-
----
-
-## 2. Find Known Good State
-
-Analyze the history of Freight to locate the ID that was stable *before* the outage.
-
-**Natural Language Prompt:**
-```text
-List all freight in project 'demo-project' to find the previous stable ID.
-```
-
-**Tool Execution:**
-```python
-kargo_freight_mgmt(action="list", 
-    project="demo-project"
-)
-```
-Look for the `freight_id` that was running previously.
-
----
-
-## 3. Roll Forward
-
-Approve (if necessary) and execute a new promotion for the *old* Freight ID. The pipeline will execute identically, restoring the previous application state.
-
-**Natural Language Prompt:**
-```text
-Promote the old stable freight '<old-stable-freight-id>' to the 'env-prod' stage in project 'demo-project'.
-```
-
-**Tool Execution:**
-```python
-kargo_promotion_mgmt(action="create", 
-    project="demo-project",
-    stage="env-prod",
-    freight_id="<old-stable-freight-id>"
-)
-```
-
-Monitor this promotion until complete using the steps outlined in the [Promotion Workflow](PROMOTION_TEST_GUIDE.md).
+1. **Diagnose Stage & Inspect `freightHistory`**:
+   - Call `kargo_diagnose_stage(project="guestbook", stage="prod")`.
+   - Read `kargo://projects/guestbook/stages/prod` to inspect `status.freightHistory`.
+2. **Preview Rollback Plan**:
+   - Call `kargo_rollback_stage(project="guestbook", stage="prod", dry_run=True)` → verify `current_freight` and `target_freight` (automatically resolved from `status.freightHistory[1]`).
+3. **Execute Rollback (`[GATE]`)**:
+   - Call `kargo_rollback_stage(project="guestbook", stage="prod", confirm=True)` → verify `"status": "success"` and note the warning regarding Kargo v1.11+ `autoPromotionHolds`.
+4. **Clear Auto-Promotion Hold When Ready**:
+   - Call `kargo_promote(project="guestbook", stage="prod", origin_warehouse="main-warehouse")` to clear the hold and resume automatic promotions.

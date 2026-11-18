@@ -51,8 +51,6 @@ Thumbs.db
 
 # Documentation
 docs/
-*.md
-!README.md
 
 # Tests
 tests/

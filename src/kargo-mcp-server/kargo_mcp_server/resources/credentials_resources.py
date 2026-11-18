@@ -1,95 +1,74 @@
-"""Kargo credentials resources."""
+"""Kargo credentials and ConfigMaps resource (secrets strictly redacted)."""
 
 import json
-import yaml
-from kargo_mcp_server.exceptions import KargoResourceError
+from typing import Any, Dict, List
+
 from kargo_mcp_server.resources.base import BaseResource
 
 
 class CredentialsResources(BaseResource):
-    """Credentials-related MCP resources."""
+    """Redacted repository credentials, generic credentials, and ConfigMaps MCP resource."""
 
-    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
+    def register(self, mcp_instance: Any) -> None:
 
         @mcp_instance.resource(
             "kargo://projects/{project}/credentials",
             name="kargo_project_credentials",
-            description="List all repository credentials in a Kargo project",
+            description="Redacted repository credentials, generic credentials, and ConfigMaps in a Kargo project (secret values are never exposed)",
             mime_type="application/json",
         )
         async def list_credentials_resource(project: str) -> str:
-            """List all repository credentials in a project."""
+            """List all credentials in a project with secret values strictly redacted."""
             try:
-                creds = await self.kargo_service.list_repo_credentials(project)
-                if not creds:
-                    return json.dumps({
-                        "message": (
-                            f"No repository credentials found in project '{project}'. "
-                            "Next step: Use 'kargo_credentials_mgmt' with action "
-                            "'create' to add Git or image registry credentials."
-                        )
-                    })
-                # Redact sensitive fields before returning
-                redacted = []
-                for cred in creds:
-                    entry = {
-                        "name": cred.get("metadata", {}).get("name", ""),
-                        "type": cred.get("type", ""),
-                        "repoURL": cred.get("repoURL", ""),
-                        "username": cred.get("username", ""),
-                        # Never expose passwords in resource listings
-                        "hasPassword": bool(cred.get("password")),
-                    }
-                    redacted.append(entry)
-                return json.dumps(redacted, default=str, indent=2)
-            except Exception as e:
-                raise KargoResourceError(f"Failed to list credentials: {e}")
-
-        @mcp_instance.resource(
-            "kargo://projects/{project}/credentials/{cred_name}",
-            name="kargo_credential_detail",
-            description="Get detailed repository credential information (passwords are redacted)",
-            mime_type="text/markdown",
-        )
-        async def get_credential_resource(project: str, cred_name: str) -> str:
-            """Get detailed credential information (password redacted)."""
-            try:
-                cred = await self.kargo_service.get_repo_credentials(project, cred_name)
-
-                details = {
-                    "name": cred_name,
-                    "project": project,
-                    "type": cred.get("type", ""),
-                    "repoURL": cred.get("repoURL", ""),
-                    "username": cred.get("username", ""),
-                    "hasPassword": bool(cred.get("password")),
-                }
-
-                # Redact password from the YAML manifest
-                safe_cred = dict(cred)
-                if "password" in safe_cred:
-                    safe_cred["password"] = "***REDACTED***"
-
-                yaml_manifest = yaml.dump(
-                    safe_cred,
-                    default_flow_style=False,
-                    sort_keys=False,
-                    allow_unicode=True,
+                repo_creds = await self.kargo_service.list_repo_credentials(
+                    project, scope="project"
                 )
+                generic_creds: List[Dict[str, Any]] = []
+                try:
+                    generic_creds = await self.kargo_service.list_generic_credentials(
+                        project, scope="project"
+                    )
+                except Exception:
+                    pass
 
-                output_parts = [
-                    f"## Credential Details: {cred_name}",
-                    "",
-                    "```json",
-                    json.dumps(details, indent=2, default=str),
-                    "```",
-                    "",
-                    "## Full YAML Manifest (password redacted)",
-                    "",
-                    "```yaml",
-                    yaml_manifest.rstrip(),
-                    "```",
-                ]
-                return "\n".join(output_parts)
-            except Exception as e:
-                raise KargoResourceError(f"Failed to get credential: {e}")
+                def _format_repo(cred: Dict[str, Any]) -> Dict[str, Any]:
+                    meta = cred.get("metadata") or {}
+                    data = cred.get("data") or cred.get("stringData") or {}
+                    labels = meta.get("labels") or {}
+                    return {
+                        "name": meta.get("name") or cred.get("name", ""),
+                        "type": (
+                            cred.get("type")
+                            or labels.get("kargo.akuity.io/cred-type")
+                            or data.get("type", "git")
+                        ),
+                        "repoURL": (
+                            cred.get("repoURL")
+                            or cred.get("repoUrl")
+                            or data.get("repoURL", "")
+                        ),
+                        "repoURLIsRegex": bool(
+                            cred.get("repoURLIsRegex")
+                            or cred.get("repoUrlIsRegex")
+                            or str(data.get("repoURLIsRegex", "")).lower() == "true"
+                        ),
+                        "redacted": True,
+                    }
+
+                def _format_generic(sec: Dict[str, Any]) -> Dict[str, Any]:
+                    meta = sec.get("metadata") or {}
+                    data = sec.get("data") or sec.get("stringData") or {}
+                    return {
+                        "name": meta.get("name") or sec.get("name", ""),
+                        "keys": sorted(data.keys()) if isinstance(data, dict) else [],
+                        "redacted": True,
+                    }
+
+                payload = {
+                    "project": project,
+                    "repo_credentials": [_format_repo(c) for c in repo_creds],
+                    "generic_credentials": [_format_generic(g) for g in generic_creds],
+                }
+                return json.dumps(payload, indent=2, default=str)
+            except Exception as exc:
+                return json.dumps({"project": project, "error": str(exc)}, indent=2)

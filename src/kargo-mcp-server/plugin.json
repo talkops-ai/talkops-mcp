@@ -1,0 +1,12 @@
+{
+  "$schema": "https://agentplugins.io/schema/v1.0.0/plugin.json",
+  "name": "kargo",
+  "version": "0.2.0",
+  "description": "Agent Skills and execution-only MCP server for Kargo v1.12 progressive delivery pipelines, freight promotions, rollbacks, credentials, and troubleshooting.",
+  "author": {
+    "name": "TalkOps Team"
+  },
+  "homepage": "https://github.com/talkops/talkops-mcp/tree/main/src/kargo-mcp-server",
+  "repository": "https://github.com/talkops/talkops-mcp",
+  "license": "Apache-2.0"
+}

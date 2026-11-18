@@ -1,7 +1,7 @@
 [project]
 name = "talkops-kargo-mcp-server"
-version = "0.1.0"
-description = "A Model Context Protocol (MCP) server for Kargo continuous promotion orchestration."
+version = "0.2.0"
+description = "Execution-only MCP server and Agent Skills package for Kargo v1.12 continuous promotion orchestration."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.12"
@@ -60,6 +60,8 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.pyright]
+venvPath = "."
+venv = ".venv"
 exclude = [
     "reference",
     ".venv"
