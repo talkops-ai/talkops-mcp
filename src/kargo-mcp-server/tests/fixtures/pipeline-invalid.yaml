@@ -1,0 +1,70 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Project
+metadata:
+  name: legacy-project
+spec:
+  promotionPolicies:
+    - stage: dev
+      autoPromotionEnabled: true
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  name: legacy-warehouse
+  namespace: legacy-project
+spec:
+  subscriptions:
+    - image:
+        repoURL: ghcr.io/example/legacy
+        semverConstraint: "^1.0.0"
+        allowTags: "^v1\\..*"
+        ignoreTags:
+          - latest
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: legacy-task
+  namespace: legacy-project
+spec:
+  steps:
+    - uses: helm-update-image
+      config:
+        fromOrigin:
+          kind: Warehouse
+          name: legacy-warehouse
+    - uses: git-commit
+      config:
+        path: ./out
+        author:
+          name: Bot
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: dev
+  namespace: legacy-project
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: legacy-warehouse
+      sources:
+        direct: false
+        stages:
+          - prod
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: prod
+  namespace: legacy-project
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: legacy-warehouse
+      sources:
+        direct: false
+        stages:
+          - dev

@@ -1,8 +1,6 @@
-"""Integration tests for execution and safety tools (v4).
+"""Integration tests for execution and safety tools (v0.2.0).
 
-Per test guide §6: Full tool lifecycle through FastMCP client.
-
-v4 Tools tested: get_query_stats, execute_logql_instant, execute_logql_query
+Tools tested: loki_get_query_stats, loki_query_instant, loki_query_range, loki_query_a2ui
 """
 
 import json
@@ -12,13 +10,13 @@ import pytest
 from tests.conftest import get_text
 
 
-class TestGetQueryStats:
-    """Tests for the get_query_stats tool."""
+class TestLokiGetQueryStats:
+    """Tests for the loki_get_query_stats tool."""
 
     @pytest.mark.asyncio
     async def test_returns_stats(self, mcp_client):
         result = await mcp_client.call_tool(
-            "get_query_stats",
+            "loki_get_query_stats",
             {"query": '{app="checkout"}'},
         )
         data = json.loads(get_text(result))
@@ -33,7 +31,7 @@ class TestGetQueryStats:
     @pytest.mark.asyncio
     async def test_threshold_included(self, mcp_client):
         result = await mcp_client.call_tool(
-            "get_query_stats",
+            "loki_get_query_stats",
             {"query": '{app="checkout"}'},
         )
         data = json.loads(get_text(result))
@@ -41,13 +39,13 @@ class TestGetQueryStats:
         assert data["threshold_bytes"] > 0
 
 
-class TestExecuteLogqlInstant:
-    """Tests for the execute_logql_instant tool."""
+class TestLokiQueryInstant:
+    """Tests for the loki_query_instant tool."""
 
     @pytest.mark.asyncio
     async def test_returns_result(self, mcp_client):
         result = await mcp_client.call_tool(
-            "execute_logql_instant",
+            "loki_query_instant",
             {"query": '{app="checkout"}'},
         )
         data = json.loads(get_text(result))
@@ -59,20 +57,20 @@ class TestExecuteLogqlInstant:
     @pytest.mark.asyncio
     async def test_with_time_parameter(self, mcp_client):
         result = await mcp_client.call_tool(
-            "execute_logql_instant",
+            "loki_query_instant",
             {"query": '{app="checkout"}', "time": "now"},
         )
         data = json.loads(get_text(result))
         assert "result_type" in data
 
 
-class TestExecuteLogqlQuery:
-    """Tests for the execute_logql_query tool."""
+class TestLokiQueryRange:
+    """Tests for the loki_query_range tool."""
 
     @pytest.mark.asyncio
     async def test_returns_log_streams(self, mcp_client):
         result = await mcp_client.call_tool(
-            "execute_logql_query",
+            "loki_query_range",
             {
                 "query": '{app="checkout"}',
                 "start": "now-1h",
@@ -90,7 +88,7 @@ class TestExecuteLogqlQuery:
     @pytest.mark.asyncio
     async def test_streams_have_labels_and_entries(self, mcp_client):
         result = await mcp_client.call_tool(
-            "execute_logql_query",
+            "loki_query_range",
             {
                 "query": '{app="checkout"}',
                 "start": "now-1h",
@@ -106,7 +104,7 @@ class TestExecuteLogqlQuery:
     @pytest.mark.asyncio
     async def test_entries_have_timestamp_and_line(self, mcp_client):
         result = await mcp_client.call_tool(
-            "execute_logql_query",
+            "loki_query_range",
             {
                 "query": '{app="checkout"}',
                 "start": "now-1h",
@@ -121,9 +119,8 @@ class TestExecuteLogqlQuery:
 
     @pytest.mark.asyncio
     async def test_high_cardinality_warning(self, mcp_client):
-        """Test that high-cardinality labels in selector produce warnings."""
         result = await mcp_client.call_tool(
-            "execute_logql_query",
+            "loki_query_range",
             {
                 "query": '{trace_id="abc123"}',
                 "start": "now-1h",
@@ -132,13 +129,12 @@ class TestExecuteLogqlQuery:
         )
         data = json.loads(get_text(result))
         assert len(data["warnings"]) > 0
-        assert "high-cardinality" in data["warnings"][0].lower() or \
-               "High-cardinality" in data["warnings"][0]
+        assert "high-cardinality" in data["warnings"][0].lower()
 
     @pytest.mark.asyncio
     async def test_with_limit(self, mcp_client):
         result = await mcp_client.call_tool(
-            "execute_logql_query",
+            "loki_query_range",
             {
                 "query": '{app="checkout"}',
                 "start": "now-1h",
@@ -148,3 +144,29 @@ class TestExecuteLogqlQuery:
         )
         data = json.loads(get_text(result))
         assert data["total_lines"] <= 5
+
+
+class TestLokiQueryA2UI:
+    """Tests for the loki_query_a2ui tool."""
+
+    @pytest.mark.asyncio
+    async def test_returns_a2ui_log_table_payload(self, mcp_client):
+        result = await mcp_client.call_tool(
+            "loki_query_a2ui",
+            {
+                "query": '{app="checkout"} |= "error" | json',
+                "title": "Checkout Error Logs",
+                "start": "now-1h",
+                "end": "now",
+                "max_log_lines": 10,
+            },
+        )
+        data = json.loads(get_text(result))
+        assert data["title"] == "Checkout Error Logs"
+        assert "logLines" in data
+        assert isinstance(data["logLines"], list)
+        if data["logLines"]:
+            first = data["logLines"][0]
+            assert "timestamp" in first
+            assert "severity" in first
+            assert "message" in first

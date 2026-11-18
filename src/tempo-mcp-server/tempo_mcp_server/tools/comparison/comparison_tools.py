@@ -1,14 +1,10 @@
-"""Trace comparison tool.
+"""Trace comparison tool."""
 
-Provides ``tempo_compare_traces`` — fetches two traces by ID and produces
-a 5-dimensional structural diff (services, span counts, timing, errors,
-attributes).
-"""
-
+import re
 from typing import Any, Dict, Optional
 
-from mcp.types import ToolAnnotations
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from tempo_mcp_server.exceptions.custom import (
@@ -18,25 +14,25 @@ from tempo_mcp_server.exceptions.custom import (
 from tempo_mcp_server.tools.base import BaseTool
 from tempo_mcp_server.utils.trace_differ import diff_traces
 
-# Trace ID validation (32 hex chars)
-_TRACE_ID_LEN = 32
+_TRACE_ID_RE = re.compile(r"^[0-9a-fA-F]{16,32}$")
 
 
 def _validate_trace_id(trace_id: str) -> str:
-    """Validate and normalize a trace ID."""
+    """Validate and normalize a 16-32 char hex trace ID."""
     tid = trace_id.strip().lower()
-    if len(tid) != _TRACE_ID_LEN or not all(c in "0123456789abcdef" for c in tid):
+    if not _TRACE_ID_RE.match(tid):
         raise TempoValidationError(
-            f"Invalid trace ID: '{trace_id}'. "
-            f"Expected {_TRACE_ID_LEN}-character hex string."
+            f"Invalid trace ID: '{trace_id}'. Expected 16–32 character hex string."
         )
     return tid
 
 
 class ComparisonTools(BaseTool):
-    """Trace comparison tools."""
+    """Trace structural and timing comparison tools."""
 
-    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
+    def register(self, mcp_instance: Any) -> None:
+        if not self.should_register_tool("search", is_write=False):
+            return
 
         tempo_service = self.tempo_service
 
@@ -51,35 +47,24 @@ class ComparisonTools(BaseTool):
             output_schema=None,
         )
         async def tempo_compare_traces(
-            backend_id: str = Field(
-                ..., min_length=1, description="Tempo backend ID"
-            ),
+            backend_id: str = Field(..., min_length=1, description="Tempo backend ID"),
             trace_id_a: str = Field(
                 ...,
-                min_length=32,
+                min_length=16,
                 max_length=32,
-                description=(
-                    "Baseline trace ID (32-char hex). "
-                    "This is the 'known good' trace."
-                ),
+                description="Baseline trace ID (16–32 hex chars)",
             ),
             trace_id_b: str = Field(
                 ...,
-                min_length=32,
+                min_length=16,
                 max_length=32,
-                description=(
-                    "Comparison trace ID (32-char hex). "
-                    "This is the 'problematic' trace."
-                ),
+                description="Comparison trace ID (16–32 hex chars)",
             ),
             max_spans: int = Field(
                 default=500,
                 ge=10,
                 le=5000,
-                description=(
-                    "Max spans per trace to compare. "
-                    "Prevents OOM on very large traces."
-                ),
+                description="Max spans per trace to compare",
             ),
             tenant: Optional[str] = Field(
                 default=None,
@@ -87,30 +72,10 @@ class ComparisonTools(BaseTool):
             ),
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Compare two traces and report structural + timing differences.
+            """Compute a 5-axis structural, span-count, timing, error, and attribute diff between two traces.
 
-            Fetches both traces, builds span trees, and produces a
-            multi-dimensional diff across 5 axes: structure (which
-            services appear), span counts, timing, errors, and
-            attributes. Read-only.
-
-            Use this to understand regression between a known-good
-            baseline trace and a problematic trace, or to compare
-            request patterns across deployments.
-
-            Returns:
-            - {"trace_a": {...}, "trace_b": {...},
-               "structural_diff": {...}, "span_count_diff": {...},
-               "duration_diff": {...}, "error_diff": {...},
-               "attribute_diff": {...}}
-
-            When NOT to use: For analyzing a single trace, use
-            tempo_summarize_trace.
-
-            Common errors:
-            - Trace not found: One or both traces may have expired
-              beyond Tempo's retention window.
-            - Large traces: Reduce max_spans if you get timeouts.
+            Returns: {"trace_a": {...}, "trace_b": {...}, "structural_diff": {...}, "duration_diff": {...}, "error_diff": {...}}.
+            When NOT to use: For single-trace inspection, call tempo_summarize_trace.
             """
             try:
                 tid_a = _validate_trace_id(trace_id_a)
@@ -121,7 +86,6 @@ class ComparisonTools(BaseTool):
                         "trace_id_a and trace_id_b must be different traces."
                     )
 
-                # Fetch both traces
                 if ctx:
                     await ctx.info(
                         f"Comparing traces {tid_a[:12]}... vs {tid_b[:12]}..."
@@ -141,19 +105,15 @@ class ComparisonTools(BaseTool):
                     llm_format=False,
                 )
 
-                # Compute diff
-                result = diff_traces(
+                return diff_traces(
                     trace_a=trace_a_data.get("trace", {}),
                     trace_b=trace_b_data.get("trace", {}),
                     trace_id_a=tid_a,
                     trace_id_b=tid_b,
                 )
 
-                return result
-
             except (TempoValidationError, TempoOperationError):
                 raise
             except Exception as e:
-                raise TempoOperationError(
-                    f"Failed to compare traces: {e}"
-                )
+                self.handle_error(e, "tempo_compare_traces", backend_id=backend_id)
+                raise

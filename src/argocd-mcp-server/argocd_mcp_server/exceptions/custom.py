@@ -38,14 +38,23 @@ class ValidationFailed(ValidationError):
     pass
 
 
-# Additional exceptions that might be useful based on functionality
 class ArgoCDOperationError(ToolExecutionError):
     """Error during generic ArgoCD operations."""
     pass
 
 
 class ArgoCDConnectionError(ToolExecutionError):
-    """Error connecting to ArgoCD server."""
+    """Error connecting to ArgoCD server (401 or network failure)."""
+    pass
+
+
+class ArgoCDPermissionError(ArgoCDOperationError):
+    """Permission denied (403 Forbidden) from ArgoCD server."""
+    pass
+
+
+class ArgoCDConflictError(ArgoCDOperationError):
+    """Resource conflict (409 Conflict / already exists) from ArgoCD server."""
     pass
 
 
@@ -65,7 +74,7 @@ class ArgoCDNotFoundError(NotFoundError):
 
 
 class SyncOperationError(ToolExecutionError):
-    """Error during application sync operations (alias for SyncOperationFailed if needed or generic sync error)."""
+    """Error during application sync operations."""
     pass
 
 

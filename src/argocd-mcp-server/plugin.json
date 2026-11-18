@@ -1,0 +1,25 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "argocd-gitops-plugin",
+  "version": "0.4.0",
+  "description": "Agent Plugin bundling the ArgoCD MCP execution server with procedural GitOps skills for deployment, rollback, troubleshooting, and repository/project onboarding.",
+  "author": {
+    "name": "TalkOps",
+    "email": "contact@talkops.ai"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://talkops.ai",
+  "repository": "https://github.com/talkops-ai/talkops-mcp",
+  "extensions": {
+    "com.talkops": {
+      "category": "gitops",
+      "mcpServers": "./mcp.json",
+      "skills": [
+        "./skills/deploying-argocd-applications",
+        "./skills/rolling-back-argocd-applications",
+        "./skills/troubleshooting-argocd-applications",
+        "./skills/onboarding-argocd-repositories-and-projects"
+      ]
+    }
+  }
+}

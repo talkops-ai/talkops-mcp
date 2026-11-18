@@ -1,7 +1,10 @@
-"""Prometheus rule groups resource."""
+"""Prometheus rule groups resources."""
 
 import json
-from prometheus_mcp_server.exceptions import PrometheusResourceError
+from prometheus_mcp_server.exceptions import (
+    PrometheusResourceError,
+    PrometheusResourceNotFoundError,
+)
 from prometheus_mcp_server.resources.base import BaseResource
 
 
@@ -29,9 +32,9 @@ class RulesResources(BaseResource):
                         total_recording = 0
                         for group in groups:
                             for rule in group.get("rules", []):
-                                if "alert" in rule:
+                                if "alert" in rule or rule.get("type") == "alerting":
                                     total_alert += 1
-                                elif "record" in rule:
+                                elif "record" in rule or rule.get("type") == "recording":
                                     total_recording += 1
 
                         all_groups[b.id] = {
@@ -47,33 +50,30 @@ class RulesResources(BaseResource):
                 raise PrometheusResourceError(f"Failed to get rule groups: {e}")
 
         @mcp_instance.resource(
-            "prom://schema/label_values",
-            name="prom_label_values",
-            description="Per-metric label values snapshot for understanding metric dimensionality",
+            "prom://rules/{backend_id}/groups/{group_name}",
+            name="prom_rule_group_detail",
+            description="Full definition and evaluation health of a specific rule group by backend_id and group_name",
             mime_type="application/json",
         )
-        async def label_values_resource() -> str:
+        async def rule_group_detail_resource(backend_id: str, group_name: str) -> str:
             try:
-                # Return label topology for a few key metrics
-                backends = self.prometheus_service.list_backends()
-                results = {}
-                for b in backends:
-                    try:
-                        catalog = await self.prometheus_service.get_metric_catalog(b.id)
-                        # Get labels for top 5 metrics only to avoid expensive queries
-                        top_metrics = catalog.metrics[:5] if catalog.metrics else []
-                        labels = {}
-                        for m in top_metrics:
-                            try:
-                                topology = await self.prometheus_service.explore_label_topology(
-                                    b.id, m.name
-                                )
-                                labels[m.name] = topology.label_values
-                            except Exception:
-                                continue
-                        results[b.id] = labels
-                    except Exception:
-                        results[b.id] = {"error": "Failed to fetch label values"}
-                return json.dumps(results, default=str, indent=2)
+                group = await self.prometheus_service.get_rule_group(backend_id, group_name)
+                if not group:
+                    raise PrometheusResourceNotFoundError(
+                        f"Rule group '{group_name}' not found on backend '{backend_id}'. "
+                        "Read prom://rules/groups to inspect available group names."
+                    )
+                return json.dumps(
+                    {
+                        "backend_id": backend_id,
+                        "group": group,
+                    },
+                    default=str,
+                    indent=2,
+                )
+            except PrometheusResourceNotFoundError:
+                raise
             except Exception as e:
-                raise PrometheusResourceError(f"Failed to get label values: {e}")
+                raise PrometheusResourceError(
+                    f"Failed to get rule group '{group_name}' on '{backend_id}': {e}"
+                )

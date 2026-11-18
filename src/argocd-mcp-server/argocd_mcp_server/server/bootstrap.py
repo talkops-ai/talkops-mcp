@@ -1,45 +1,50 @@
 """Server initialization and bootstrap."""
 
-from argocd_mcp_server.config import ServerConfig, Config
-from argocd_mcp_server.server.core import create_mcp_server
-from argocd_mcp_server.services.argocd_service import ArgoCDService
-from argocd_mcp_server.tools import initialize_tools
+from typing import Optional, Tuple
+from fastmcp import FastMCP
+
+from argocd_mcp_server.config import Config, ServerConfig
 from argocd_mcp_server.resources import initialize_resources
-from argocd_mcp_server.prompts import initialize_prompts
+from argocd_mcp_server.server.core import create_mcp_server
+from argocd_mcp_server.services import (
+    ArgoCDClient,
+    ArgoCDManagementService,
+    ArgoCDService,
+)
+from argocd_mcp_server.tools import initialize_tools
 
 
 class ServerBootstrap:
-    """Bootstrap the MCP server with all components."""
-    
+    """Bootstrap the MCP server with all execution and resource components."""
+
     @staticmethod
-    def initialize() -> tuple:
+    def initialize(config: Optional[ServerConfig] = None) -> Tuple[FastMCP, ServerConfig]:
         """Initialize server and all components.
-        
+
+        Args:
+            config: Optional pre-built ServerConfig (loads from environment if omitted).
+
         Returns:
             Tuple of (mcp_instance, config)
         """
-        # 1. Load configuration
-        config = Config.from_env()
-        
-        # 2. Create FastMCP instance
-        mcp = create_mcp_server(config)
-        
-        # 3. Create service locator (dependency injection)
+        resolved_config = config or Config.from_env()
+        mcp = create_mcp_server(resolved_config)
+
+        shared_client = ArgoCDClient(resolved_config)
+        argocd_service = ArgoCDService(resolved_config, client=shared_client)
+        mgmt_service = ArgoCDManagementService(resolved_config, client=shared_client)
+
         service_locator = {
-            'argocd_service': ArgoCDService(config),
-            'config': config,  # Pass config for allow_write and other settings
+            "argocd_client": shared_client,
+            "argocd_service": argocd_service,
+            "mgmt_service": mgmt_service,
+            "config": resolved_config,
         }
-        
-        # 4. Initialize and register tools
+
         tool_registry = initialize_tools(service_locator)
         tool_registry.register_all_tools(mcp)
-        
-        # 5. Initialize and register resources
+
         resource_registry = initialize_resources(service_locator)
         resource_registry.register_all_resources(mcp)
-        
-        # 6. Initialize and register prompts
-        prompt_registry = initialize_prompts(service_locator)
-        prompt_registry.register_all_prompts(mcp)
-        
-        return mcp, config
+
+        return mcp, resolved_config

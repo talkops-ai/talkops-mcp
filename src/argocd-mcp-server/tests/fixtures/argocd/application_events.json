@@ -1,0 +1,26 @@
+{
+  "items": [
+    {
+      "type": "Normal",
+      "reason": "ScaledUpReplicaSet",
+      "message": "Scaled up replica set payments-api-7f8c9b to 3",
+      "firstTimestamp": "2026-10-30T15:29:50Z",
+      "lastTimestamp": "2026-10-30T15:29:50Z",
+      "involvedObject": {
+        "kind": "Deployment",
+        "name": "payments-api"
+      }
+    },
+    {
+      "type": "Warning",
+      "reason": "Unhealthy",
+      "message": "Readiness probe failed: HTTP probe failed with statuscode: 503",
+      "firstTimestamp": "2026-10-30T15:30:10Z",
+      "lastTimestamp": "2026-10-30T15:31:00Z",
+      "involvedObject": {
+        "kind": "Pod",
+        "name": "payments-api-7f8c9b-abc12"
+      }
+    }
+  ]
+}

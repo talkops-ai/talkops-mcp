@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: api-service-analysis
+  namespace: default
+spec:
+  args:
+    - name: service-name
+      value: api-service
+  metrics:
+    - name: error-rate
+      interval: 60s
+      count: 3
+      failureLimit: 2
+      successCondition: result[0] < 0.05
+      provider:
+        prometheus:
+          address: http://prometheus:9090
+          query: sum(rate(http_requests_total{job="{{args.service-name}}",status=~"5.."}[5m])) / sum(rate(http_requests_total{job="{{args.service-name}}"}[5m]))

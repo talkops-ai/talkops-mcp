@@ -1,9 +1,10 @@
 """Application configuration management."""
 
+import argparse
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Sequence
 
 from prometheus_mcp_server.models.exporter import (
     ExporterConfigField,
@@ -11,6 +12,32 @@ from prometheus_mcp_server.models.exporter import (
     ExporterInfo,
     K8sNuances,
 )
+
+VALID_TOOLSETS = frozenset(
+    {"all", "readonly", "diagnostics", "query", "rules", "scrape", "exporter"}
+)
+
+
+def _parse_bool_env(raw: Optional[str], *, default: bool = False) -> bool:
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _non_empty_env(*names: str, default: Optional[str] = None) -> Optional[str]:
+    """Return the first non-empty stripped environment variable among `names`, else `default`."""
+    for name in names:
+        val = os.getenv(name)
+        if val is not None and val.strip():
+            return val.strip()
+    return default
+
+
+def _parse_toolsets(raw: Optional[str]) -> List[str]:
+    if not raw or not raw.strip():
+        return ["all"]
+    items = [item.strip().lower() for item in raw.split(",") if item.strip()]
+    return items or ["all"]
 
 # Registry of supported exporters with default configurations
 SUPPORTED_EXPORTERS: Dict[str, ExporterInfo] = {
@@ -331,6 +358,7 @@ SUPPORTED_EXPORTERS: Dict[str, ExporterInfo] = {
     prober: dns
     timeout: 15s
     dns:
+      query_name: "kubernetes.default.svc.cluster.local"
       transport_protocol: "udp"
 '''
     ),
@@ -352,6 +380,27 @@ SUPPORTED_EXPORTERS: Dict[str, ExporterInfo] = {
         ),
         k8s_nuances=K8sNuances(requires_configmap=True, configmap_mount_path="/etc/prometheus/snmp")
     ),
+    # 20. haproxy_exporter
+    "haproxy_exporter": ExporterInfo(
+        type="haproxy_exporter",
+        description="HAProxy load balancer stats and backend/frontend telemetry exporter.",
+        supported_environments=["kubernetes", "vm"],
+        default_scope="sidecar",
+        default_ports={"metrics": 9101},
+        image="quay.io/prometheus/haproxy-exporter:latest",
+        config_model=ExporterConfigModel(
+            required=[
+                ExporterConfigField(
+                    name="HAPROXY_SCRAPE_URI",
+                    type="string",
+                    description="HAProxy stats CSV or socket URI",
+                    example="http://haproxy:8404/stats;csv",
+                    maps_to_flag="--haproxy.scrape-uri",
+                )
+            ]
+        ),
+        k8s_nuances=K8sNuances(supports_sidecar=True),
+    ),
 }
 
 
@@ -364,6 +413,8 @@ class BackendConfig:
     display_name: Optional[str] = None
     labels: Dict[str, str] = field(default_factory=dict)
     auth_header: Optional[str] = None
+    tenant_id: Optional[str] = None
+    ruler_url: Optional[str] = None
     verify_ssl: bool = True
     timeout: int = 30
 
@@ -374,6 +425,7 @@ class KubernetesConfig:
     context_name: Optional[str] = None
     in_cluster: bool = False
     enabled: bool = True
+    kubeconfig: Optional[str] = None
 
 
 @dataclass
@@ -389,7 +441,7 @@ class LoggingConfig:
 class ServerConfig:
     """MCP server configuration."""
     name: str = 'prometheus-mcp-server'
-    version: str = '0.1.0'
+    version: str = '0.2.0'
     transport: str = 'stdio'
     host: str = '0.0.0.0'
     port: int = 8767
@@ -399,23 +451,46 @@ class ServerConfig:
     http_keepalive_timeout: int = 5
     http_connect_timeout: int = 60
 
+    # Security, toolset scoping & audit settings
+    allow_write: bool = True
+    toolsets: List[str] = field(default_factory=lambda: ["all"])
+    audit_log_path: Optional[str] = None
+
     # Response size limits (bytes)
-    # Soft limit: Primary defense. Tools compact and truncate their own results
-    # to fit within this budget. Set conservatively because FastMCP serializes
-    # results twice (TextContent + structured_content), roughly doubling the
-    # wire payload (~2.2x). With label compaction, 40KB of compacted data
-    # carries significantly more information than 90KB of verbose JSON.
     response_size_soft_limit: int = 40_000
-    # Hard limit: Safety net only. The ResponseLimitingMiddleware uses this
-    # as a last resort. Set generously high to avoid triggering on normally
-    # truncated results. When the old gap was only 10KB (90K soft / 100K hard),
-    # the hard limit fired routinely, stripping structuredContent and breaking
-    # MCP client-side outputSchema validation.
     response_size_hard_limit: int = 200_000
 
     backends: List[BackendConfig] = field(default_factory=lambda: [BackendConfig()])
     kubernetes: KubernetesConfig = field(default_factory=KubernetesConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.toolsets, str):
+            self.toolsets = _parse_toolsets(self.toolsets)
+        else:
+            normalized = [t.strip().lower() for t in self.toolsets if t and t.strip()]
+            if not normalized:
+                normalized = ["all"]
+            invalid = [t for t in normalized if t not in VALID_TOOLSETS]
+            if invalid:
+                raise ValueError(
+                    f"Invalid toolset(s): {', '.join(invalid)}. "
+                    f"Valid toolsets are: {', '.join(sorted(VALID_TOOLSETS))}"
+                )
+            self.toolsets = normalized
+        if "readonly" in self.toolsets:
+            self.allow_write = False
+
+    def should_register(self, toolset: str, is_write: bool = False) -> bool:
+        """Return True if a tool in `toolset` should be registered under this config."""
+        active = set(self.toolsets or ["all"])
+        if "readonly" in active and is_write:
+            return False
+        if is_write and not self.allow_write:
+            return False
+        if "all" in active or "readonly" in active:
+            return True
+        return toolset.lower() in active
 
 
 class Config:
@@ -433,7 +508,7 @@ class Config:
         load_dotenv()
 
         # Parse backends
-        backends_json = os.getenv('PROMETHEUS_BACKENDS')
+        backends_json = _non_empty_env('PROMETHEUS_BACKENDS')
         if backends_json:
             try:
                 raw_backends = json.loads(backends_json)
@@ -445,6 +520,8 @@ class Config:
                         display_name=b.get('display_name'),
                         labels=b.get('labels', {}),
                         auth_header=b.get('auth_header'),
+                        tenant_id=b.get('tenant_id'),
+                        ruler_url=b.get('ruler_url'),
                         verify_ssl=b.get('verify_ssl', True),
                         timeout=b.get('timeout', 30),
                     )
@@ -453,39 +530,142 @@ class Config:
             except (json.JSONDecodeError, TypeError):
                 backends = [BackendConfig()]
         else:
-            # Single backend mode
+            # Single backend mode (accepts PROMETHEUS_BASE_URL or PROMETHEUS_URL)
             backends = [
                 BackendConfig(
-                    id=os.getenv('PROMETHEUS_BACKEND_ID', 'default'),
-                    base_url=os.getenv('PROMETHEUS_BASE_URL', 'http://localhost:9090'),
-                    type=os.getenv('PROMETHEUS_TYPE', 'prometheus'),  # type: ignore[arg-type]
-                    display_name=os.getenv('PROMETHEUS_DISPLAY_NAME'),
-                    auth_header=os.getenv('PROMETHEUS_AUTH_HEADER'),
-                    verify_ssl=os.getenv('PROMETHEUS_VERIFY_SSL', 'true').lower() == 'true',
-                    timeout=int(os.getenv('PROMETHEUS_TIMEOUT', '30')),
+                    id=_non_empty_env('PROMETHEUS_BACKEND_ID', default='default') or 'default',
+                    base_url=_non_empty_env('PROMETHEUS_BASE_URL', 'PROMETHEUS_URL', default='http://localhost:9090') or 'http://localhost:9090',
+                    type=_non_empty_env('PROMETHEUS_TYPE', default='prometheus'),  # type: ignore[arg-type]
+                    display_name=_non_empty_env('PROMETHEUS_DISPLAY_NAME'),
+                    auth_header=_non_empty_env('PROMETHEUS_AUTH_HEADER'),
+                    tenant_id=_non_empty_env('PROMETHEUS_TENANT_ID'),
+                    ruler_url=_non_empty_env('PROMETHEUS_RULER_URL'),
+                    verify_ssl=(_non_empty_env('PROMETHEUS_VERIFY_SSL', default='true') or 'true').lower() == 'true',
+                    timeout=int(_non_empty_env('PROMETHEUS_TIMEOUT', default='30') or '30'),
                 )
             ]
 
+        allow_write = _parse_bool_env(os.getenv('MCP_ALLOW_WRITE'), default=True)
+        if _parse_bool_env(os.getenv('PROMETHEUS_READ_ONLY'), default=False) or _parse_bool_env(
+            os.getenv('MCP_READ_ONLY'), default=False
+        ):
+            allow_write = False
+
+        raw_toolsets = _non_empty_env('PROMETHEUS_TOOLSETS', 'MCP_TOOLSETS', default='all') or 'all'
+        toolsets = _parse_toolsets(raw_toolsets)
+        if 'readonly' in toolsets:
+            allow_write = False
+
         return ServerConfig(
-            name=os.getenv('MCP_SERVER_NAME', 'prometheus-mcp-server'),
-            version=os.getenv('MCP_SERVER_VERSION', '0.1.0'),
-            transport=os.getenv('MCP_TRANSPORT', 'stdio'),
-            host=os.getenv('MCP_HOST', '0.0.0.0'),
-            port=int(os.getenv('MCP_PORT', '8767')),
-            path=os.getenv('MCP_PATH', '/mcp'),
-            http_timeout=int(os.getenv('MCP_HTTP_TIMEOUT', '300')),
-            http_keepalive_timeout=int(os.getenv('MCP_HTTP_KEEPALIVE_TIMEOUT', '5')),
-            http_connect_timeout=int(os.getenv('MCP_HTTP_CONNECT_TIMEOUT', '60')),
-            response_size_soft_limit=int(os.getenv('MCP_RESPONSE_SIZE_SOFT_LIMIT', '40000')),
-            response_size_hard_limit=int(os.getenv('MCP_RESPONSE_SIZE_HARD_LIMIT', '200000')),
+            name=_non_empty_env('MCP_SERVER_NAME', default='prometheus-mcp-server') or 'prometheus-mcp-server',
+            version=_non_empty_env('MCP_SERVER_VERSION', default='0.2.0') or '0.2.0',
+            transport=_non_empty_env('MCP_TRANSPORT', default='stdio') or 'stdio',
+            host=_non_empty_env('MCP_HOST', default='0.0.0.0') or '0.0.0.0',
+            port=int(_non_empty_env('MCP_PORT', default='8767') or '8767'),
+            path=_non_empty_env('MCP_PATH', default='/mcp') or '/mcp',
+            http_timeout=int(_non_empty_env('MCP_HTTP_TIMEOUT', default='300') or '300'),
+            http_keepalive_timeout=int(_non_empty_env('MCP_HTTP_KEEPALIVE_TIMEOUT', default='5') or '5'),
+            http_connect_timeout=int(_non_empty_env('MCP_HTTP_CONNECT_TIMEOUT', default='60') or '60'),
+            allow_write=allow_write,
+            toolsets=toolsets,
+            audit_log_path=_non_empty_env('PROMETHEUS_AUDIT_LOG_PATH', 'MCP_AUDIT_LOG_PATH'),
+            response_size_soft_limit=int(_non_empty_env('MCP_RESPONSE_SIZE_SOFT_LIMIT', default='40000') or '40000'),
+            response_size_hard_limit=int(_non_empty_env('MCP_RESPONSE_SIZE_HARD_LIMIT', default='200000') or '200000'),
             backends=backends,
             kubernetes=KubernetesConfig(
-                context_name=os.getenv('K8S_CONTEXT'),
-                in_cluster=os.getenv('K8S_IN_CLUSTER', 'false').lower() == 'true',
-                enabled=os.getenv('K8S_ENABLED', 'true').lower() == 'true',
+                context_name=_non_empty_env('K8S_CONTEXT', 'KUBE_CONTEXT'),
+                in_cluster=(_non_empty_env('K8S_IN_CLUSTER', default='false') or 'false').lower() == 'true',
+                enabled=(_non_empty_env('K8S_ENABLED', default='true') or 'true').lower() == 'true',
+                kubeconfig=_non_empty_env('K8S_KUBECONFIG', 'KUBECONFIG'),
             ),
             logging=LoggingConfig(
-                level=os.getenv('MCP_LOG_LEVEL', 'INFO'),
-                format=os.getenv('MCP_LOG_FORMAT', 'json'),
+                level=_non_empty_env('MCP_LOG_LEVEL', default='INFO') or 'INFO',
+                format=_non_empty_env('MCP_LOG_FORMAT', default='json') or 'json',
             ),
         )
+
+    @staticmethod
+    def build_arg_parser() -> argparse.ArgumentParser:
+        """Create CLI argument parser."""
+        parser = argparse.ArgumentParser(
+            prog="prometheus-mcp-server",
+            description="TalkOps Prometheus & TSDB MCP Execution Server",
+        )
+        parser.add_argument(
+            "--transport",
+            choices=["stdio", "http", "sse", "streamable-http"],
+            default=None,
+            help="MCP transport mode (default: stdio)",
+        )
+        parser.add_argument(
+            "--host",
+            default=None,
+            help="HTTP bind host (default: 0.0.0.0)",
+        )
+        parser.add_argument(
+            "--port",
+            type=int,
+            default=None,
+            help="HTTP bind port (default: 8767)",
+        )
+        parser.add_argument(
+            "--toolsets",
+            default=None,
+            help="Comma-separated toolsets: all,readonly,diagnostics,query,rules,scrape,exporter",
+        )
+        parser.add_argument(
+            "--allow-write",
+            action="store_true",
+            default=False,
+            help="Enable state-mutating tools (rule upserts, scrape CRDs, exporter installs)",
+        )
+        parser.add_argument(
+            "--read-only",
+            action="store_true",
+            default=False,
+            help="Force read-only mode (disables all mutating/destructive tools)",
+        )
+        parser.add_argument(
+            "--prometheus-url",
+            default=None,
+            help="Primary Prometheus backend base URL override",
+        )
+        parser.add_argument(
+            "--tenant-id",
+            default=None,
+            help="Optional X-Scope-OrgID tenant header for Mimir/Cortex/Thanos",
+        )
+        parser.add_argument(
+            "--audit-log-path",
+            default=None,
+            help="Optional file path for JSONL write audit logging",
+        )
+        return parser
+
+    @classmethod
+    def from_cli_and_env(cls, argv: Optional[Sequence[str]] = None) -> ServerConfig:
+        """Load configuration from environment variables and apply CLI overrides."""
+        parser = cls.build_arg_parser()
+        args = parser.parse_args(list(argv) if argv is not None else [])
+        cfg = cls.from_env()
+
+        if args.transport:
+            cfg.transport = args.transport
+        if args.host:
+            cfg.host = args.host
+        if args.port is not None:
+            cfg.port = args.port
+        if args.toolsets is not None:
+            cfg.toolsets = _parse_toolsets(args.toolsets)
+        if args.allow_write:
+            cfg.allow_write = True
+        if args.read_only or "readonly" in cfg.toolsets:
+            cfg.allow_write = False
+        if args.prometheus_url and cfg.backends:
+            cfg.backends[0].base_url = args.prometheus_url
+        if args.tenant_id and cfg.backends:
+            cfg.backends[0].tenant_id = args.tenant_id
+        if args.audit_log_path:
+            cfg.audit_log_path = args.audit_log_path
+
+        return cfg

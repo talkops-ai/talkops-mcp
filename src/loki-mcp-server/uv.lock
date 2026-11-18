@@ -1154,13 +1154,14 @@ wheels = [
 
 [[package]]
 name = "talkops-loki-mcp-server"
-version = "0.1.12"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "pydantic" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -1177,6 +1178,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
 ]
 
 [package.metadata.requires-dev]

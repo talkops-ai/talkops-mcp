@@ -280,3 +280,103 @@ def remove_connector(
         changes.append(f"Removed empty pipeline '{pname}'")
 
     return merged, changes
+
+
+def ensure_presampling_connector_split(
+    cfg: Dict[str, Any],
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Split ``traces`` into pre-sampling ingest + ``traces/sampling`` when both
+    trace-derived metric connectors (``spanmetrics``/``servicegraph``) and trace
+    sampling processors (``tail_sampling``/``probabilistic_sampler``) coexist.
+
+    Ensures ``spanmetrics`` and ``servicegraph`` observe 100% of unsampled spans
+    while ``tail_sampling`` / ``probabilistic_sampler`` only filters traces
+    sent to downstream trace storage via the ``forward/sampling`` connector.
+    """
+    merged = copy.deepcopy(cfg)
+    changes: List[str] = []
+    pipelines = merged.get("service", {}).get("pipelines", {})
+    traces_pipe = pipelines.get("traces")
+    if not isinstance(traces_pipe, dict):
+        return merged, changes
+
+    procs = list(traces_pipe.get("processors") or [])
+    exps = list(traces_pipe.get("exporters") or [])
+    sampling_procs = [
+        p for p in procs if p.split("/", 1)[0] in ("tail_sampling", "probabilistic_sampler")
+    ]
+    metric_conns = [
+        e for e in exps if e.split("/", 1)[0] in ("spanmetrics", "servicegraph")
+    ]
+    if not (sampling_procs and metric_conns):
+        return merged, changes
+
+    forward_name = "forward/sampling"
+    connectors = _ensure_section(merged, "connectors")
+    connectors.setdefault(forward_name, {})
+
+    backend_exps = [
+        e for e in exps if e not in metric_conns and e != forward_name
+    ]
+    ingest_procs = [p for p in procs if p not in sampling_procs]
+    if not ingest_procs and "memory_limiter" in (merged.get("processors") or {}):
+        ingest_procs = ["memory_limiter"]
+
+    sampled_procs: List[str] = []
+    if "memory_limiter" in (merged.get("processors") or {}):
+        sampled_procs.append("memory_limiter")
+    sampled_procs.extend(sampling_procs)
+    if "batch" in (merged.get("processors") or {}):
+        sampled_procs.append("batch")
+
+    traces_pipe["processors"] = ingest_procs
+    traces_pipe["exporters"] = metric_conns + [forward_name]
+
+    sampled_pipe = pipelines.get("traces/sampling", {})
+    existing_sampled_exps = [
+        e
+        for e in (sampled_pipe.get("exporters") or [])
+        if e not in metric_conns and e != forward_name
+    ]
+    final_backend_exps = backend_exps or existing_sampled_exps or ["debug"]
+    pipelines["traces/sampling"] = {
+        "receivers": [forward_name],
+        "processors": sampled_procs,
+        "exporters": final_backend_exps,
+    }
+    changes.append(
+        "Split 'traces' (100% pre-sampling connectors) -> 'forward/sampling' -> 'traces/sampling' (sampled trace export)"
+    )
+    return merged, changes
+
+
+def collapse_presampling_connector_split(
+    cfg: Dict[str, Any],
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Collapse ``traces/sampling`` back into ``traces`` when sampling is disabled."""
+    merged = copy.deepcopy(cfg)
+    changes: List[str] = []
+    pipelines = merged.get("service", {}).get("pipelines", {})
+    traces_pipe = pipelines.get("traces")
+    sampled_pipe = pipelines.get("traces/sampling")
+    if not (isinstance(traces_pipe, dict) and isinstance(sampled_pipe, dict)):
+        return merged, changes
+
+    forward_name = "forward/sampling"
+    backend_exps = [
+        e for e in (sampled_pipe.get("exporters") or []) if e != forward_name
+    ]
+    cur_exps = [
+        e for e in (traces_pipe.get("exporters") or []) if e != forward_name
+    ]
+    for be in backend_exps:
+        if be not in cur_exps:
+            cur_exps.append(be)
+    traces_pipe["exporters"] = cur_exps
+
+    del pipelines["traces/sampling"]
+    connectors = merged.get("connectors", {})
+    if forward_name in connectors:
+        del connectors[forward_name]
+    changes.append("Collapsed 'traces/sampling' back into 'traces'")
+    return merged, changes

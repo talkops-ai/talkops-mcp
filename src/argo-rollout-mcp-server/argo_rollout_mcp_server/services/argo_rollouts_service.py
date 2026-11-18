@@ -9,6 +9,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
+import yaml
 
 if TYPE_CHECKING:
     from argo_rollout_mcp_server.services.generator_service import GeneratorService
@@ -46,6 +47,24 @@ def _to_plain_dict(obj: Any) -> Any:
     return obj
 
 
+def _compute_health_score(phase: str, desired: int, ready: int, available: int) -> int:
+    """Compute a 0-100 health score for a Rollout from its phase and replica counts."""
+    if desired <= 0:
+        return 100 if phase in ("Healthy", "Running") else 0
+    score = int((ready / desired) * 100)
+    if phase == "Progressing":
+        score = max(score - 10, 0)
+    elif phase == "Degraded":
+        score = max(score - 30, 0)
+    elif phase == "Paused":
+        score = max(score - 5, 0)
+    elif phase not in ("Healthy", "Running"):
+        score = 0
+    if available == desired and phase in ("Healthy", "Running", "Progressing", "Paused"):
+        score = min(score + 5, 100)
+    return max(0, min(100, score))
+
+
 class ArgoRolloutsService:
     """Service for Argo Rollouts operations.
     
@@ -72,114 +91,116 @@ class ArgoRolloutsService:
         self._rollout_api = None
         self._analysis_template_api = None
         self._cluster_analysis_template_api = None
+        self._analysis_run_api = None
         self._experiment_api = None
+        self._replicaset_api = None
+        self._apps_v1 = None
+        self._core_v1 = None
         self._initialized = False
-    
-    async def initialize(self) -> None:
-        """Initialize Kubernetes clients.
-        
-        Loads kubeconfig and initializes dynamic client for CRD access.
-        
-        Raises:
-            KubernetesOperationError: If initialization fails
-        """
+        self._lazy_init_enabled = False
+        self._last_init_error: Optional[str] = None
+
+    def enable_lazy_init(self) -> None:
+        """Allow _ensure_initialized() to lazily connect to the cluster on first call."""
+        self._lazy_init_enabled = True
+
+    def _init_sync(self) -> None:
+        """Synchronously initialize Kubernetes clients and CRD handles."""
         if self._initialized:
             return
-        
+
         try:
-            # Load kubeconfig (try explicit config first, then fallbacks)
             try:
-                if self.config.kubernetes.in_cluster:
+                if self.config and self.config.kubernetes and self.config.kubernetes.in_cluster:
                     config.load_incluster_config()
                     logger.info("Loaded in-cluster Kubernetes config from explicit preference")
                 else:
+                    kubeconfig = self.config.kubernetes.kubeconfig if (self.config and self.config.kubernetes) else None
+                    ctx_name = self.config.kubernetes.context_name if (self.config and self.config.kubernetes) else None
                     config.load_kube_config(
-                        config_file=self.config.kubernetes.kubeconfig,
-                        context=self.config.kubernetes.context_name
+                        config_file=kubeconfig,
+                        context=ctx_name,
                     )
                     logger.info("Loaded local kubeconfig using explicit preferences")
             except Exception as e:
                 logger.warning(f"Failed to load configured kubeconfig: {e}. Trying fallbacks.")
                 try:
                     config.load_incluster_config()
-                except:
+                except Exception:
                     config.load_kube_config()
-            
-            # Create dynamic client
+
             self._k8s_client = client.ApiClient()
             self._dyn_client = DynamicClient(self._k8s_client)
-            
-            # Get Rollout API resource
+            self._apps_v1 = client.AppsV1Api(self._k8s_client)
+            self._core_v1 = client.CoreV1Api(self._k8s_client)
+
             try:
                 self._rollout_api = self._dyn_client.resources.get(
                     api_version="argoproj.io/v1alpha1",
-                    kind="Rollout"
+                    kind="Rollout",
                 )
-            except Exception as e:
+            except Exception:
                 raise KubernetesResourceError(
                     "Argo Rollouts CRD not found. Is Argo Rollouts installed? "
-                    f"Install: kubectl create namespace argo-rollouts && "
-                    f"kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml"
+                    "Install: kubectl create namespace argo-rollouts && "
+                    "kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml"
                 )
-            
-            # Get AnalysisTemplate API resource
-            try:
-                self._analysis_template_api = self._dyn_client.resources.get(
-                    api_version="argoproj.io/v1alpha1",
-                    kind="AnalysisTemplate"
-                )
-            except Exception as e:
-                logger.warning("AnalysisTemplate CRD not available")
-                self._analysis_template_api = None
 
-            # Get ClusterAnalysisTemplate API resource
-            try:
-                self._cluster_analysis_template_api = self._dyn_client.resources.get(
-                    api_version="argoproj.io/v1alpha1",
-                    kind="ClusterAnalysisTemplate"
-                )
-            except Exception as e:
-                logger.warning("ClusterAnalysisTemplate CRD not available")
-                self._cluster_analysis_template_api = None
-            
-            # Get Experiment API resource
-            try:
-                self._experiment_api = self._dyn_client.resources.get(
-                    api_version="argoproj.io/v1alpha1",
-                    kind="Experiment"
-                )
-            except Exception as e:
-                logger.warning("Experiment CRD not available")
-                self._experiment_api = None
-                
-            # Get ReplicaSet API resource for revision history
-            try:
-                self._replicaset_api = self._dyn_client.resources.get(
-                    api_version="apps/v1",
-                    kind="ReplicaSet"
-                )
-            except Exception as e:
-                logger.warning("ReplicaSet core API not available")
-                self._replicaset_api = None
-            
+            for attr, api_ver, kind in [
+                ("_analysis_template_api", "argoproj.io/v1alpha1", "AnalysisTemplate"),
+                ("_cluster_analysis_template_api", "argoproj.io/v1alpha1", "ClusterAnalysisTemplate"),
+                ("_analysis_run_api", "argoproj.io/v1alpha1", "AnalysisRun"),
+                ("_experiment_api", "argoproj.io/v1alpha1", "Experiment"),
+                ("_replicaset_api", "apps/v1", "ReplicaSet"),
+            ]:
+                try:
+                    setattr(
+                        self,
+                        attr,
+                        self._dyn_client.resources.get(api_version=api_ver, kind=kind),
+                    )
+                except Exception:
+                    logger.warning(f"{kind} resource not available")
+                    setattr(self, attr, None)
+
             self._initialized = True
+            self._last_init_error = None
             logger.info("✅ Argo Rollouts Service initialized")
-        
-        except KubernetesResourceError:
+
+        except KubernetesResourceError as e:
+            self._last_init_error = str(e)
             raise
         except Exception as e:
+            self._last_init_error = str(e)
             raise KubernetesOperationError(f"Failed to initialize Argo Rollouts service: {e}")
-    
-    def _ensure_initialized(self) -> None:
-        """Ensure service is initialized.
-        
-        Raises:
-            KubernetesOperationError: If service is not initialized
+
+    async def initialize(self, strict: bool = True) -> None:
+        """Initialize Kubernetes clients.
+
+        Args:
+            strict: When False, logs initialization errors instead of raising so the
+                server can start and expose tools/resources before a cluster is reachable.
         """
-        if not self._initialized:
-            raise KubernetesOperationError(
-                "Argo Rollouts service not initialized. Call initialize() first."
-            )
+        if self._initialized:
+            return
+        self._lazy_init_enabled = True
+        try:
+            self._init_sync()
+        except Exception as e:
+            if strict:
+                raise
+            logger.warning(f"Lazy cluster initialization deferred until first cluster call: {e}")
+
+    def _ensure_initialized(self) -> None:
+        """Ensure service is initialized, attempting lazy initialization if enabled."""
+        if self._initialized:
+            return
+        if getattr(self, "_lazy_init_enabled", False):
+            self._init_sync()
+            return
+        raise KubernetesOperationError(
+            "Argo Rollouts service not initialized. Call initialize() first."
+        )
     
     async def create_rollout(
         self,
@@ -189,6 +210,7 @@ class ArgoRolloutsService:
         replicas: int = 3,
         strategy: str = "canary",
         canary_steps: Optional[List[Dict]] = None,
+        dry_run: bool = False,
         **kwargs
     ) -> Dict[str, Any]:
         """Create a Rollout resource.
@@ -361,9 +383,10 @@ class ArgoRolloutsService:
             
             strategy_spec = {"blueGreen": bluegreen_spec}
         
-        else:  # rolling
+        else:  # rolling -> zero-step canary in Argo Rollouts CRD
             strategy_spec = {
-                "rolling": {
+                "canary": {
+                    "steps": [],
                     "maxSurge": kwargs.get('max_surge', "25%"),
                     "maxUnavailable": kwargs.get('max_unavailable', 0)
                 }
@@ -422,28 +445,39 @@ class ArgoRolloutsService:
         }
         
         try:
-            created_rollout = self._rollout_api.create(
-                body=rollout_manifest,
-                namespace=namespace
-            )
-            
-            logger.info(f"✅ Rollout created: {name} in {namespace}")
+            create_kwargs: Dict[str, Any] = {
+                "body": rollout_manifest,
+                "namespace": namespace,
+            }
+            if dry_run:
+                create_kwargs["dry_run"] = "All"
+
+            created_rollout = self._rollout_api.create(**create_kwargs)
+
+            manifest_yaml = yaml.dump(rollout_manifest, default_flow_style=False)
+            logger.info(f"✅ Rollout {'previewed' if dry_run else 'created'}: {name} in {namespace}")
             result = {
-                "status": "success",
+                "status": "preview" if dry_run else "success",
+                "dry_run": dry_run,
                 "rollout": name,
                 "namespace": namespace,
                 "strategy": strategy,
                 "replicas": replicas,
                 "image": image,
-                "message": f"Rollout {name} created successfully"
+                "manifest": manifest_yaml,
+                "manifest_yaml": manifest_yaml,
+                "message": (
+                    f"[DRY-RUN PREVIEW] Rollout {name} validated successfully"
+                    if dry_run
+                    else f"Rollout {name} created successfully"
+                ),
             }
-            
-            # Include step validation warnings if any
+
             if strategy == "canary" and step_warnings:
                 result["step_warnings"] = step_warnings
-            
+
             return result
-        
+
         except ApiException as e:
             if e.status == 409:
                 raise ArgoRolloutError(f"Rollout '{name}' already exists in namespace '{namespace}'")
@@ -453,7 +487,7 @@ class ArgoRolloutsService:
                 raise ArgoRolloutError(f"Failed to create rollout: {e}")
         except Exception as e:
             raise ArgoRolloutError(f"Failed to create rollout: {e}")
-    
+
     async def get_rollout_status(
         self,
         name: str,
@@ -480,8 +514,8 @@ class ArgoRolloutsService:
             rollout_dict = rollout.to_dict() if hasattr(rollout, 'to_dict') else dict(rollout)
             
             # Extract status
-            status = rollout_dict.get("status", {})
-            spec = rollout_dict.get("spec", {})
+            status = rollout_dict.get("status", {}) or {}
+            spec = rollout_dict.get("spec", {}) or {}
             
             # Determine phase
             phase = status.get("phase", "Unknown")
@@ -500,18 +534,47 @@ class ArgoRolloutsService:
                         conditions.append(cond)
             
             # Extract metrics
-            replicas = status.get("replicas", 0)
-            updated_replicas = status.get("updatedReplicas", 0)
-            ready_replicas = status.get("readyReplicas", 0)
-            available_replicas = status.get("availableReplicas", 0)
+            replicas = status.get("replicas", 0) or 0
+            updated_replicas = status.get("updatedReplicas", 0) or 0
+            ready_replicas = status.get("readyReplicas", 0) or 0
+            available_replicas = status.get("availableReplicas", 0) or 0
+            desired_replicas = spec.get("replicas", 0) or 0
             
-            # Determine current step (for canary)
+            # Determine current step and total steps (for canary)
             current_step = status.get("currentStepIndex", None)
+            strategy_block = spec.get("strategy", {}) or {}
+            canary_block = strategy_block.get("canary", {}) or {}
+            total_steps = len(canary_block.get("steps", []) or [])
+            
+            # Canary weight & ReplicaSet hashes
+            canary_status = status.get("canary", {}) or {}
+            weights = canary_status.get("weights", {}) or {}
+            canary_weight = (weights.get("canary") or {}).get("weight")
+            stable_rs = status.get("stableRS", "")
+            current_pod_hash = status.get("currentPodHash", "")
+            pause_conditions = _to_plain_dict(status.get("pauseConditions", []) or [])
+            paused = bool(spec.get("paused") or pause_conditions or phase == "Paused")
+            aborted = bool(status.get("abort"))
+            
+            # Primary container image
+            containers = (
+                (spec.get("template") or {})
+                .get("spec", {})
+                .get("containers", [])
+            ) or []
+            image = containers[0].get("image", "") if containers else ""
             
             # Get strategy type
-            strategy_type = "canary" if "canary" in spec.get("strategy", {}) else \
-                           "bluegreen" if "blueGreen" in spec.get("strategy", {}) else \
+            strategy_type = "canary" if "canary" in strategy_block else \
+                           "bluegreen" if "blueGreen" in strategy_block else \
                            "rolling"
+            
+            health_score = _compute_health_score(
+                phase=phase,
+                desired=desired_replicas,
+                ready=ready_replicas,
+                available=available_replicas,
+            )
             
             return {
                 "status": "success",
@@ -521,7 +584,17 @@ class ArgoRolloutsService:
                 "message": message,
                 "strategy": strategy_type,
                 "current_step": current_step,
-                "desired_replicas": spec.get("replicas", 0),
+                "total_steps": total_steps,
+                "canary_weight": canary_weight,
+                "stable_rs": stable_rs,
+                "current_pod_hash": current_pod_hash,
+                "image": image,
+                "paused": paused,
+                "pause_conditions": pause_conditions,
+                "aborted": aborted,
+                "health_score": health_score,
+                "workload_ref": _to_plain_dict(spec.get("workloadRef")) if spec.get("workloadRef") else None,
+                "desired_replicas": desired_replicas,
                 "replicas": {
                     "total": replicas,
                     "updated": updated_replicas,
@@ -1032,7 +1105,8 @@ class ArgoRolloutsService:
         name: str,
         new_image: str,
         namespace: str = "default",
-        container_name: Optional[str] = None
+        container_name: Optional[str] = None,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """Update rollout container image.
         
@@ -1040,23 +1114,6 @@ class ArgoRolloutsService:
         For workloadRef rollouts: patches the referenced Deployment's template.
         The Argo Rollouts controller observes the Deployment change and starts
         a new canary/bluegreen revision.
-        
-        Fetches the current spec and updates only the image field in the
-        matching container, preserving ports, probes, env, and other fields.
-        This avoids the "does not have a named port" error when Services use
-        targetPort: <name> (e.g. http).
-        
-        Args:
-            name: Rollout name
-            new_image: New container image
-            namespace: Kubernetes namespace
-            container_name: Container name (defaults to rollout name)
-        
-        Returns:
-            Update result
-        
-        Raises:
-            RolloutNotFoundError: If rollout doesn't exist
         """
         self._ensure_initialized()
         
@@ -1066,11 +1123,10 @@ class ArgoRolloutsService:
         try:
             # Fetch current rollout
             current = self._rollout_api.get(name=name, namespace=namespace)
-            current_dict = current.to_dict()
+            current_dict = current.to_dict() if hasattr(current, "to_dict") else dict(current)
             workload_ref = current_dict.get("spec", {}).get("workloadRef")
             
             if workload_ref:
-                # workloadRef: patch the referenced Deployment; Rollout controller observes it
                 dep_name = workload_ref.get("name")
                 if not dep_name:
                     raise ArgoRolloutError(
@@ -1083,6 +1139,7 @@ class ArgoRolloutsService:
                     namespace=namespace,
                     container_name=container_name,
                     rollout_name=name,
+                    dry_run=dry_run,
                 )
             
             # Direct rollout: patch Rollout spec.template
@@ -1096,7 +1153,6 @@ class ArgoRolloutsService:
                 raise ArgoRolloutError(
                     f"Rollout '{name}' has no containers in spec.template.spec"
                 )
-            # Find and update the matching container; preserve all other fields
             updated = False
             for c in containers:
                 if c.get("name") == container_name:
@@ -1118,27 +1174,37 @@ class ArgoRolloutsService:
                     "restartAt": None,
                 }
             }
+            patch_kwargs: Dict[str, Any] = {
+                "name": name,
+                "namespace": namespace,
+                "body": patch,
+                "content_type": "application/merge-patch+json",
+            }
+            if dry_run:
+                patch_kwargs["dry_run"] = "All"
+
+            self._rollout_api.patch(**patch_kwargs)
             
-            self._rollout_api.patch(
-                name=name,
-                namespace=namespace,
-                body=patch,
-                content_type="application/merge-patch+json"
-            )
-            
-            logger.info(f"✅ Updated rollout image: {name} -> {new_image}")
+            logger.info(f"✅ {'Previewed' if dry_run else 'Updated'} rollout image: {name} -> {new_image}")
             return {
-                "status": "success",
+                "status": "preview" if dry_run else "success",
+                "dry_run": dry_run,
                 "rollout": name,
                 "namespace": namespace,
                 "new_image": new_image,
-                "message": f"Rollout {name} image updated to {new_image}"
+                "message": (
+                    f"[DRY-RUN PREVIEW] Rollout {name} image patch to {new_image} validated"
+                    if dry_run
+                    else f"Rollout {name} image updated to {new_image}"
+                ),
             }
         
         except ApiException as e:
             if e.status == 404:
                 raise RolloutNotFoundError(f"Rollout '{name}' not found in namespace '{namespace}'")
             raise ArgoRolloutError(f"Failed to update image: {e}")
+        except (RolloutNotFoundError, ArgoRolloutError):
+            raise
         except Exception as e:
             raise ArgoRolloutError(f"Failed to update image: {e}")
     
@@ -1149,13 +1215,9 @@ class ArgoRolloutsService:
         namespace: str = "default",
         container_name: Optional[str] = None,
         rollout_name: Optional[str] = None,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
-        """Update a Deployment's container image. Used for workloadRef rollouts.
-        
-        Uses JSON Patch (RFC 6902) to update only the image field, avoiding
-        serialization issues (containerPort vs container_port) when the client
-        sends full container specs.
-        """
+        """Update a Deployment's container image. Used for workloadRef rollouts."""
         apps_v1 = self._get_apps_v1()
         try:
             dep = apps_v1.read_namespaced_deployment(name=deployment_name, namespace=namespace)
@@ -1174,24 +1236,26 @@ class ArgoRolloutsService:
                     f"Container '{container_name}' not found in Deployment '{deployment_name}'. "
                     f"Containers: {[c.name for c in containers]}"
                 )
-            # JSON Patch: only replace image at path, no port/container spec serialization.
-            # Use DynamicClient (same as Rollout API) so content_type is supported.
             json_patch = [
                 {"op": "replace", "path": f"/spec/template/spec/containers/{container_index}/image", "value": new_image}
             ]
             deployment_resource = self._dyn_client.resources.get(api_version="apps/v1", kind="Deployment")
-            deployment_resource.patch(
-                name=deployment_name,
-                namespace=namespace,
-                body=json_patch,
-                content_type="application/json-patch+json",
-            )
-            msg = f"Deployment '{deployment_name}' image updated to {new_image}"
+            patch_kwargs: Dict[str, Any] = {
+                "name": deployment_name,
+                "namespace": namespace,
+                "body": json_patch,
+                "content_type": "application/json-patch+json",
+            }
+            if dry_run:
+                patch_kwargs["dry_run"] = "All"
+            deployment_resource.patch(**patch_kwargs)
+            msg = f"Deployment '{deployment_name}' image {'previewed' if dry_run else 'updated'} to {new_image}"
             if rollout_name:
                 msg += f". Rollout '{rollout_name}' will observe the change and start a new revision."
             logger.info(f"✅ {msg}")
             return {
-                "status": "success",
+                "status": "preview" if dry_run else "success",
+                "dry_run": dry_run,
                 "rollout": rollout_name or deployment_name,
                 "namespace": namespace,
                 "new_image": new_image,
@@ -1201,6 +1265,70 @@ class ArgoRolloutsService:
             if e.status == 404:
                 raise ArgoRolloutError(f"Deployment '{deployment_name}' not found in namespace '{namespace}'")
             raise ArgoRolloutError(f"Failed to update Deployment image: {e}")
+
+    async def check_workload_ref_delete_safety(
+        self,
+        name: str,
+        namespace: str = "default",
+    ) -> None:
+        """Raise ArgoRolloutError if Rollout uses workloadRef and the referenced Deployment has 0 replicas."""
+        self._ensure_initialized()
+        try:
+            ro = self._rollout_api.get(name=name, namespace=namespace)
+            ro_dict = _to_plain_dict(ro)
+        except ApiException as e:
+            if e.status == 404:
+                raise RolloutNotFoundError(f"Rollout '{name}' not found in namespace '{namespace}'")
+            return
+        except Exception:
+            return
+
+        workload_ref = (ro_dict.get("spec") or {}).get("workloadRef")
+        if not isinstance(workload_ref, dict) or not workload_ref.get("name"):
+            return
+
+        dep_name = workload_ref["name"]
+        try:
+            apps_v1 = self._get_apps_v1()
+            dep = apps_v1.read_namespaced_deployment(name=dep_name, namespace=namespace)
+            replicas = getattr(dep.spec, "replicas", None)
+            if replicas is None and isinstance(dep, dict):
+                replicas = (dep.get("spec") or {}).get("replicas")
+            if replicas == 0:
+                raise ArgoRolloutError(
+                    f"Blocked deletion of Rollout '{name}': it references Deployment '{dep_name}' "
+                    "via workloadRef, and that Deployment is scaled to 0 replicas. Deleting the Rollout "
+                    "now would cause a total service outage. First scale up the Deployment using "
+                    f"argo_manage_legacy_deployment(name='{dep_name}', namespace='{namespace}', "
+                    "action='scale', replicas=3, dry_run=False) or convert the Rollout back with "
+                    f"argo_convert_rollout_to_deployment(name='{name}', namespace='{namespace}')."
+                )
+        except ArgoRolloutError:
+            raise
+        except Exception:
+            pass
+
+    async def verify_rollout_healthy(
+        self,
+        rollout_name: Optional[str] = None,
+        namespace: str = "default",
+        name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Verify that a Rollout is Healthy with ready replicas before scaling down/deleting a legacy Deployment."""
+        target_name = rollout_name or name
+        if not target_name:
+            raise ArgoRolloutError("rollout_name or name is required for verify_rollout_healthy")
+        status = await self.get_rollout_status(name=target_name, namespace=namespace)
+        phase = status.get("phase", "Unknown")
+        ready = (status.get("replicas") or {}).get("ready", 0) or 0
+        if phase != "Healthy" or ready <= 0:
+            raise ArgoRolloutError(
+                f"Refusing to scale down or delete legacy Deployment because Rollout '{target_name}' "
+                f"in namespace '{namespace}' is in phase '{phase}' (ready_replicas={ready}), not Healthy. "
+                f"Wait until Rollout '{target_name}' is Healthy or diagnose it with "
+                f"argo_diagnose_rollout(name='{target_name}', namespace='{namespace}')."
+            )
+        return status
     
     async def delete_rollout(
         self,
@@ -1220,8 +1348,12 @@ class ArgoRolloutsService:
         
         Raises:
             RolloutNotFoundError: If rollout doesn't exist
+            ArgoRolloutError: If workloadRef safety guard blocks deletion
         """
         self._ensure_initialized()
+
+        # Pre-check: prevent outage if Rollout uses workloadRef and Deployment is at 0 replicas
+        await self.check_workload_ref_delete_safety(name=name, namespace=namespace)
         
         deleted_resources = []
         
@@ -1276,6 +1408,8 @@ class ArgoRolloutsService:
                 "message": f"Rollout {name} and associated resources deleted successfully" if clean_all else f"Rollout {name} deleted successfully"
             }
         
+        except (RolloutNotFoundError, ArgoRolloutError):
+            raise
         except ApiException as e:
             if e.status == 404:
                 raise RolloutNotFoundError(f"Rollout '{name}' not found in namespace '{namespace}'")
@@ -1288,25 +1422,9 @@ class ArgoRolloutsService:
         name: str,
         namespace: str = "default",
         scale_down: str = "progressively",
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
-        """Patch workloadRef.scaleDown on an existing Rollout.
-
-        Use when migrating from workloadRef with scaleDown: never to onsuccess
-        or progressively, so the Rollout controller can scale down the
-        referenced Deployment.
-
-        Args:
-            name: Rollout name
-            namespace: Kubernetes namespace
-            scale_down: 'never' | 'onsuccess' | 'progressively'
-
-        Returns:
-            Patch result
-
-        Raises:
-            RolloutNotFoundError: If rollout doesn't exist
-            ArgoRolloutError: If rollout has no workloadRef or patch fails
-        """
+        """Patch workloadRef.scaleDown on an existing Rollout."""
         self._ensure_initialized()
         if scale_down not in ("never", "onsuccess", "progressively"):
             raise ArgoRolloutError(
@@ -1336,26 +1454,36 @@ class ArgoRolloutsService:
         }
 
         try:
-            self._rollout_api.patch(
-                name=name,
-                namespace=namespace,
-                body=patch_body,
-                content_type="application/merge-patch+json",
-            )
+            patch_kwargs: Dict[str, Any] = {
+                "name": name,
+                "namespace": namespace,
+                "body": patch_body,
+                "content_type": "application/merge-patch+json",
+            }
+            if dry_run:
+                patch_kwargs["dry_run"] = "All"
+            self._rollout_api.patch(**patch_kwargs)
         except ApiException as e:
             raise ArgoRolloutError(f"Failed to patch workloadRef.scaleDown on rollout '{name}': {e}")
 
-        logger.info(f"✅ Patched workloadRef.scaleDown on Rollout '{name}' to '{scale_down}'")
+        logger.info(f"✅ {'Previewed' if dry_run else 'Patched'} workloadRef.scaleDown on Rollout '{name}' to '{scale_down}'")
         return {
-            "status": "success",
+            "status": "preview" if dry_run else "success",
+            "dry_run": dry_run,
             "rollout_name": name,
             "namespace": namespace,
             "scale_down": scale_down,
-            "message": f"Rollout '{name}' workloadRef.scaleDown set to '{scale_down}'",
+            "message": (
+                f"[DRY-RUN PREVIEW] Rollout '{name}' workloadRef.scaleDown patch to '{scale_down}' validated"
+                if dry_run
+                else f"Rollout '{name}' workloadRef.scaleDown set to '{scale_down}'"
+            ),
         }
 
     def _get_apps_v1(self):
         """Lazily get AppsV1Api for Deployment operations."""
+        if getattr(self, "_apps_v1", None) is not None:
+            return self._apps_v1
         return client.AppsV1Api(self._k8s_client)
 
     async def scale_deployment(
@@ -1363,48 +1491,40 @@ class ArgoRolloutsService:
         name: str,
         namespace: str = "default",
         replicas: int = 0,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
-        """Scale a Deployment's replicas.
-
-        For non-GitOps clusters. When Deployment is managed by Argo CD,
-        scaling via this method will be reverted on next sync. Use
-        argo_manage_legacy_deployment(action='generate_scale_down_manifest') (GitOps path) instead.
-
-        Args:
-            name: Deployment name
-            namespace: Kubernetes namespace
-            replicas: Target replica count (e.g. 0 for scale-down)
-
-        Returns:
-            Scale result
-
-        Raises:
-            ArgoRolloutError: If Deployment not found or scale fails
-        """
+        """Scale a Deployment's replicas."""
         self._ensure_initialized()
         apps_v1 = self._get_apps_v1()
 
         try:
             dep = apps_v1.read_namespaced_deployment(name=name, namespace=namespace)
             dep.spec.replicas = replicas
-            apps_v1.replace_namespaced_deployment(
-                name=name,
-                namespace=namespace,
-                body=dep,
-            )
+            replace_kwargs: Dict[str, Any] = {
+                "name": name,
+                "namespace": namespace,
+                "body": dep,
+            }
+            if dry_run:
+                replace_kwargs["dry_run"] = "All"
+            apps_v1.replace_namespaced_deployment(**replace_kwargs)
         except ApiException as e:
             if e.status == 404:
                 raise ArgoRolloutError(f"Deployment '{name}' not found in namespace '{namespace}'")
             raise ArgoRolloutError(f"Failed to scale Deployment '{name}': {e}")
 
-        logger.info(f"✅ Scaled Deployment '{name}' to {replicas} replicas")
+        logger.info(f"✅ {'Previewed scaling' if dry_run else 'Scaled'} Deployment '{name}' to {replicas} replicas")
         return {
-            "status": "success",
+            "status": "preview" if dry_run else "success",
             "deployment_name": name,
             "namespace": namespace,
             "replicas": replicas,
-            "message": f"Deployment '{name}' scaled to {replicas} replicas. "
-            "If Argo CD manages this Deployment, it may revert on next sync.",
+            "message": (
+                f"[DRY-RUN PREVIEW] Deployment '{name}' scale to {replicas} replicas validated."
+                if dry_run
+                else f"Deployment '{name}' scaled to {replicas} replicas. "
+                "If Argo CD manages this Deployment, it may revert on next sync."
+            ),
         }
 
     async def delete_deployment(
@@ -1412,23 +1532,7 @@ class ArgoRolloutsService:
         name: str,
         namespace: str = "default",
     ) -> Dict[str, Any]:
-        """Delete a Deployment from the cluster.
-
-        For non-GitOps clusters. When Deployment is managed by Argo CD,
-        deletion via this method may be reverted (Argo CD may recreate it).
-        Use Git: remove the Deployment manifest from the repo and let
-        Argo CD prune it.
-
-        Args:
-            name: Deployment name
-            namespace: Kubernetes namespace
-
-        Returns:
-            Deletion result
-
-        Raises:
-            ArgoRolloutError: If delete fails
-        """
+        """Delete a Deployment from the cluster."""
         self._ensure_initialized()
         apps_v1 = self._get_apps_v1()
 
@@ -1459,7 +1563,7 @@ class ArgoRolloutsService:
 
     async def list_rollouts(
         self,
-        namespace: Optional[str] = "default"
+        namespace: Optional[str] = None
     ) -> Dict[str, Any]:
         """List all rollouts in a namespace or cluster-wide.
         
@@ -1467,45 +1571,49 @@ class ArgoRolloutsService:
             namespace: Kubernetes namespace, or None to list across ALL namespaces
         
         Returns:
-            List of rollouts with basic info
+            List of rollouts with basic info and computed health_score
         """
         self._ensure_initialized()
         
         try:
-            # Use get() - omit namespace for cluster-wide list (DynamicClient API)
             if namespace:
                 list_result = self._rollout_api.get(namespace=namespace)
             else:
                 list_result = self._rollout_api.get()
             
             rollouts = []
-            # list_result is a dict with 'items' list
             items = list_result.get('items', [])
             for item in items:
                 item_dict = item.to_dict() if hasattr(item, 'to_dict') else dict(item)
                 metadata = item_dict.get("metadata", {}) or {}
                 spec = item_dict.get("spec", {}) or {}
                 status = item_dict.get("status", {}) or {}
-                # For cluster-wide, get namespace from each item's metadata
                 item_namespace = metadata.get("namespace") or namespace or "default"
                 
-                # Determine strategy
                 strategy = "canary" if "canary" in spec.get("strategy", {}) else \
                           "bluegreen" if "blueGreen" in spec.get("strategy", {}) else \
                           "rolling"
                 
-                # Extract image
                 containers = spec.get("template", {}).get("spec", {}).get("containers", [])
                 image = containers[0].get("image", "") if containers else ""
+
+                desired = spec.get("replicas", 0) or 0
+                current = status.get("replicas", 0) or 0
+                ready = status.get("readyReplicas", 0) or 0
+                available = status.get("availableReplicas", ready) or 0
+                phase = status.get("phase", "Unknown")
+                health_score = _compute_health_score(phase, desired, ready, available)
                 
                 rollouts.append({
                     "name": metadata.get("name"),
                     "namespace": item_namespace,
                     "strategy": strategy,
-                    "desired_replicas": spec.get("replicas", 0),
-                    "current_replicas": status.get("replicas", 0),
-                    "ready_replicas": status.get("readyReplicas", 0),
-                    "phase": status.get("phase", "Unknown"),
+                    "desired_replicas": desired,
+                    "current_replicas": current,
+                    "ready_replicas": ready,
+                    "available_replicas": available,
+                    "phase": phase,
+                    "health_score": health_score,
                     "created": metadata.get("creationTimestamp"),
                     "image": image
                 })
@@ -1531,26 +1639,9 @@ class ArgoRolloutsService:
         error_rate_threshold: float = 5.0,
         latency_p99_threshold: float = 2000.0,
         latency_p95_threshold: float = 1000.0,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
-        """Configure analysis template for automated metrics validation.
-        
-        Args:
-            rollout_name: Name of rollout to configure
-            template_name: Name of analysis template
-            namespace: Kubernetes namespace (ignored when scope='cluster')
-            metrics: List of metric configurations
-            scope: 'namespace' for AnalysisTemplate, 'cluster' for ClusterAnalysisTemplate
-            prometheus_url: Prometheus URL for fallback metrics (when metrics is None)
-            error_rate_threshold: Max error rate %% for fallback (when metrics is None)
-            latency_p99_threshold: Max P99 latency ms for fallback (when metrics is None)
-            latency_p95_threshold: Max P95 latency ms for fallback (when metrics is None)
-        
-        Returns:
-            Configuration result
-        
-        Raises:
-            AnalysisTemplateError: If configuration fails
-        """
+        """Configure analysis template for automated metrics validation."""
         self._ensure_initialized()
         
         if scope == "cluster":
@@ -1560,7 +1651,6 @@ class ArgoRolloutsService:
             if not self._analysis_template_api:
                 raise AnalysisTemplateError("AnalysisTemplate CRD not available")
         
-        # Default metrics if not provided — use canonical generator path when available
         if metrics is None:
             if self._generator_service is not None:
                 metrics = self._generator_service.get_analysis_metrics_from_thresholds(
@@ -1571,7 +1661,6 @@ class ArgoRolloutsService:
                     latency_p95_threshold=latency_p95_threshold,
                 )
             else:
-                # Minimal fallback when generator not injected (e.g. tests)
                 metrics = [
                     {
                         "name": "success-rate",
@@ -1589,15 +1678,12 @@ class ArgoRolloutsService:
                     }
                 ]
         
-        # Add count to metrics with successCondition so template works for BOTH canary and blue-green.
-        # Blue-green prePromotionAnalysis requires count; canary accepts it (passes after N successes).
         metrics = [
             {**m, "count": m.get("count", 3)} if m.get("successCondition") and "count" not in m else m
             for m in metrics
         ]
         
         try:
-            # Fetch rollout to determine strategy for linking (blueGreen vs canary)
             rollout = self._rollout_api.get(name=rollout_name, namespace=namespace)
             rollout_dict = _to_plain_dict(rollout)
             strategy = rollout_dict.get("spec", {}).get("strategy", {})
@@ -1624,40 +1710,48 @@ class ArgoRolloutsService:
                 "spec": {"metrics": metrics},
             }
         
+        template_yaml = yaml.dump(analysis_template, default_flow_style=False)
+
         try:
-            # Create or update template
+            create_extra: Dict[str, Any] = {"dry_run": "All"} if dry_run else {}
+            patch_extra: Dict[str, Any] = {"dry_run": "All"} if dry_run else {}
+
             if scope == "cluster":
                 try:
-                    self._cluster_analysis_template_api.create(body=analysis_template)
+                    self._cluster_analysis_template_api.create(body=analysis_template, **create_extra)
                 except ApiException as e:
-                    if e.status == 409:  # Already exists, update it
+                    if e.status == 409:
                         self._cluster_analysis_template_api.patch(
                             name=template_name,
                             body=analysis_template,
-                            content_type="application/merge-patch+json"
+                            content_type="application/merge-patch+json",
+                            **patch_extra,
                         )
+                    else:
+                        raise
             else:
                 try:
                     self._analysis_template_api.create(
                         body=analysis_template,
-                        namespace=namespace
+                        namespace=namespace,
+                        **create_extra,
                     )
                 except ApiException as e:
-                    if e.status == 409:  # Already exists, update it
+                    if e.status == 409:
                         self._analysis_template_api.patch(
                             name=template_name,
                             namespace=namespace,
                             body=analysis_template,
-                            content_type="application/merge-patch+json"
+                            content_type="application/merge-patch+json",
+                            **patch_extra,
                         )
+                    else:
+                        raise
             
-            # Update rollout to reference this template (rollout/strategy already fetched above)
-
             template_ref = {"templateName": template_name}
             if scope == "cluster":
                 template_ref["clusterScope"] = True
 
-            # Use blueGreen.prePromotionAnalysis for blue-green, canary.analysis for canary
             if "blueGreen" in strategy:
                 patch = {
                     "spec": {
@@ -1687,16 +1781,25 @@ class ArgoRolloutsService:
                 name=rollout_name,
                 namespace=namespace,
                 body=patch,
-                content_type="application/merge-patch+json"
+                content_type="application/merge-patch+json",
+                **patch_extra,
             )
             
-            logger.info(f"✅ Analysis template {template_name} configured")
+            logger.info(f"✅ Analysis template {template_name} {'previewed' if dry_run else 'configured'}")
             return {
-                "status": "success",
+                "status": "preview" if dry_run else "success",
+                "dry_run": dry_run,
                 "template_name": template_name,
                 "rollout": rollout_name,
                 "namespace": namespace,
-                "message": f"Analysis template configured for rollout {rollout_name}"
+                "scope": scope,
+                "manifest": template_yaml,
+                "template_yaml": template_yaml,
+                "message": (
+                    f"[DRY-RUN PREVIEW] AnalysisTemplate '{template_name}' and Rollout '{rollout_name}' link validated"
+                    if dry_run
+                    else f"Analysis template configured for rollout {rollout_name}"
+                ),
             }
         
         except ApiException as e:
@@ -1710,34 +1813,36 @@ class ArgoRolloutsService:
         self,
         name: str,
         namespace: str = "default",
+        scope: str = "namespace",
     ) -> Dict[str, Any]:
-        """Delete an AnalysisTemplate from the cluster.
-
-        Args:
-            name: AnalysisTemplate name
-            namespace: Kubernetes namespace
-
-        Returns:
-            Dict with status and message
-        """
+        """Delete an AnalysisTemplate or ClusterAnalysisTemplate from the cluster."""
         self._ensure_initialized()
 
         try:
-            self._analysis_template_api.delete(name=name, namespace=namespace)
-            logger.info(f"✅ Deleted AnalysisTemplate: {name}")
+            if scope == "cluster":
+                if not self._cluster_analysis_template_api:
+                    raise AnalysisTemplateError("ClusterAnalysisTemplate CRD not available")
+                self._cluster_analysis_template_api.delete(name=name)
+            else:
+                if not self._analysis_template_api:
+                    raise AnalysisTemplateError("AnalysisTemplate CRD not available")
+                self._analysis_template_api.delete(name=name, namespace=namespace)
+            logger.info(f"✅ Deleted {'Cluster' if scope == 'cluster' else ''}AnalysisTemplate: {name}")
             return {
                 "status": "success",
                 "template_name": name,
-                "namespace": namespace,
-                "message": f"AnalysisTemplate '{name}' deleted successfully",
+                "namespace": namespace if scope != "cluster" else None,
+                "scope": scope,
+                "message": f"{'Cluster' if scope == 'cluster' else ''}AnalysisTemplate '{name}' deleted successfully",
             }
         except ApiException as e:
             if e.status == 404:
                 return {
                     "status": "success",
                     "template_name": name,
-                    "namespace": namespace,
-                    "message": f"AnalysisTemplate '{name}' not found (already deleted or never existed)",
+                    "namespace": namespace if scope != "cluster" else None,
+                    "scope": scope,
+                    "message": f"{'Cluster' if scope == 'cluster' else ''}AnalysisTemplate '{name}' not found (already deleted or never existed)",
                 }
             raise AnalysisTemplateError(f"Failed to delete AnalysisTemplate '{name}': {e}")
     
@@ -1922,7 +2027,8 @@ class ArgoRolloutsService:
         analyses: Optional[List[Dict[str, Any]]] = None,
         progress_deadline_seconds: int = 300,
         rollout_name: Optional[str] = None,
-        rollout_namespace: Optional[str] = None
+        rollout_namespace: Optional[str] = None,
+        dry_run: bool = False
     ) -> Dict[str, Any]:
         """Create a standalone Argo Experiment.
         
@@ -1949,6 +2055,7 @@ class ArgoRolloutsService:
                 - requiredForCompletion: bool (optional)
                 - args: List of {name, value} pairs (optional)
             progress_deadline_seconds: Deadline for ReplicaSets to become available
+            dry_run: If True, run server-side dry-run ("All") without mutating cluster
         
         Returns:
             Creation result with experiment details
@@ -2007,20 +2114,28 @@ class ArgoRolloutsService:
             # client sanitize_for_serialization hitting ResourceInstance/openapi_types
             experiment_body = json.loads(json.dumps(experiment_body, default=str))
 
+            create_kwargs: Dict[str, Any] = {
+                "body": experiment_body,
+                "namespace": namespace,
+            }
+            if dry_run:
+                create_kwargs["dry_run"] = "All"
+
             result = await asyncio.to_thread(
                 self._experiment_api.create,
-                body=experiment_body,
-                namespace=namespace
+                **create_kwargs
             )
             
             return {
-                "status": "success",
+                "status": "preview" if dry_run else "success",
+                "dry_run": dry_run,
                 "experiment": name,
                 "namespace": namespace,
                 "templates": [t.get("name", "unknown") for t in templates],
                 "duration": duration or "indefinite",
                 "analyses": [a.get("name", "unknown") for a in (analyses or [])],
-                "message": f"Experiment '{name}' created successfully",
+                "manifest": yaml.dump(experiment_body, default_flow_style=False),
+                "message": f"Experiment '{name}' {'validated (dry-run)' if dry_run else 'created successfully'}",
                 "traefik_note": "Weighted experiment traffic routing is NOT supported with Traefik. Use experiments for metrics comparison only."
             }
         
@@ -2153,6 +2268,7 @@ class ArgoRolloutsService:
         traefik_service_name: Optional[str] = None,
         gateway_api_config: Optional[Dict[str, Any]] = None,
         clear_routing: bool = False,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """Patch the trafficRouting stanza on an existing Rollout.
 
@@ -2173,6 +2289,7 @@ class ArgoRolloutsService:
                                Example: {"httpRoute": "my-app-route", "namespace": "default"}.
                                Mutually exclusive with traefik_service_name.
             clear_routing: If True, remove any existing trafficRouting stanza.
+            dry_run: If True, run server-side dry-run ("All") without mutating cluster.
 
         Returns:
             Dict with status, rollout_name, traffic_routing config applied.
@@ -2192,7 +2309,7 @@ class ArgoRolloutsService:
                 raise RolloutNotFoundError(f"Rollout '{name}' not found in namespace '{namespace}'")
             raise ArgoRolloutError(f"Failed to fetch rollout: {e}")
 
-        current_dict = current.to_dict()
+        current_dict = _to_plain_dict(current)
         strategy = current_dict.get("spec", {}).get("strategy", {})
 
         if "canary" not in strategy and "blueGreen" not in strategy:
@@ -2273,13 +2390,17 @@ class ArgoRolloutsService:
                 "or set 'clear_routing=True' to remove it."
             )
 
+        patch_kwargs: Dict[str, Any] = {
+            "name": name,
+            "namespace": namespace,
+            "body": patch_body,
+            "content_type": "application/merge-patch+json",
+        }
+        if dry_run:
+            patch_kwargs["dry_run"] = "All"
+
         try:
-            self._rollout_api.patch(
-                name=name,
-                namespace=namespace,
-                body=patch_body,
-                content_type="application/merge-patch+json",
-            )
+            self._rollout_api.patch(**patch_kwargs)
         except ApiException as e:
             raise ArgoRolloutError(f"Failed to patch trafficRouting on rollout '{name}': {e}")
 
@@ -2302,7 +2423,7 @@ class ArgoRolloutsService:
         annotations = metadata.get("annotations", {}) or {}
         labels = metadata.get("labels", {}) or {}
         is_argocd_managed = "argocd.argoproj.io/tracking-id" in annotations
-        is_helm_managed = "helm.sh/chart" in labels or "app.kubernetes.io/managed-by" in labels and labels.get("app.kubernetes.io/managed-by") == "Helm"
+        is_helm_managed = "helm.sh/chart" in labels or ("app.kubernetes.io/managed-by" in labels and labels.get("app.kubernetes.io/managed-by") == "Helm")
         persistence_warning = None
         if (is_argocd_managed or is_helm_managed) and traffic_routing_applied:
             persistence_warning = (
@@ -2312,11 +2433,13 @@ class ArgoRolloutsService:
             )
 
         result = {
-            "status": "success",
+            "status": "preview" if dry_run else "success",
+            "dry_run": dry_run,
             "rollout_name": name,
             "namespace": namespace,
             "strategy": strategy_key,
             "traffic_routing": traffic_routing_applied,
+            "manifest": yaml.dump(patch_body, default_flow_style=False),
             "message": msg,
         }
         if persistence_warning:
@@ -2331,6 +2454,7 @@ class ArgoRolloutsService:
         stable_service: Optional[str] = None,
         canary_steps: Optional[List[Dict[str, Any]]] = None,
         scale_down_delay_seconds: Optional[int] = None,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """Update the canary strategy on an existing Rollout.
 
@@ -2345,6 +2469,7 @@ class ArgoRolloutsService:
             canary_steps: New canary steps (optional)
             scale_down_delay_seconds: Delay before scaling down old ReplicaSet (optional).
                 Use 30 for default; 0 prevents scale down (keeps old RS for fast rollback).
+            dry_run: If True, run server-side dry-run ("All") without mutating cluster.
 
         Returns:
             Dict with status and updated strategy details
@@ -2363,7 +2488,7 @@ class ArgoRolloutsService:
                 raise RolloutNotFoundError(f"Rollout '{name}' not found in namespace '{namespace}'")
             raise ArgoRolloutError(f"Failed to fetch rollout: {e}")
 
-        current_dict = current.to_dict()
+        current_dict = _to_plain_dict(current)
         strategy = current_dict.get("spec", {}).get("strategy", {})
 
         if "canary" not in strategy:
@@ -2390,7 +2515,8 @@ class ArgoRolloutsService:
 
         if not updated:
             return {
-                "status": "success",
+                "status": "preview" if dry_run else "success",
+                "dry_run": dry_run,
                 "rollout_name": name,
                 "namespace": namespace,
                 "message": "No changes specified; strategy unchanged.",
@@ -2404,33 +2530,40 @@ class ArgoRolloutsService:
             }
         }
 
+        patch_kwargs: Dict[str, Any] = {
+            "name": name,
+            "namespace": namespace,
+            "body": patch_body,
+            "content_type": "application/merge-patch+json",
+        }
+        if dry_run:
+            patch_kwargs["dry_run"] = "All"
+
         try:
-            self._rollout_api.patch(
-                name=name,
-                namespace=namespace,
-                body=patch_body,
-                content_type="application/merge-patch+json",
-            )
+            self._rollout_api.patch(**patch_kwargs)
         except ApiException as e:
             raise ArgoRolloutError(f"Failed to patch canary strategy on rollout '{name}': {e}")
 
         logger.info(f"✅ Updated canary strategy on Rollout '{name}'")
 
         return {
-            "status": "success",
+            "status": "preview" if dry_run else "success",
+            "dry_run": dry_run,
             "rollout_name": name,
             "namespace": namespace,
             "canary_service": canary_spec.get("canaryService"),
             "stable_service": canary_spec.get("stableService"),
             "canary_steps": canary_spec.get("steps"),
             "scale_down_delay_seconds": canary_spec.get("scaleDownDelaySeconds"),
-            "message": f"✅ Canary strategy updated on Rollout '{name}'",
+            "manifest": yaml.dump(patch_body, default_flow_style=False),
+            "message": f"✅ Canary strategy {'validated (dry-run)' if dry_run else 'updated'} on Rollout '{name}'",
         }
 
     def remove_conflicting_strategy_block(
         self,
         name: str,
         namespace: str = "default",
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """Remove conflicting strategy block (e.g. canary from blue-green rollout).
 
@@ -2441,6 +2574,7 @@ class ArgoRolloutsService:
         Args:
             name: Rollout name
             namespace: Kubernetes namespace
+            dry_run: If True, run server-side dry-run ("All") without mutating cluster.
 
         Returns:
             Dict with status and message
@@ -2459,7 +2593,8 @@ class ArgoRolloutsService:
 
         if "canary" not in strategy:
             return {
-                "status": "success",
+                "status": "preview" if dry_run else "success",
+                "dry_run": dry_run,
                 "rollout_name": name,
                 "namespace": namespace,
                 "message": "No conflicting canary block found; rollout spec is valid.",
@@ -2480,21 +2615,523 @@ class ArgoRolloutsService:
             }
         }
 
+        patch_kwargs: Dict[str, Any] = {
+            "name": name,
+            "namespace": namespace,
+            "body": patch_body,
+            "content_type": "application/merge-patch+json",
+        }
+        if dry_run:
+            patch_kwargs["dry_run"] = "All"
+
         try:
-            self._rollout_api.patch(
-                name=name,
-                namespace=namespace,
-                body=patch_body,
-                content_type="application/merge-patch+json",
-            )
+            self._rollout_api.patch(**patch_kwargs)
         except ApiException as e:
             raise ArgoRolloutError(f"Failed to remove conflicting strategy block on rollout '{name}': {e}")
 
         logger.info(f"✅ Removed conflicting canary block from blue-green Rollout '{name}'")
 
         return {
-            "status": "success",
+            "status": "preview" if dry_run else "success",
+            "dry_run": dry_run,
             "rollout_name": name,
             "namespace": namespace,
+            "manifest": yaml.dump(patch_body, default_flow_style=False),
             "message": f"✅ Removed conflicting canary block from Rollout '{name}'. Blue-green strategy is now valid.",
+        }
+
+    async def diagnose_rollout(
+        self,
+        name: str,
+        namespace: str = "default",
+        include_events: bool = True,
+        include_analysis: bool = True,
+        include_pods: bool = False,
+    ) -> Dict[str, Any]:
+        """Collect single-call diagnosis snapshot for a Rollout.
+
+        Produces deterministic diagnosis codes for the troubleshooting-argo-rollouts skill.
+        """
+        self._ensure_initialized()
+
+        try:
+            rollout_obj = self._rollout_api.get(name=name, namespace=namespace)
+        except ApiException as e:
+            if e.status == 404:
+                raise RolloutNotFoundError(f"Rollout '{name}' not found in namespace '{namespace}'")
+            raise ArgoRolloutError(f"Failed to fetch rollout '{name}': {e}")
+
+        rollout_dict = _to_plain_dict(rollout_obj)
+        spec = rollout_dict.get("spec") or {}
+        status = rollout_dict.get("status") or {}
+        metadata = rollout_dict.get("metadata") or {}
+        strategy_dict = spec.get("strategy") or {}
+
+        strategy_type = "canary" if "canary" in strategy_dict else ("bluegreen" if "blueGreen" in strategy_dict else "unknown")
+        phase = status.get("phase", "Unknown")
+        message = status.get("message", "") or ""
+        current_step = status.get("currentStepIndex")
+        canary_weight = (status.get("canary") or {}).get("weights", {}).get("canary", {}).get("weight")
+        paused = bool(status.get("pauseConditions")) or bool(spec.get("paused", False))
+        aborted = bool(status.get("abort", False)) or phase == "Degraded" and "abort" in message.lower()
+
+        replicas_info = {
+            "desired": spec.get("replicas", 0),
+            "ready": status.get("readyReplicas", 0),
+            "available": status.get("availableReplicas", 0),
+            "updated": status.get("updatedReplicas", 0),
+        }
+
+        diagnosis_codes: List[str] = []
+
+        # 1. Conflicting strategy blocks / InvalidSpec
+        conditions = status.get("conditions") or []
+        has_both_strategies = "canary" in strategy_dict and "blueGreen" in strategy_dict
+        has_invalid_spec_cond = any(
+            c.get("type") == "InvalidSpec" and c.get("status") == "True"
+            for c in conditions
+        )
+        if has_both_strategies or has_invalid_spec_cond or "InvalidSpec" in message:
+            diagnosis_codes.append("INVALID_SPEC_STRATEGY_CONFLICT")
+
+        # 2. ProgressDeadlineExceeded
+        if any(
+            c.get("reason") == "ProgressDeadlineExceeded" or "ProgressDeadlineExceeded" in (c.get("message") or "")
+            for c in conditions
+        ) or "ProgressDeadlineExceeded" in message:
+            diagnosis_codes.append("PROGRESS_DEADLINE_EXCEEDED")
+
+        # 3. Rollout Aborted
+        if aborted or any(c.get("reason") == "RolloutAborted" for c in conditions):
+            diagnosis_codes.append("ROLLOUT_ABORTED")
+
+        # 4. Paused awaiting promotion
+        if paused or phase == "Paused":
+            diagnosis_codes.append("PAUSED_AWAITING_PROMOTION")
+
+        # 5. Collect latest AnalysisRuns if requested
+        failing_metrics: List[Dict[str, Any]] = []
+        if include_analysis:
+            runs_resp = await self.list_analysis_runs(rollout_name=name, namespace=namespace, limit=5)
+            for run in runs_resp.get("analysis_runs", []):
+                if run.get("phase") in ("Failed", "Error", "Inconclusive"):
+                    if "ANALYSIS_RUN_FAILED" not in diagnosis_codes:
+                        diagnosis_codes.append("ANALYSIS_RUN_FAILED")
+                    for fm in run.get("failing_metrics", []):
+                        failing_metrics.append(fm)
+
+        # 6. Collect pod statuses & warning events
+        warning_events: List[Dict[str, Any]] = []
+        pods_snapshot: List[Dict[str, Any]] = []
+        match_labels = (spec.get("selector") or {}).get("matchLabels") or {"app": name}
+        label_selector = ",".join(f"{k}={v}" for k, v in match_labels.items())
+
+        if self._core_v1 and (include_pods or include_events):
+            try:
+                pod_list = self._core_v1.list_namespaced_pod(
+                    namespace=namespace,
+                    label_selector=label_selector,
+                )
+                for pod in getattr(pod_list, "items", []) or []:
+                    pod_dict = _to_plain_dict(pod)
+                    pod_meta = pod_dict.get("metadata") or {}
+                    pod_status = pod_dict.get("status") or {}
+                    c_statuses = pod_status.get("containerStatuses") or pod_status.get("container_statuses") or []
+                    waiting_reasons = []
+                    restarts = 0
+                    for cs in c_statuses:
+                        restarts += int(cs.get("restartCount") or cs.get("restart_count") or 0)
+                        state = cs.get("state") or {}
+                        waiting = state.get("waiting") or {}
+                        reason = waiting.get("reason")
+                        if reason:
+                            waiting_reasons.append(reason)
+                            if reason in ("ImagePullBackOff", "ErrImagePull") and "IMAGE_PULL_BACKOFF" not in diagnosis_codes:
+                                diagnosis_codes.append("IMAGE_PULL_BACKOFF")
+                            if reason == "CrashLoopBackOff" and "CRASH_LOOP_BACKOFF" not in diagnosis_codes:
+                                diagnosis_codes.append("CRASH_LOOP_BACKOFF")
+                    if include_pods:
+                        pods_snapshot.append({
+                            "name": pod_meta.get("name"),
+                            "phase": pod_status.get("phase"),
+                            "restarts": restarts,
+                            "waiting_reasons": waiting_reasons,
+                        })
+            except Exception as exc:
+                logger.debug(f"Could not list pods for rollout diagnosis: {exc}")
+
+        if self._core_v1 and include_events:
+            try:
+                ev_list = self._core_v1.list_namespaced_event(namespace=namespace)
+                for ev in getattr(ev_list, "items", []) or []:
+                    ev_dict = _to_plain_dict(ev)
+                    ev_type = ev_dict.get("type", "Normal")
+                    involved = ev_dict.get("involvedObject") or ev_dict.get("involved_object") or {}
+                    involved_name = involved.get("name") or ""
+                    if ev_type == "Warning" and involved_name.startswith(name):
+                        reason = ev_dict.get("reason", "")
+                        msg_ev = ev_dict.get("message", "")
+                        warning_events.append({
+                            "reason": reason,
+                            "object": involved_name,
+                            "message": msg_ev,
+                        })
+                        if reason in ("Failed", "BackOff") and ("ImagePullBackOff" in msg_ev or "ErrImagePull" in msg_ev):
+                            if "IMAGE_PULL_BACKOFF" not in diagnosis_codes:
+                                diagnosis_codes.append("IMAGE_PULL_BACKOFF")
+                        if "CrashLoopBackOff" in msg_ev and "CRASH_LOOP_BACKOFF" not in diagnosis_codes:
+                            diagnosis_codes.append("CRASH_LOOP_BACKOFF")
+            except Exception as exc:
+                logger.debug(f"Could not list warning events for rollout diagnosis: {exc}")
+
+        # 7. Check ArgoCD traffic routing drift risk
+        annotations = metadata.get("annotations") or {}
+        canary_cfg = strategy_dict.get("canary") or {}
+        if "argocd.argoproj.io/tracking-id" in annotations and canary_cfg.get("trafficRouting"):
+            diagnosis_codes.append("ARGOCD_TRAFFIC_ROUTING_DRIFT")
+
+        # 8. Replica degraded check
+        if phase == "Degraded" and not diagnosis_codes:
+            diagnosis_codes.append("REPLICA_DEGRADED")
+
+        if not diagnosis_codes and phase == "Healthy":
+            diagnosis_codes.append("HEALTHY")
+
+        summary_msg = (
+            f"Rollout '{name}' in namespace '{namespace}' is in phase '{phase}'"
+            f" (codes: {', '.join(diagnosis_codes) if diagnosis_codes else 'NONE'})."
+        )
+        if message:
+            summary_msg += f" Controller message: {message}"
+
+        return {
+            "name": name,
+            "namespace": namespace,
+            "phase": phase,
+            "strategy": strategy_type,
+            "summary": summary_msg,
+            "diagnosis_codes": diagnosis_codes,
+            "current_step": current_step,
+            "canary_weight": canary_weight,
+            "replicas": replicas_info,
+            "conditions": [
+                {
+                    "type": c.get("type"),
+                    "status": c.get("status"),
+                    "reason": c.get("reason", ""),
+                    "message": c.get("message", ""),
+                }
+                for c in conditions
+            ],
+            "failing_metrics": failing_metrics,
+            "warning_events": warning_events[:15],
+            "pods": pods_snapshot,
+        }
+
+    async def list_analysis_runs(
+        self,
+        rollout_name: str,
+        namespace: str = "default",
+        limit: int = 5,
+    ) -> Dict[str, Any]:
+        """List recent AnalysisRuns associated with a Rollout."""
+        self._ensure_initialized()
+        if self._analysis_run_api is None:
+            return {"rollout_name": rollout_name, "namespace": namespace, "analysis_runs": []}
+
+        try:
+            resp = self._analysis_run_api.get(namespace=namespace)
+            items = getattr(resp, "items", None) or (_to_plain_dict(resp).get("items") or [])
+            runs = []
+            for item in items:
+                d = _to_plain_dict(item)
+                meta = d.get("metadata") or {}
+                run_name = meta.get("name", "")
+                owner_refs = meta.get("ownerReferences") or meta.get("owner_references") or []
+                belongs = run_name.startswith(rollout_name) or any(
+                    o.get("name") == rollout_name for o in owner_refs
+                )
+                if not belongs:
+                    continue
+                st = d.get("status") or {}
+                metric_results = st.get("metricResults") or []
+                failing = []
+                for mr in metric_results:
+                    if mr.get("phase") in ("Failed", "Error", "Inconclusive"):
+                        measurements = mr.get("measurements") or []
+                        last_val = measurements[-1].get("value") if measurements else None
+                        failing.append({
+                            "metric": mr.get("name"),
+                            "phase": mr.get("phase"),
+                            "value": last_val,
+                            "message": mr.get("message", ""),
+                        })
+                runs.append({
+                    "name": run_name,
+                    "phase": st.get("phase", "Unknown"),
+                    "message": st.get("message", ""),
+                    "created_at": str(meta.get("creationTimestamp") or meta.get("creation_timestamp") or ""),
+                    "metric_results": [
+                        {
+                            "name": mr.get("name"),
+                            "phase": mr.get("phase"),
+                            "count": mr.get("count", 0),
+                            "successful": mr.get("successful", 0),
+                            "failed": mr.get("failed", 0),
+                        }
+                        for mr in metric_results
+                    ],
+                    "failing_metrics": failing,
+                })
+            runs.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+            return {
+                "rollout_name": rollout_name,
+                "namespace": namespace,
+                "count": len(runs[:limit]),
+                "analysis_runs": runs[:limit],
+            }
+        except Exception as e:
+            logger.debug(f"Could not list AnalysisRuns for '{rollout_name}': {e}")
+            return {"rollout_name": rollout_name, "namespace": namespace, "analysis_runs": [], "error": str(e)}
+
+    async def list_analysis_templates(
+        self,
+        namespace: str = "default",
+    ) -> Dict[str, Any]:
+        """List namespace AnalysisTemplates and ClusterAnalysisTemplates."""
+        self._ensure_initialized()
+        templates: List[Dict[str, Any]] = []
+
+        if self._analysis_template_api is not None:
+            try:
+                ns_resp = self._analysis_template_api.get(namespace=namespace)
+                ns_items = getattr(ns_resp, "items", None) or (_to_plain_dict(ns_resp).get("items") or [])
+                for item in ns_items:
+                    d = _to_plain_dict(item)
+                    meta = d.get("metadata") or {}
+                    spec = d.get("spec") or {}
+                    templates.append({
+                        "name": meta.get("name"),
+                        "namespace": meta.get("namespace", namespace),
+                        "scope": "namespace",
+                        "args": [a.get("name") for a in (spec.get("args") or [])],
+                        "metrics": [m.get("name") for m in (spec.get("metrics") or [])],
+                    })
+            except Exception as e:
+                logger.debug(f"Could not list AnalysisTemplates in '{namespace}': {e}")
+
+        if self._cluster_analysis_template_api is not None:
+            try:
+                cl_resp = self._cluster_analysis_template_api.get()
+                cl_items = getattr(cl_resp, "items", None) or (_to_plain_dict(cl_resp).get("items") or [])
+                for item in cl_items:
+                    d = _to_plain_dict(item)
+                    meta = d.get("metadata") or {}
+                    spec = d.get("spec") or {}
+                    templates.append({
+                        "name": meta.get("name"),
+                        "namespace": None,
+                        "scope": "cluster",
+                        "args": [a.get("name") for a in (spec.get("args") or [])],
+                        "metrics": [m.get("name") for m in (spec.get("metrics") or [])],
+                    })
+            except Exception as e:
+                logger.debug(f"Could not list ClusterAnalysisTemplates: {e}")
+
+        return {
+            "namespace": namespace,
+            "count": len(templates),
+            "templates": templates,
+        }
+
+    def get_kube_contexts(self) -> Dict[str, Any]:
+        """Return available kubeconfig contexts and active context without credentials."""
+        try:
+            contexts, active_context = config.list_kube_config_contexts(
+                config_file=self.config.kubernetes.kubeconfig
+            )
+            ctx_list = []
+            for c in contexts or []:
+                ctx_info = c.get("context") or {}
+                ctx_list.append({
+                    "name": c.get("name"),
+                    "cluster": ctx_info.get("cluster"),
+                    "namespace": ctx_info.get("namespace", "default"),
+                })
+            active_name = (
+                self.config.kubernetes.context_name
+                or (active_context.get("name") if active_context else None)
+            )
+            return {
+                "active_context": active_name,
+                "configured_context": self.config.kubernetes.context_name,
+                "in_cluster": self.config.kubernetes.in_cluster,
+                "contexts": ctx_list,
+            }
+        except Exception as e:
+            return {
+                "active_context": self.config.kubernetes.context_name,
+                "configured_context": self.config.kubernetes.context_name,
+                "in_cluster": self.config.kubernetes.in_cluster,
+                "contexts": [],
+                "note": f"Could not load local kubeconfig contexts: {e}",
+            }
+
+    def get_server_capabilities(self) -> Dict[str, Any]:
+        """Return server capabilities, write mode, enabled toolsets, and CRD availability."""
+        cluster_connected = False
+        try:
+            self._ensure_initialized()
+            cluster_connected = self._initialized
+        except Exception:
+            cluster_connected = False
+
+        return {
+            "server_name": getattr(self.config, "server_name", "argo-rollout-mcp-server"),
+            "server_version": getattr(self.config, "server_version", "0.2.0"),
+            "allow_write": getattr(self.config, "allow_write", False),
+            "toolsets": getattr(self.config, "toolsets", ["all"]),
+            "cluster_connected": cluster_connected,
+            "crds_installed": {
+                "rollout": self._rollout_api is not None,
+                "analysis_template": self._analysis_template_api is not None,
+                "cluster_analysis_template": self._cluster_analysis_template_api is not None,
+                "analysis_run": self._analysis_run_api is not None,
+                "experiment": self._experiment_api is not None,
+            },
+            "prometheus_url": getattr(self.config, "prometheus_url", None),
+        }
+
+    async def convert_rollout_to_deployment_live(
+        self,
+        name: str,
+        namespace: str = "default",
+        deployment_strategy: str = "RollingUpdate",
+        dry_run: bool = True,
+        generator_service: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Fetch a live Rollout from the cluster and convert it back to a Deployment.
+
+        When dry_run=True, returns the converted Deployment YAML without applying it.
+        When dry_run=False, creates/patches the Deployment in the cluster via AppsV1Api.
+        """
+        rollout_dict = await self.get_rollout_manifest(name=name, namespace=namespace)
+        if generator_service is None:
+            from argo_rollout_mcp_server.services.generator_service import GeneratorService
+            generator_service = GeneratorService(self.config)
+
+        spec = (rollout_dict or {}).get("spec") or {} if isinstance(rollout_dict, dict) else {}
+        workload_ref = spec.get("workloadRef") if isinstance(spec, dict) else None
+        if workload_ref and "template" not in spec:
+            ref_name = workload_ref.get("name") or name
+            desired_replicas = int(spec.get("replicas", 1))
+            base_dep_yaml = await generator_service.fetch_deployment_yaml(
+                deployment_name=ref_name,
+                namespace=namespace,
+            )
+            dep_obj = yaml.safe_load(base_dep_yaml) or {}
+            dep_obj.setdefault("spec", {})["replicas"] = desired_replicas
+            if deployment_strategy == "RollingUpdate":
+                dep_obj["spec"]["strategy"] = {
+                    "type": "RollingUpdate",
+                    "rollingUpdate": {"maxSurge": "25%", "maxUnavailable": "25%"},
+                }
+            else:
+                dep_obj["spec"]["strategy"] = {"type": "Recreate"}
+            dep_yaml = yaml.dump(dep_obj, default_flow_style=False)
+            removed_fields = ["spec.strategy (Argo canary/bluegreen)", "spec.workloadRef"]
+            if dry_run:
+                return {
+                    "status": "preview",
+                    "dry_run": True,
+                    "name": ref_name,
+                    "namespace": namespace,
+                    "deployment_strategy": deployment_strategy,
+                    "manifest": dep_yaml,
+                    "removed_fields": removed_fields,
+                    "message": (
+                        f"Generated Deployment preview restoring referenced Deployment '{ref_name}' "
+                        f"to {desired_replicas} replica(s) from workloadRef Rollout '{name}' (dry_run=True). "
+                        "Re-run with dry_run=False to apply."
+                    ),
+                }
+            await self.patch_workload_ref_scale_down(
+                name=name,
+                namespace=namespace,
+                scale_down="never",
+                dry_run=False,
+            )
+            self._ensure_initialized()
+            self._apps_v1.patch_namespaced_deployment(
+                name=ref_name,
+                namespace=namespace,
+                body=dep_obj,
+            )
+            return {
+                "status": "success",
+                "dry_run": False,
+                "name": ref_name,
+                "namespace": namespace,
+                "deployment_strategy": deployment_strategy,
+                "manifest": dep_yaml,
+                "removed_fields": removed_fields,
+                "message": (
+                    f"Restored referenced Deployment '{ref_name}' to {desired_replicas} replica(s) "
+                    f"and set Rollout '{name}' workloadRef.scaleDown='never' in namespace '{namespace}'."
+                ),
+            }
+
+        rollout_yaml_str = (
+            yaml.safe_dump(rollout_dict, default_flow_style=False)
+            if isinstance(rollout_dict, dict)
+            else rollout_dict
+        )
+        conv = await generator_service.convert_rollout_to_deployment(
+            rollout_yaml=rollout_yaml_str,
+            deployment_strategy=deployment_strategy,
+        )
+        if conv.get("status") == "error":
+            raise ArgoRolloutError(conv.get("error", "Rollout to Deployment conversion failed"))
+
+        dep_yaml = conv["deployment_yaml"]
+        if dry_run:
+            return {
+                "status": "preview",
+                "dry_run": True,
+                "name": name,
+                "namespace": namespace,
+                "deployment_strategy": deployment_strategy,
+                "manifest": dep_yaml,
+                "removed_fields": conv.get("removed_fields", []),
+                "message": f"Generated Deployment preview from Rollout '{name}' (dry_run=True). Re-run with dry_run=False to apply.",
+            }
+
+        self._ensure_initialized()
+        dep_obj = yaml.safe_load(dep_yaml)
+        try:
+            self._apps_v1.create_namespaced_deployment(
+                namespace=namespace,
+                body=dep_obj,
+            )
+            action_taken = "created"
+        except ApiException as e:
+            if e.status == 409:
+                self._apps_v1.patch_namespaced_deployment(
+                    name=name,
+                    namespace=namespace,
+                    body=dep_obj,
+                )
+                action_taken = "patched"
+            else:
+                raise ArgoRolloutError(f"Failed to apply Deployment '{name}': {e}")
+
+        return {
+            "status": "success",
+            "dry_run": False,
+            "name": name,
+            "namespace": namespace,
+            "deployment_strategy": deployment_strategy,
+            "manifest": dep_yaml,
+            "removed_fields": conv.get("removed_fields", []),
+            "message": f"Converted Rollout '{name}' to Deployment ({action_taken} in namespace '{namespace}').",
         }

@@ -1,10 +1,14 @@
 """Kargo credentials models."""
 
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
+
 
 class CreateRepoCredentialsRequest(BaseModel):
-    """Request model for creating repository credentials."""
+    """Internal request payload for Kargo REST repo-credentials API."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
     name: str
     repoUrl: str
     type: str

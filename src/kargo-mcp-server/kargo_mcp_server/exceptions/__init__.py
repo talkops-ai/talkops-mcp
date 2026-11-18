@@ -1,17 +1,27 @@
-"""Exception module."""
+"""Custom exceptions for Kargo MCP server."""
 
 from kargo_mcp_server.exceptions.custom import (
+    ApiError,
+    KargoApiError,
+    KargoConflictError,
     KargoOperationError,
+    KargoPermissionError,
+    KargoPromotionError,
     KargoResourceError,
     KargoResourceNotFoundError,
     KargoValidationError,
-    KargoAuthError,
+    KargoVerificationError,
 )
 
 __all__ = [
-    'KargoOperationError',
-    'KargoResourceError',
-    'KargoResourceNotFoundError',
-    'KargoValidationError',
-    'KargoAuthError',
+    "ApiError",
+    "KargoApiError",
+    "KargoConflictError",
+    "KargoOperationError",
+    "KargoPermissionError",
+    "KargoPromotionError",
+    "KargoResourceError",
+    "KargoResourceNotFoundError",
+    "KargoValidationError",
+    "KargoVerificationError",
 ]

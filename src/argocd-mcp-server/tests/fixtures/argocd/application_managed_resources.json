@@ -1,0 +1,22 @@
+{
+  "items": [
+    {
+      "group": "apps",
+      "kind": "Deployment",
+      "namespace": "payments-prod",
+      "name": "payments-api",
+      "status": "OutOfSync",
+      "normalizedLiveState": "{\"spec\":{\"replicas\":2,\"template\":{\"spec\":{\"containers\":[{\"image\":\"payments:v1.3.0\"}]}}}}",
+      "targetState": "{\"spec\":{\"replicas\":3,\"template\":{\"spec\":{\"containers\":[{\"image\":\"payments:v1.4.0\"}]}}}}"
+    },
+    {
+      "group": "",
+      "kind": "Service",
+      "namespace": "payments-prod",
+      "name": "payments-svc",
+      "status": "Synced",
+      "normalizedLiveState": "{\"spec\":{\"ports\":[{\"port\":8080}]}}",
+      "targetState": "{\"spec\":{\"ports\":[{\"port\":8080}]}}"
+    }
+  ]
+}

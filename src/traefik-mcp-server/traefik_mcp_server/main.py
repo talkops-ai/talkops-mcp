@@ -1,13 +1,12 @@
-"""Application entry point."""
+"""Application entry point for Traefik MCP Server."""
 
 import sys
 from pathlib import Path
-import urllib3
+from typing import Optional
 
-# Suppress unverified HTTPS request warnings (e.g. for local kubernetes.docker.internal clusters)
+import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Add project root to Python path for direct execution with uv run
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -15,26 +14,19 @@ if str(project_root) not in sys.path:
 from traefik_mcp_server.server.bootstrap import ServerBootstrap
 
 
-def main() -> int:
-    """Run the MCP server."""
+def main(argv: Optional[list[str]] = None) -> None:
+    """Run the Traefik MCP server in local stdio mode."""
     try:
-        mcp, config = ServerBootstrap.initialize()
-        
-        # Run FastMCP server with the configured transport
-        if config.transport == 'http':
-            # HTTP/Streamable HTTP transport mode (single unified endpoint)
-            mcp.run(transport='streamable-http', host=config.host, port=config.port, path=config.path)
-        else:
-            # STDIO transport mode (default for MCP)
-            mcp.run()
-            
-        return 0
-    
+        mcp, _config = ServerBootstrap.initialize(argv if argv is not None else sys.argv[1:])
+        mcp.run()
     except KeyboardInterrupt:
-        return 0
-    except Exception as e:
-        print(f"Server error: {e}", file=sys.stderr)
-        return 1
+        pass
 
-if __name__ == '__main__':
-    sys.exit(main())
+
+def cli() -> None:
+    """CLI entry point for the traefik-mcp-server command."""
+    main()
+
+
+if __name__ == "__main__":
+    cli()

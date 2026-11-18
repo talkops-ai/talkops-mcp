@@ -1,117 +1,92 @@
-"""Helm chart-related resources."""
+"""Helm repository and chart metadata resources."""
 
-import json
-import asyncio
-from typing import List, Optional
-from mcp.types import Resource
-from helm_mcp_server.exceptions import HelmResourceError, HelmResourceNotFoundError, HelmOperationError
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from helm_mcp_server.exceptions import HelmResourceError, HelmResourceNotFoundError
 from helm_mcp_server.resources.base import BaseResource
 
 
 class ChartResources(BaseResource):
-    """Helm chart resources."""
-    
-    def register(self, mcp_instance) -> None:
-        """Register resources with FastMCP."""
-        
-        @mcp_instance.resource("helm://charts")
-        async def list_available_charts() -> List[Resource]:
-            """List all available charts in configured repositories.
-            
-            Returns dynamic resources for each chart.
-            """
+    """URI-addressed resources for configured Helm repositories and chart metadata/values/README."""
+
+    def register(self, mcp_instance: Any) -> None:
+        """Register chart and repository resources with FastMCP."""
+
+        @mcp_instance.resource(
+            "helm://repositories",
+            mime_type="application/json",
+        )
+        async def list_repositories() -> Dict[str, Any]:
+            """List all configured Helm chart repositories."""
             try:
-                # Search for all charts (empty query returns all)
-                charts = await self.helm_service.search_charts(
-                    query='',
-                    repository='bitnami',
-                    limit=100  # Get more charts for listing
+                repos = await self.helm_service.list_repositories()
+                return {
+                    "repositories": repos,
+                    "count": len(repos),
+                }
+            except Exception as exc:
+                raise HelmResourceError(
+                    f"Failed to list Helm repositories: {exc}. "
+                    "Call helm_ensure_repository to add a repository."
                 )
-                
-                return [
-                    Resource(
-                        uri=f"helm://charts/{chart.get('repository', 'bitnami')}/{chart.get('name', 'unknown')}",  # type: ignore[arg-type]
-                        name=f"Chart: {chart.get('name', 'unknown')}",
-                        description=f"Helm chart {chart.get('name', 'unknown')} from {chart.get('repository', 'bitnami')} repository",
-                        mimeType="application/json",
-                    )
-                    for chart in charts
-                    if isinstance(chart, dict)  # guard against str return
-                ]
-            except Exception as e:
-                # Return empty list on error
-                return []
-        
+
         @mcp_instance.resource(
             "helm://charts/{repository}/{chart_name}",
-            mime_type="application/json"
+            mime_type="application/json",
         )
-        async def get_chart_metadata(repository: str, chart_name: str) -> dict:
-            """Get metadata for a specific chart.
-            
-            Args:
-                repository: Helm repository name
-                chart_name: Chart name
-            
-            Returns:
-                Dictionary with chart metadata
-            
-            Raises:
-                HelmResourceNotFoundError: If chart not found
-            """
+        async def get_chart_metadata(repository: str, chart_name: str) -> Dict[str, Any]:
+            """Get Chart.yaml metadata and sub-chart dependencies for a specific chart."""
             try:
-                # Get chart info from Helm service
-                chart_info = await self.helm_service.get_chart_info(
+                return await self.helm_service.get_chart_info(
                     chart_name=chart_name,
-                    repository=repository
+                    repository=repository,
                 )
-                
-                # Return dict directly - FastMCP will convert to JSON automatically
-                return chart_info
-            except Exception as e:
-                raise HelmResourceNotFoundError(f"Chart not found: {repository}/{chart_name}")
-        
+            except Exception as exc:
+                raise HelmResourceNotFoundError(
+                    f"Chart '{repository}/{chart_name}' not found: {exc}. "
+                    f"Call helm_search_charts(query='{chart_name}') or read 'helm://repositories'."
+                )
+
+        @mcp_instance.resource(
+            "helm://charts/{repository}/{chart_name}/values",
+            mime_type="application/json",
+        )
+        async def get_chart_default_values(repository: str, chart_name: str) -> Dict[str, Any]:
+            """Get default values.yaml structure for a specific Helm chart."""
+            try:
+                return await self.helm_service.get_chart_values(
+                    chart_name=chart_name,
+                    repository=repository,
+                )
+            except Exception as exc:
+                raise HelmResourceNotFoundError(
+                    f"Default values for chart '{repository}/{chart_name}' not found: {exc}. "
+                    f"Call helm_search_charts(query='{chart_name}') to verify chart availability."
+                )
+
         @mcp_instance.resource(
             "helm://charts/{repository}/{chart_name}/readme",
-            mime_type="text/markdown"
+            mime_type="text/markdown",
         )
         async def get_chart_readme(repository: str, chart_name: str) -> str:
-            """Get the README for a Helm chart.
-            
-            Args:
-                repository: Helm repository name
-                chart_name: Chart name
-            
-            Returns:
-                Chart README as markdown string
-            
-            Raises:
-                HelmResourceNotFoundError: If chart not found
-            """
+            """Get the README documentation for a specific Helm chart."""
             try:
-                # Use HelmService method which handles repository checking and error handling
                 readme_text = await self.helm_service.get_chart_readme(
                     chart_name=chart_name,
-                    repository=repository
+                    repository=repository,
                 )
-                
                 if not readme_text or not readme_text.strip():
                     raise HelmResourceNotFoundError(
-                        f"Chart README is empty for {repository}/{chart_name}. "
-                        f"The chart may not have a README file."
+                        f"Chart README is empty for '{repository}/{chart_name}'. "
+                        f"Read 'helm://charts/{repository}/{chart_name}/values' for configuration keys."
                     )
-                
-                # Return string directly - FastMCP will convert to TextContent automatically
                 return readme_text
-            except HelmOperationError as e:
-                # Convert HelmOperationError to HelmResourceNotFoundError for consistency
-                error_str = str(e)
-                if 'not found' in error_str.lower():
-                    raise HelmResourceNotFoundError(
-                        f"Chart not found: {repository}/{chart_name}. {error_str}"
-                    )
-                raise HelmResourceError(f"Failed to get chart README: {error_str}")
             except HelmResourceNotFoundError:
                 raise
-            except Exception as e:
-                raise HelmResourceError(f"Failed to get chart README: {str(e)}")
+            except Exception as exc:
+                raise HelmResourceNotFoundError(
+                    f"Chart README not found for '{repository}/{chart_name}': {exc}. "
+                    f"Read 'helm://charts/{repository}/{chart_name}' for metadata instead."
+                )

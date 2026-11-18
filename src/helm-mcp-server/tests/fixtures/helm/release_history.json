@@ -1,0 +1,18 @@
+[
+  {
+    "revision": 1,
+    "updated": "2026-11-01T10:00:00Z",
+    "status": "superseded",
+    "chart": "postgresql-15.4.0",
+    "app_version": "16.2.0",
+    "description": "Install complete"
+  },
+  {
+    "revision": 2,
+    "updated": "2026-11-03T10:15:30Z",
+    "status": "deployed",
+    "chart": "postgresql-15.5.0",
+    "app_version": "16.3.0",
+    "description": "Upgrade complete"
+  }
+]

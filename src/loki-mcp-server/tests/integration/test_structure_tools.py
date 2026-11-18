@@ -1,8 +1,6 @@
-"""Integration tests for structure tools (v4).
+"""Integration tests for structure tools (v0.2.0).
 
-Per test guide §6: Full tool lifecycle through FastMCP client.
-
-v4 Tools tested: get_log_patterns, get_detected_fields
+Tools tested: loki_get_log_patterns, loki_get_detected_fields
 """
 
 import json
@@ -12,13 +10,13 @@ import pytest
 from tests.conftest import get_text
 
 
-class TestGetLogPatterns:
-    """Tests for the get_log_patterns tool."""
+class TestLokiGetLogPatterns:
+    """Tests for the loki_get_log_patterns tool."""
 
     @pytest.mark.asyncio
     async def test_returns_patterns(self, mcp_client):
         result = await mcp_client.call_tool(
-            "get_log_patterns",
+            "loki_get_log_patterns",
             {"query": '{app="checkout"}'},
         )
         data = json.loads(get_text(result))
@@ -29,7 +27,7 @@ class TestGetLogPatterns:
     @pytest.mark.asyncio
     async def test_patterns_have_count(self, mcp_client):
         result = await mcp_client.call_tool(
-            "get_log_patterns",
+            "loki_get_log_patterns",
             {"query": '{app="checkout"}'},
         )
         data = json.loads(get_text(result))
@@ -41,7 +39,7 @@ class TestGetLogPatterns:
     @pytest.mark.asyncio
     async def test_patterns_sorted_by_count(self, mcp_client):
         result = await mcp_client.call_tool(
-            "get_log_patterns",
+            "loki_get_log_patterns",
             {"query": '{app="checkout"}'},
         )
         data = json.loads(get_text(result))
@@ -51,7 +49,7 @@ class TestGetLogPatterns:
     @pytest.mark.asyncio
     async def test_suggested_parsers(self, mcp_client):
         result = await mcp_client.call_tool(
-            "get_log_patterns",
+            "loki_get_log_patterns",
             {"query": '{app="checkout"}'},
         )
         data = json.loads(get_text(result))
@@ -59,13 +57,13 @@ class TestGetLogPatterns:
         assert isinstance(data["suggested_parsers"], list)
 
 
-class TestGetDetectedFields:
-    """Tests for the get_detected_fields tool."""
+class TestLokiGetDetectedFields:
+    """Tests for the loki_get_detected_fields tool."""
 
     @pytest.mark.asyncio
     async def test_returns_fields(self, mcp_client):
         result = await mcp_client.call_tool(
-            "get_detected_fields",
+            "loki_get_detected_fields",
             {"query": '{app="checkout"}'},
         )
         data = json.loads(get_text(result))
@@ -76,7 +74,7 @@ class TestGetDetectedFields:
     @pytest.mark.asyncio
     async def test_field_structure(self, mcp_client):
         result = await mcp_client.call_tool(
-            "get_detected_fields",
+            "loki_get_detected_fields",
             {"query": '{app="checkout"}'},
         )
         data = json.loads(get_text(result))
@@ -90,7 +88,7 @@ class TestGetDetectedFields:
     @pytest.mark.asyncio
     async def test_field_types_valid(self, mcp_client):
         result = await mcp_client.call_tool(
-            "get_detected_fields",
+            "loki_get_detected_fields",
             {"query": '{app="checkout"}'},
         )
         data = json.loads(get_text(result))
@@ -101,7 +99,7 @@ class TestGetDetectedFields:
     @pytest.mark.asyncio
     async def test_with_limits(self, mcp_client):
         result = await mcp_client.call_tool(
-            "get_detected_fields",
+            "loki_get_detected_fields",
             {
                 "query": '{app="checkout"}',
                 "line_limit": 50,

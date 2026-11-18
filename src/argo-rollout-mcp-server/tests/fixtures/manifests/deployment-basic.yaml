@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  namespace: default
+  labels:
+    app: api-service
+    tier: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: api-service
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: api-service
+          image: nginx:1.25.0
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: LOG_LEVEL
+              value: info
+            - name: DB_PASSWORD
+              value: super-secret-password
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: api-key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]

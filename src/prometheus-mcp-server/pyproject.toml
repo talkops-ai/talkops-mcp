@@ -1,6 +1,6 @@
 [project]
 name = "talkops-prometheus-mcp-server"
-version = "0.1.11"
+version = "0.2.0"
 description = "A Model Context Protocol (MCP) server for Prometheus monitoring and observability."
 readme = "README.md"
 license = {text = "Apache-2.0"}

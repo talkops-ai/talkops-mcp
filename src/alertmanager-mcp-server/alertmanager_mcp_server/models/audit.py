@@ -1,7 +1,16 @@
 """Audit log models."""
+
 from datetime import datetime
-from typing import List
+from typing import Any, Dict, Literal
 from pydantic import BaseModel, Field
+
+AuditOutcome = Literal[
+    "succeeded",
+    "denied",
+    "aborted",
+    "confirmation_required",
+    "failed",
+]
 
 
 class AuditLogEntry(BaseModel):
@@ -10,3 +19,5 @@ class AuditLogEntry(BaseModel):
     operation: str
     principal: str
     summary: str
+    outcome: AuditOutcome = "succeeded"
+    details: Dict[str, Any] = Field(default_factory=dict)

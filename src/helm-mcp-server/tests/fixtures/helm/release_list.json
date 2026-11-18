@@ -1,0 +1,20 @@
+[
+  {
+    "name": "my-postgres",
+    "namespace": "prod",
+    "revision": "2",
+    "updated": "2026-11-03 10:15:30.123456 +0000 UTC",
+    "status": "deployed",
+    "chart": "postgresql-15.5.0",
+    "app_version": "16.3.0"
+  },
+  {
+    "name": "argo-cd",
+    "namespace": "argocd",
+    "revision": "1",
+    "updated": "2026-11-01 08:00:00.000000 +0000 UTC",
+    "status": "deployed",
+    "chart": "argo-cd-7.3.4",
+    "app_version": "v2.11.4"
+  }
+]

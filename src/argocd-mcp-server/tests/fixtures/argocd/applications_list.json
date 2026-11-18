@@ -1,0 +1,88 @@
+{
+  "items": [
+    {
+      "metadata": {
+        "name": "payments-service",
+        "namespace": "argocd"
+      },
+      "spec": {
+        "project": "production",
+        "source": {
+          "repoURL": "https://github.com/org/gitops-manifests.git",
+          "path": "apps/payments/overlays/prod",
+          "targetRevision": "v1.4.0"
+        },
+        "destination": {
+          "server": "https://kubernetes.default.svc",
+          "name": "in-cluster",
+          "namespace": "payments-prod"
+        }
+      },
+      "status": {
+        "sync": {
+          "status": "Synced",
+          "revision": "8f3c1a9d4e2b"
+        },
+        "health": {
+          "status": "Healthy"
+        }
+      }
+    },
+    {
+      "metadata": {
+        "name": "checkout-worker",
+        "namespace": "argocd"
+      },
+      "spec": {
+        "project": "production",
+        "source": {
+          "repoURL": "https://github.com/org/gitops-manifests.git",
+          "path": "apps/checkout/overlays/prod",
+          "targetRevision": "HEAD"
+        },
+        "destination": {
+          "server": "https://eks-prod.example.com:6443",
+          "name": "eks-prod",
+          "namespace": "checkout-prod"
+        }
+      },
+      "status": {
+        "sync": {
+          "status": "OutOfSync",
+          "revision": "2a1b3c4d5e6f"
+        },
+        "health": {
+          "status": "Degraded"
+        }
+      }
+    },
+    {
+      "metadata": {
+        "name": "analytics-staging",
+        "namespace": "argocd"
+      },
+      "spec": {
+        "project": "staging",
+        "source": {
+          "repoURL": "https://github.com/org/analytics.git",
+          "path": "k8s/staging",
+          "targetRevision": "main"
+        },
+        "destination": {
+          "server": "https://eks-staging.example.com:6443",
+          "name": "eks-staging",
+          "namespace": "analytics-stg"
+        }
+      },
+      "status": {
+        "sync": {
+          "status": "Synced",
+          "revision": "998877665544"
+        },
+        "health": {
+          "status": "Progressing"
+        }
+      }
+    }
+  ]
+}

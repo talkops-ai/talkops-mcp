@@ -51,9 +51,34 @@ class GeneratorService:
                     return int(cp)
         return 80
 
+    def _load_kube_config(self) -> None:
+        """Load Kubernetes configuration respecting self.config preferences."""
+        from kubernetes import config as k8s_config
+
+        try:
+            if self.config and getattr(self.config, "kubernetes", None):
+                if self.config.kubernetes.in_cluster:
+                    k8s_config.load_incluster_config()
+                    return
+                k8s_config.load_kube_config(
+                    config_file=self.config.kubernetes.kubeconfig,
+                    context=self.config.kubernetes.context_name,
+                )
+                return
+        except Exception:
+            pass
+        try:
+            k8s_config.load_incluster_config()
+        except Exception:
+            try:
+                k8s_config.load_kube_config()
+            except Exception:
+                pass
+
     def _ensure_k8s_client(self):
         """Lazily initialize Kubernetes AppsV1 client."""
         if self._apps_v1 is None:
+            self._load_kube_config()
             self._apps_v1 = client.AppsV1Api()
     
     async def fetch_deployment_yaml(
@@ -801,6 +826,9 @@ class GeneratorService:
             # ready = no BLOCKING issues (warnings don't block)
             ready = len(issues) == 0
             final_score = max(0, score)
+            detected_container_port = self._extract_container_port_from_pod_template(
+                template.get("spec")
+            )
             
             return {
                 "ready": ready,
@@ -809,12 +837,14 @@ class GeneratorService:
                 "namespace": namespace,
                 "replicas": replicas,
                 "containers_count": len(containers),
+                "detected_container_port": detected_container_port,
                 "issues": issues,
                 "warnings": warnings,
                 "recommendations": recommendations,
                 "deployment_checks": {
                     "replicas": replicas,
                     "containers_count": len(containers),
+                    "detected_container_port": detected_container_port,
                 },
                 "service_checks": service_checks,
             }
@@ -852,10 +882,14 @@ class GeneratorService:
             "service_name": None,
             "selector_ok": None,
         }
-        svc = await self.discover_service_for_deployment(
-            match_labels=match_labels,
-            namespace=namespace,
-        )
+        try:
+            svc = await self.discover_service_for_deployment(
+                match_labels=match_labels,
+                namespace=namespace,
+            )
+        except Exception as exc:
+            logger.debug(f"Could not discover Service during readiness check: {exc}")
+            svc = None
         if svc:
             service_checks["service_found"] = True
             service_checks["service_name"] = svc.metadata.name
@@ -905,13 +939,9 @@ class GeneratorService:
         Returns:
             kubernetes.client.V1Service object or None
         """
-        from kubernetes import client as k8s_client, config as k8s_config
+        from kubernetes import client as k8s_client
 
-        try:
-            k8s_config.load_incluster_config()
-        except Exception:
-            k8s_config.load_kube_config()
-
+        self._load_kube_config()
         core_v1 = k8s_client.CoreV1Api()
         services = core_v1.list_namespaced_service(namespace=namespace).items
 
@@ -1045,6 +1075,7 @@ class GeneratorService:
             if k not in _SKIP_LABELS
         }
 
+        self._load_kube_config()
         core_v1 = k8s_client.CoreV1Api()
         services_created = []
         services_already_existed = []
@@ -1102,14 +1133,10 @@ class GeneratorService:
                 - rollout_applied: bool   (True = newly created)
                 - rollout_already_existed: bool
         """
-        from kubernetes import client as k8s_client, config as k8s_config
+        from kubernetes import client as k8s_client
         from kubernetes.client.rest import ApiException as K8sApiException
 
-        try:
-            k8s_config.load_incluster_config()
-        except Exception:
-            k8s_config.load_kube_config()
-
+        self._load_kube_config()
         custom_api = k8s_client.CustomObjectsApi()
         rollout_obj = yaml.safe_load(rollout_yaml)
         rollout_name = rollout_obj.get("metadata", {}).get("name", "unknown")
@@ -1588,18 +1615,32 @@ class GeneratorService:
             Dict with deployment_yaml and metadata
         """
         try:
-            rollout = yaml.safe_load(rollout_yaml)
-            
+            if isinstance(rollout_yaml, dict):
+                rollout = dict(rollout_yaml)
+            else:
+                rollout = yaml.safe_load(rollout_yaml)
+
             if not rollout:
                 raise ValueError("Empty YAML input")
-            
+
             kind = rollout.get("kind", "")
             if kind != "Rollout":
                 raise ValueError(f"Input must be a Rollout, got: {kind}")
-            
+
             metadata = rollout.get("metadata", {})
             spec = rollout.get("spec", {})
             app_name = metadata.get("name", "unknown")
+
+            if "workloadRef" in spec and "template" not in spec:
+                ref_name = (spec.get("workloadRef") or {}).get("name", app_name)
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Rollout '{app_name}' uses spec.workloadRef referencing Deployment '{ref_name}' "
+                        "and has no inline spec.template. Restore spec.replicas on Deployment "
+                        f"'{ref_name}' instead of generating a standalone Deployment from the Rollout alone."
+                    ),
+                }
             
             # Build Deployment
             deployment: Dict[str, Any] = {

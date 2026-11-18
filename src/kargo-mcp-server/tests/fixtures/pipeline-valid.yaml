@@ -1,0 +1,106 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Project
+metadata:
+  name: guestbook
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: ProjectConfig
+metadata:
+  name: guestbook
+  namespace: guestbook
+spec:
+  promotionPolicies:
+    - stageSelector:
+        name: dev
+      autoPromotionEnabled: true
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  name: main-warehouse
+  namespace: guestbook
+spec:
+  interval: 5m0s
+  subscriptions:
+    - image:
+        repoURL: ghcr.io/example/guestbook
+        imageSelectionStrategy: SemVer
+        constraint: "^1.0.0"
+        allowTagsRegexes:
+          - "^v?[0-9]+\\.[0-9]+\\.[0-9]+$"
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: promote-task
+  namespace: guestbook
+spec:
+  steps:
+    - uses: git-clone
+      config:
+        repoURL: https://github.com/example/gitops.git
+        checkout:
+          - branch: stage/${{ ctx.stage }}
+            create: true
+            path: ./out
+    - uses: yaml-update
+      as: update-image
+      config:
+        path: ./out/stages/${{ ctx.stage }}/values.yaml
+        updates:
+          - key: image.tag
+            value: ${{ quote(imageFrom('ghcr.io/example/guestbook').tag) }}
+    - uses: git-commit
+      as: commit
+      config:
+        path: ./out
+        message: Promote ${{ imageFrom('ghcr.io/example/guestbook').tag }}
+    - uses: git-push
+      config:
+        path: ./out
+        targetBranch: stage/${{ ctx.stage }}
+    - uses: argocd-update
+      config:
+        apps:
+          - name: guestbook-${{ ctx.stage }}
+            sources:
+              - repoURL: https://github.com/example/gitops.git
+                desiredRevision: ${{ outputs.commit.commit }}
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: dev
+  namespace: guestbook
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: main-warehouse
+      sources:
+        direct: true
+  promotionTemplate:
+    spec:
+      steps:
+        - task:
+            name: promote-task
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: prod
+  namespace: guestbook
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: main-warehouse
+      sources:
+        direct: false
+        stages:
+          - dev
+  promotionTemplate:
+    spec:
+      steps:
+        - task:
+            name: promote-task

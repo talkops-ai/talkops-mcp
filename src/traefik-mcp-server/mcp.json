@@ -1,0 +1,69 @@
+{
+  "$schema": "https://agentplugins.io/schema/v1.0.0/mcp.json",
+  "mcpServers": {
+    "traefik": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "traefik-mcp-server",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_TOOLSETS": "all",
+        "PROMETHEUS_URL": "${PROMETHEUS_URL}",
+        "TRAEFIK_NAMESPACE": "traefik"
+      }
+    },
+    "traefik-us-west": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "traefik-mcp-server",
+        "--context",
+        "${KUBE_CONTEXT_US_WEST}",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_TOOLSETS": "all",
+        "PROMETHEUS_URL": "${PROMETHEUS_URL_US_WEST}",
+        "TRAEFIK_NAMESPACE": "traefik"
+      }
+    },
+    "traefik-eu-central": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "traefik-mcp-server",
+        "--context",
+        "${KUBE_CONTEXT_EU_CENTRAL}",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_TOOLSETS": "all",
+        "PROMETHEUS_URL": "${PROMETHEUS_URL_EU_CENTRAL}",
+        "TRAEFIK_NAMESPACE": "traefik"
+      }
+    }
+  }
+}

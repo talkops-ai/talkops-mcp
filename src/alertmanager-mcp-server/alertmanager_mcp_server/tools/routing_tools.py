@@ -1,26 +1,87 @@
-"""Routing and inhibition introspection tools.
+"""Routing tree simulation, notification pipeline health, and test alert tools (`routing` toolset)."""
 
-v4 refactor: am_get_routing_tree and am_list_receivers have been moved to
-resources (am://system/config and am://system/receivers).
+from __future__ import annotations
 
-Remaining tools provide reasoning/computation — not simple GET wrappers.
-"""
+from datetime import timedelta
+from typing import Annotated, Any, Dict, Optional
 
-from typing import Any, Dict, Optional, Annotated
-from pydantic import Field
 from fastmcp import Context
 from mcp.types import ToolAnnotations
+from pydantic import Field
+
+from alertmanager_mcp_server.domain.timeparse import (
+    TimeValidationError,
+    format_rfc3339_utc,
+    parse_rfc3339,
+    utc_now,
+)
+from alertmanager_mcp_server.exceptions import AlertmanagerValidationError
+from alertmanager_mcp_server.models.responses import (
+    NotificationHealthResponse,
+    PushTestAlertResponse,
+    RoutingExplanationResponse,
+)
+from alertmanager_mcp_server.tools._confirmation import (
+    confirm_or_elicit,
+    ensure_write_allowed,
+    safe_ctx_info,
+)
 from alertmanager_mcp_server.tools.base import BaseTool
+from alertmanager_mcp_server.utils.audit import add_audit_entry
 
 
 class RoutingTools(BaseTool):
-    """Tools for routing simulation and default-route auditing."""
+    """Tools for notification health verification, routing tree simulation, and test alert delivery."""
 
-    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
+    def register(self, mcp_instance: object) -> None:
+        if not self.config.is_toolset_enabled("routing"):
+            return
 
-        @mcp_instance.tool(
+        mcp: Any = mcp_instance
+
+        @mcp.tool(
             annotations=ToolAnnotations(
-                title="Explain Routing for Alert",
+                title="Check Notification Pipeline Health",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
+        async def am_check_notification_health(
+            backend_id: Annotated[
+                Optional[str],
+                Field(
+                    default=None,
+                    description="Alertmanager backend ID (defaults to primary backend)",
+                ),
+            ] = None,
+            integration: Annotated[
+                Optional[str],
+                Field(
+                    default=None,
+                    description=(
+                        "Optional receiver integration type filter (e.g. 'slack', "
+                        "'pagerduty', 'email', 'webhook', 'opsgenie')"
+                    ),
+                ),
+            ] = None,
+            ctx: Optional[Context] = None,
+        ) -> NotificationHealthResponse:
+            """Inspect Alertmanager readiness, config reload status, cluster peers, and `/metrics` receiver delivery failure counters."""
+            bid = self.alertmanager_service.resolve_backend_id(backend_id)
+            await safe_ctx_info(
+                ctx, f"Checking notification delivery health on backend '{bid}'"
+            )
+
+            report = await self.alertmanager_service.check_notification_health(
+                bid, integration=integration
+            )
+            return NotificationHealthResponse(**report)
+
+        @mcp.tool(
+            annotations=ToolAnnotations(
+                title="Explain Alert Routing & Inhibition",
                 readOnlyHint=True,
                 destructiveHint=False,
                 idempotentHint=True,
@@ -28,82 +89,230 @@ class RoutingTools(BaseTool):
             )
         )
         async def am_explain_routing(
-            backend_id: Annotated[str, Field(min_length=1, description="Alertmanager backend ID")],
-            labels: Annotated[Any, Field(description="Alert label set to simulate routing for (must be a JSON object/dictionary, e.g. {\"env\": \"prod\"})")],
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> Any:
-            """Simulate routing and inhibition for a given label set with explanation.
+            backend_id: Annotated[
+                Optional[str],
+                Field(
+                    default=None,
+                    description="Alertmanager backend ID (defaults to primary backend)",
+                ),
+            ] = None,
+            labels: Annotated[
+                Optional[Dict[str, str]],
+                Field(
+                    default=None,
+                    description="Alert label set to evaluate (e.g. {'alertname': 'HighErrorRate', 'env': 'prod', 'severity': 'critical'})",
+                ),
+            ] = None,
+            fingerprint: Annotated[
+                Optional[str],
+                Field(
+                    default=None,
+                    description="Optional live alert fingerprint (auto-loads labels from the live alert)",
+                ),
+            ] = None,
+            at_time: Annotated[
+                Optional[str],
+                Field(
+                    default=None,
+                    description="Optional RFC3339 timestamp with timezone offset to evaluate mute_time_intervals / active_time_intervals at",
+                ),
+            ] = None,
+            check_live_state: Annotated[
+                bool,
+                Field(
+                    default=True,
+                    description="Whether to evaluate live active silences and currently firing source alerts for inhibition rules",
+                ),
+            ] = True,
+            ctx: Optional[Context] = None,
+        ) -> RoutingExplanationResponse:
+            """Simulate Alertmanager's nested routing tree (`continue`, inherited `group_by`/timers, `mute_time_intervals`) and live inhibition rules."""
+            bid = self.alertmanager_service.resolve_backend_id(backend_id)
+            await safe_ctx_info(ctx, f"Explaining routing on backend '{bid}'")
 
-            Use this to answer questions like "Who gets paged for this alert?" or
-            "Why didn't I get notified?". Provides a human-readable explanation of
-            the routing path, matched receivers, grouping, and inhibition rules.
-            Similar to `amtool config routes test`. Read-only.
+            eval_dt = None
+            if at_time:
+                try:
+                    eval_dt = parse_rfc3339(
+                        at_time, require_tz=True, field_name="at_time"
+                    )
+                except TimeValidationError as exc:
+                    raise AlertmanagerValidationError(str(exc)) from exc
 
-            Returns:
-            - {\"matched_route\": str, \"receivers\": [str], \"group_labels\": [str],
-               \"inhibited_by\": [str], \"explanation\": str}
-
-            When NOT to use: For a structural view of the routing tree, read the
-            am://system/config resource instead.
-            """
-            await ctx.info(f"Explaining routing for labels: {labels}")
-            try:
-                import json
-                if isinstance(labels, str):
-                    labels = json.loads(labels)
-                result = await self.alertmanager_service.explain_routing_for_alert(backend_id, labels)
-                return result.model_dump()
-            except Exception as e:
-                await ctx.error(str(e))
-                return {"error": str(e), "isError": True}
-
-        @mcp_instance.tool(
-            annotations=ToolAnnotations(
-                title="Audit Default Route Usage",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=True,
+            result = await self.alertmanager_service.explain_routing_detailed(
+                bid,
+                alert_labels=labels,
+                fingerprint=fingerprint,
+                at_time=eval_dt,
+                check_live_state=check_live_state,
             )
-        )
-        async def am_audit_default_route(
-            backend_id: Annotated[str, Field(min_length=1, description="Alertmanager backend ID")],
-            limit: Annotated[Optional[int], Field(description="Max alerts to return")] = 20,
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> Any:
-            """Show alerts falling into the default route, highlighting potential misconfigurations.
+            return RoutingExplanationResponse(**result)
 
-            Use this to identify alerts that are not matched by any specific route
-            and are falling through to the default receiver. This often indicates
-            missing routing rules or incorrect label taxonomies. Read-only.
+        if self.config.allow_write:
 
-            Returns:
-            - {\"default_receiver\": str, \"alert_count\": int, \"alerts\": [{...}],
-               \"summary_text\": str}
-            """
-            await ctx.info(f"Auditing default route for backend: {backend_id}")
-            try:
-                default_alerts = await self.alertmanager_service.get_default_route_alerts(backend_id)
-                config = await self.alertmanager_service.get_config_snapshot(backend_id)
-                default_receiver = config.routes[0].receiver if config.routes else "<none>"
+            @mcp.tool(
+                annotations=ToolAnnotations(
+                    title="Push Synthetic Test Alert",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                )
+            )
+            async def am_push_test_alert(
+                labels: Annotated[
+                    Dict[str, str],
+                    Field(
+                        description=(
+                            "Alert labels dictionary (MUST include 'alertname', e.g. "
+                            "{'alertname': 'MCPPipelineTest', 'service': 'checkout', 'severity': 'warning'})"
+                        )
+                    ),
+                ],
+                backend_id: Annotated[
+                    Optional[str],
+                    Field(
+                        default=None,
+                        description="Alertmanager backend ID (defaults to primary backend)",
+                    ),
+                ] = None,
+                annotations: Annotated[
+                    Optional[Dict[str, str]],
+                    Field(
+                        default=None,
+                        description="Optional alert annotations (e.g. {'summary': 'Synthetic pipeline test'})",
+                    ),
+                ] = None,
+                resolve_after_minutes: Annotated[
+                    int,
+                    Field(
+                        default=5,
+                        ge=1,
+                        le=60,
+                        description="Minutes until the synthetic test alert automatically resolves (1..60)",
+                    ),
+                ] = 5,
+                generator_url: Annotated[
+                    Optional[str],
+                    Field(
+                        default=None,
+                        description="Optional generatorURL metadata on the synthetic alert",
+                    ),
+                ] = None,
+                confirm: Annotated[
+                    bool,
+                    Field(
+                        default=False,
+                        description="Set True to confirm firing a live test alert to matched receivers",
+                    ),
+                ] = False,
+                ctx: Optional[Context] = None,
+            ) -> PushTestAlertResponse:
+                """Push a time-bounded synthetic test alert to Alertmanager to verify end-to-end receiver delivery."""
+                bid = self.alertmanager_service.resolve_backend_id(backend_id)
+                ensure_write_allowed(
+                    self.config,
+                    backend_id=bid,
+                    operation="push_test_alert",
+                    principal="operator",
+                )
 
-                limited = default_alerts[:limit or 20]
-                if not default_alerts:
-                    summary = "No active alerts are hitting the default route. Routing looks well configured."
-                else:
-                    alertnames = set(a.labels.get("alertname", "?") for a in default_alerts)
-                    summary = (
-                        f"{len(default_alerts)} alert(s) are routing to the default receiver "
-                        f"'{default_receiver}'. Alert names: {', '.join(sorted(alertnames))}. "
-                        f"Consider adding specific routes for these alerts."
+                if not isinstance(labels, dict) or not labels.get("alertname"):
+                    raise AlertmanagerValidationError(
+                        "labels must be a dictionary containing a non-empty 'alertname' key."
                     )
 
-                return {
-                    "default_receiver": default_receiver,
-                    "alert_count": len(default_alerts),
-                    "alerts": [a.model_dump(mode="json") for a in limited],
-                    "summary_text": summary,
+                final_labels = {str(k): str(v) for k, v in labels.items()}
+                test_marker = self.config.test_alert_label
+                if test_marker and test_marker not in final_labels:
+                    final_labels[test_marker] = "true"
+
+                final_annotations = dict(
+                    annotations
+                    or {
+                        "summary": f"Synthetic Alertmanager pipeline test ({final_labels['alertname']})",
+                    }
+                )
+
+                routing_preview = (
+                    await self.alertmanager_service.explain_routing_detailed(
+                        bid,
+                        alert_labels=final_labels,
+                        check_live_state=True,
+                    )
+                )
+                receivers = routing_preview.get("receivers") or []
+
+                await confirm_or_elicit(
+                    ctx,
+                    confirm=confirm,
+                    prompt_message=(
+                        f"Pushing synthetic test alert '{final_labels['alertname']}' to backend "
+                        f"'{bid}' will trigger real notifications to receiver(s): "
+                        f"{', '.join(receivers) or 'default'} (auto-resolves in "
+                        f"{resolve_after_minutes}m)."
+                    ),
+                    backend_id=bid,
+                    operation="push_test_alert",
+                    principal="operator",
+                    audit_log_path=self.config.audit_log_path,
+                    details={
+                        "labels": final_labels,
+                        "receivers": receivers,
+                    },
+                )
+
+                now = utc_now()
+                end_dt = now + timedelta(minutes=resolve_after_minutes)
+                starts_str = format_rfc3339_utc(now)
+                ends_str = format_rfc3339_utc(end_dt)
+
+                alert_payload = {
+                    "labels": final_labels,
+                    "annotations": final_annotations,
+                    "startsAt": starts_str,
+                    "endsAt": ends_str,
                 }
-            except Exception as e:
-                await ctx.error(str(e))
-                return {"error": str(e), "isError": True}
+                if generator_url:
+                    alert_payload["generatorURL"] = generator_url
+
+                await self.alertmanager_service.push_alerts(bid, [alert_payload])
+                add_audit_entry(
+                    backend_id=bid,
+                    operation="push_test_alert",
+                    principal="operator",
+                    summary=(
+                        f"alertname={final_labels['alertname']} receivers={receivers} "
+                        f"resolve_after={resolve_after_minutes}m"
+                    ),
+                    outcome="succeeded",
+                    details={
+                        "labels": final_labels,
+                        "receivers": receivers,
+                        "starts_at": starts_str,
+                        "ends_at": ends_str,
+                    },
+                    audit_log_path=self.config.audit_log_path,
+                )
+
+                return PushTestAlertResponse(
+                    backend_id=bid,
+                    status="sent",
+                    alertname=final_labels["alertname"],
+                    labels=final_labels,
+                    annotations=final_annotations,
+                    starts_at=starts_str,
+                    ends_at=ends_str,
+                    resolve_after_minutes=resolve_after_minutes,
+                    routing_preview={
+                        "matched_route": routing_preview["matched_route"],
+                        "receivers": receivers,
+                        "active_receivers": routing_preview["active_receivers"],
+                        "muted_receivers": routing_preview["muted_receivers"],
+                        "is_inhibited": routing_preview["is_inhibited"],
+                    },
+                    message=(
+                        f"Synthetic test alert '{final_labels['alertname']}' pushed to '{bid}' "
+                        f"(routed to {', '.join(receivers) or 'default'}, auto-resolves at {ends_str})."
+                    ),
+                )

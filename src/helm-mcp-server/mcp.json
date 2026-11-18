@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "helm-mcp-server": {
+      "type": "stdio",
+      "command": "helm-mcp-server",
+      "args": [
+        "--transport=stdio",
+        "--toolsets=all"
+      ],
+      "cwd": "./",
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_TOOLSETS": "all",
+        "HELM_CACHE_HOME": "${PLUGIN_DATA}/helm-cache",
+        "HELM_CONFIG_HOME": "${PLUGIN_DATA}/helm-config"
+      }
+    }
+  }
+}

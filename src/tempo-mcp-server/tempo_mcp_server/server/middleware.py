@@ -19,24 +19,14 @@ from fastmcp.server.middleware.rate_limiting import RateLimitingMiddleware
 from fastmcp.server.middleware.response_limiting import ResponseLimitingMiddleware
 from fastmcp.server.middleware import Middleware, MiddlewareContext, CallNext
 from fastmcp.tools.base import ToolResult
-from fastmcp.resources.base import ResourceResult
-from fastmcp.prompts.base import PromptResult
 from tempo_mcp_server.config import ServerConfig
+
+# Keys that expect a TraceQL or raw log string rather than a JSON dict
+_STRING_QUERY_KEYS = frozenset({"query", "q", "base_query", "selection", "log_line"})
 
 
 class JsonCoercionMiddleware(Middleware):
-    """Auto-coerce tool arguments to native objects or valid strings.
-
-    Many LLM agents send ``dict`` or ``list`` parameters as JSON strings,
-    or conversely, send TraceQL/LogQL queries (which start with `{`) as
-    JSON objects instead of strings. FastMCP's Pydantic validation rejects
-    these before tool code runs.
-
-    This middleware intercepts every ``tools/call`` request and applies
-    two-way coercion:
-    1. String -> Dict/List (via JSON/YAML parsing)
-    2. Dict -> String (fixing hallucinative queries like `{"{app=\\"foo\\"}": null}`)
-    """
+    """Auto-coerce tool arguments to native objects or valid strings."""
 
     async def on_call_tool(
         self,
@@ -48,13 +38,13 @@ class JsonCoercionMiddleware(Middleware):
         if args:
             coerced_keys: list[str] = []
             for key, value in list(args.items()):
-                if isinstance(value, str):
+                if isinstance(value, str) and key not in _STRING_QUERY_KEYS:
                     parsed = self._try_parse(value)
                     if parsed is not value:
                         args[key] = parsed
                         coerced_keys.append(key)
-                elif isinstance(value, dict):
-                    # Handle LLM hallucinative queries parsed as JSON objects
+                elif isinstance(value, dict) and key in _STRING_QUERY_KEYS:
+                    # Handle LLM hallucinative TraceQL queries parsed as JSON objects
                     if len(value) == 1 and list(value.values())[0] is None:
                         args[key] = list(value.keys())[0]
                         coerced_keys.append(key)
@@ -100,52 +90,24 @@ class JsonCoercionMiddleware(Middleware):
 
 
 def setup_middleware(mcp: FastMCP, config: ServerConfig) -> None:
-    """Setup middleware for FastMCP server.
-
-    Middleware order:
-    1. Error Handling - catches and transforms errors
-    2. Response Limiting - prevents massive payloads from crashing context
-    3. Rate Limiting - protects against abusive or runaway requests
-    4. Request/Response Transformation - modifies data
-    5. Caching - checks cache before execution
-    6. Logging - tracks all operations
-    7. Timing - measures performance
-    """
-    # 1. Error Handling
+    """Setup middleware for FastMCP server."""
     mcp.add_middleware(ErrorHandlingMiddleware(
         include_traceback=False,
         transform_errors=True,
     ))
 
-    # 2. Response Limiting (2-layer defense)
-    # Layer 1: Tools self-limit at the soft limit (e.g. 40KB via enforce_structured_size_limit).
-    #          This is the primary defense — tools compact and truncate their own results.
-    # Layer 2: This middleware is a safety net for catastrophic cases only.
-    #          Set generously high (200KB) because FastMCP double-serializes results
-    #          (TextContent + structured_content), roughly doubling the wire payload.
-    #          The old 100KB limit was too close to actual payload sizes, causing
-    #          routine hard-limit hits that stripped structuredContent and broke
-    #          MCP client-side outputSchema validation.
     mcp.add_middleware(ResponseLimitingMiddleware(
         max_size=config.response_size_hard_limit,
     ))
 
-    # 3. Rate Limiting
     mcp.add_middleware(RateLimitingMiddleware(
-        max_requests_per_second=10.0,
-        burst_capacity=20,
+        max_requests_per_second=50.0,
+        burst_capacity=100,
         global_limit=True,
     ))
 
-    # 4. JSON Coercion - fixes Pydantic validation errors from LLM hallucinations
     mcp.add_middleware(JsonCoercionMiddleware())
 
-    # 5. Caching — list operations are static so a long TTL is fine.
-    # H-04: Tool invocation caching is DISABLED. Several tools (traceql_search,
-    # get_exemplar_traces) are explicitly marked idempotentHint=False. Caching
-    # them means an AI agent that retries a search expecting different results
-    # will silently receive stale data for 10 s. Read-resource caching is kept
-    # because those resources are config-level static data.
     mcp.add_middleware(ResponseCachingMiddleware(
         list_tools_settings=ListToolsSettings(ttl=300, enabled=True),
         list_resources_settings=ListResourcesSettings(ttl=300, enabled=True),
@@ -155,12 +117,10 @@ def setup_middleware(mcp: FastMCP, config: ServerConfig) -> None:
         get_prompt_settings=GetPromptSettings(ttl=3600, enabled=True),
     ))
 
-    # 6. Logging
     mcp.add_middleware(StructuredLoggingMiddleware(
         include_payloads=True,
         include_payload_length=True,
         estimate_payload_tokens=True,
     ))
 
-    # 7. Timing
     mcp.add_middleware(TimingMiddleware())

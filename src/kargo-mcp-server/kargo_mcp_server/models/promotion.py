@@ -1,66 +1,82 @@
-"""Kargo Promotion models."""
-
+"""Kargo Promotion models (Kargo v1.10–v1.12)."""
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from kargo_mcp_server.models.common import ObjectMeta
 
 
-class PromotionStepStatus(BaseModel):
-    """Status of a single promotion step."""
+class PromotionStepExecutionMetadata(BaseModel):
+    """Execution metadata for a single step in Promotion.status.stepExecutionMetadata."""
 
-    name: str
-    type: str
-    status: str
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    alias: str = Field(default="", validation_alias=AliasChoices("alias", "name"))
+    status: str = "Unknown"
+    message: Optional[str] = None
     started_at: Optional[datetime] = Field(default=None, alias="startedAt")
     finished_at: Optional[datetime] = Field(default=None, alias="finishedAt")
-    log_url: Optional[str] = Field(default=None, alias="logUrl")
-
-    model_config = {"populate_by_name": True}
+    error_count: int = Field(default=0, alias="errorCount")
 
 
 class PromotionSpec(BaseModel):
-    """Promotion specification.
+    """Promotion specification (Kargo v1.12)."""
 
-    Matches the Kargo Swagger PromotionSpec definition.
-    The primary field is ``freight`` (a single Freight resource name).
-    ``project`` is not part of the Kargo spec but may appear in some
-    API responses so it is kept as optional for resilience.
-    """
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     stage: str
-    # Accept both "freight" (Swagger-canonical) and legacy "freightId"
     freight: str = Field(
+        default="",
         validation_alias=AliasChoices("freight", "freightId"),
     )
-    project: Optional[str] = None
-
-    model_config = {"populate_by_name": True}
+    origin: Optional[Dict[str, Any]] = None
+    vars: List[Dict[str, Any]] = Field(default_factory=list)
+    steps: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class PromotionStatus(BaseModel):
-    """Promotion status."""
+    """Promotion status (Kargo v1.12 uses phase; legacy used state)."""
 
-    state: str = "Unknown"
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    phase: str = Field(
+        default="Pending",
+        validation_alias=AliasChoices("phase", "state"),
+    )
     message: Optional[str] = None
-    steps: List[PromotionStepStatus] = Field(default_factory=list)
+    current_step: Optional[int] = Field(default=None, alias="currentStep")
+    step_execution_metadata: List[PromotionStepExecutionMetadata] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("stepExecutionMetadata", "steps"),
+    )
+    state: Optional[Dict[str, Any]] = None  # v1.12 step output state map if dict
     started_at: Optional[datetime] = Field(default=None, alias="startedAt")
     finished_at: Optional[datetime] = Field(default=None, alias="finishedAt")
-
-    model_config = {"populate_by_name": True}
+    freight: Optional[Dict[str, Any]] = None
+    freight_collection: Optional[Dict[str, Any]] = Field(
+        default=None, alias="freightCollection"
+    )
+    health_checks: List[Dict[str, Any]] = Field(
+        default_factory=list, alias="healthChecks"
+    )
 
 
 class Promotion(BaseModel):
     """Full Kargo Promotion resource."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     apiVersion: str = "kargo.akuity.io/v1alpha1"
     kind: str = "Promotion"
     metadata: ObjectMeta
     spec: PromotionSpec
     status: Optional[PromotionStatus] = None
+
+    def get_phase(self) -> str:
+        if not self.status:
+            return "Pending"
+        return self.status.phase or "Unknown"
 
 
 class PromotionSummary(BaseModel):
@@ -69,6 +85,7 @@ class PromotionSummary(BaseModel):
     name: str
     stage: str
     freight: str
-    state: str = "Unknown"
+    phase: str = "Pending"
+    message: Optional[str] = None
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None

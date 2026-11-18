@@ -1,0 +1,25 @@
+{
+  "apiVersion": "v2",
+  "name": "postgresql",
+  "version": "15.5.0",
+  "appVersion": "16.3.0",
+  "kubeVersion": ">=1.23.0-0",
+  "description": "PostgreSQL is an advanced object-relational database management system",
+  "home": "https://bitnami.com",
+  "sources": [
+    "https://github.com/bitnami/charts/tree/main/bitnami/postgresql"
+  ],
+  "maintainers": [
+    {
+      "name": "Broadcom, Inc.",
+      "url": "https://github.com/bitnami/charts"
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "common",
+      "version": "2.x.x",
+      "repository": "oci://registry-1.docker.io/bitnamicharts"
+    }
+  ]
+}

@@ -1,4 +1,12 @@
-"""End-to-End Workflow Test: User Onboarding Flow."""
+"""End-to-End Workflow Test: Workload Instrumentation Onboarding Flow.
+
+Matches the `instrumenting-kubernetes-workloads` skill workflow:
+  1. Read `otel://server/capabilities` and `otel://operator/status`
+  2. Discover workloads via `otel_list_workloads`
+  3. Create/patch Instrumentation CR via `otel_patch_instrumentation(dry_run=True)`
+  4. Enable workload instrumentation via `otel_manage_workload_instrumentation(dry_run=True)`
+  5. Verify end-to-end delivery via `otel_verify_instrumentation`
+"""
 
 import json
 import pytest
@@ -8,36 +16,52 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_onboarding_flow(bootstrapped_mcp):
-    """
-    Test the typical onboarding workflow:
-    1. Read the onboarding prompt.
-    2. Lookup instrumentation for library.
-    3. List instrumented services to verify.
-    """
     async with Client(bootstrapped_mcp) as client:
-        # 1. Read onboarding prompt
-        prompt = await client.get_prompt(
-            "otel_onboard_service",
-            arguments={
-                "service_name": "my-service",
+        # 1. Preconditions
+        cap = json.loads((await client.read_resource("otel://server/capabilities"))[0].text)
+        assert cap["allow_write"] is True
+
+        op = json.loads((await client.read_resource("otel://operator/status"))[0].text)
+        assert op["operator_found"] is True
+
+        # 2. List workloads
+        wl_res = await client.call_tool("otel_list_workloads", {"namespace": "default"})
+        wl_data = json.loads(wl_res.content[0].text)
+        assert len(wl_data["items"]) > 0
+
+        # 3. Preview Instrumentation CR
+        inst_res = await client.call_tool(
+            "otel_patch_instrumentation",
+            {
                 "namespace": "default",
-                "language": "java"
-            }
+                "name": "default-inst",
+                "collector_endpoint": "http://otel-collector.observability.svc:4317",
+                "languages": ["java", "python"],
+                "dry_run": True,
+            },
         )
-        assert len(prompt.messages) > 0
+        inst_data = json.loads(inst_res.content[0].text)
+        assert inst_data["dry_run"] is True
 
-        # 2. Lookup instrumentation
-        lookup_res = await client.call_tool(
-            "otel_lookup_instrumentation", 
-            {"language": "java"}
+        # 4. Preview workload injection annotation
+        manage_res = await client.call_tool(
+            "otel_manage_workload_instrumentation",
+            {
+                "namespace": "default",
+                "workload_name": "frontend-service",
+                "workload_kind": "Deployment",
+                "action": "enable",
+                "language": "java",
+                "dry_run": True,
+            },
         )
-        assert "java" in lookup_res.content[0].text.lower()
+        manage_data = json.loads(manage_res.content[0].text)
+        assert manage_data["dry_run"] is True
 
-        # 3. Verify services
-        services_res = await client.call_tool(
-            "otel_list_instrumented_services",
-            {"namespace": "default"}
+        # 5. Verify instrumentation
+        ver_res = await client.call_tool(
+            "otel_verify_instrumentation",
+            {"namespace": "default", "workload_name": "frontend-service", "workload_kind": "Deployment"},
         )
-        data = json.loads(services_res.content[0].text)
-        items = data.get("items", [])
-        assert len(items) > 0
+        ver_data = json.loads(ver_res.content[0].text)
+        assert "findings" in ver_data

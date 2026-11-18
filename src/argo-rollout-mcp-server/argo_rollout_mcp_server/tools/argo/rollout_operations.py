@@ -1,28 +1,47 @@
-"""Argo Rollouts operation tools - Control rollout progression and lifecycle."""
+"""Argo Rollouts lifecycle operations, AnalysisTemplate, Experiment, and Canary metrics comparison tools."""
 
-from typing import Dict, Any, Optional, List, Literal
-from pydantic import Field
-from mcp.types import ToolAnnotations
+import asyncio
+from typing import Any, Dict, List, Literal, Optional
+import requests
+import yaml
 from fastmcp import Context
+from fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
+from pydantic import Field
 
-from argo_rollout_mcp_server.tools.base import BaseTool
-from argo_rollout_mcp_server.exceptions.custom import (
-    ArgoRolloutError,
-    RolloutNotFoundError,
-    RolloutPromotionError,
-    RolloutAbortError,
-    AnalysisTemplateError,
+from argo_rollout_mcp_server.models.schemas import (
+    AnalysisThresholds,
+    CanaryMetricsComparison,
+    ExecutionResult,
 )
+from argo_rollout_mcp_server.tools.base import BaseTool, confirm_destructive_action
 
-LIFECYCLE_ACTIONS = Literal["promote", "promote_full", "pause", "resume", "abort", "retry", "skip_analysis"]
+LIFECYCLE_ACTIONS = Literal[
+    "promote",
+    "promote_full",
+    "pause",
+    "resume",
+    "abort",
+    "retry",
+    "skip_analysis",
+]
 
 
 class RolloutOperationTools(BaseTool):
-    """Tools for controlling rollout progression: promote, abort, pause, resume."""
+    """Tools for rollout lifecycle actions, analysis templates, experiments, and canary metrics."""
 
     def register(self, mcp_instance) -> None:
-        """Register tools with FastMCP."""
+        """Register rollout lifecycle and analysis tools with FastMCP."""
+        if self.should_register("rollouts", is_write=True):
+            self._register_lifecycle_tools(mcp_instance)
 
+        if self.should_register("analysis", is_write=True):
+            self._register_analysis_write_tools(mcp_instance)
+
+        if self.should_register("analysis", is_write=False):
+            self._register_analysis_read_tools(mcp_instance)
+
+    def _register_lifecycle_tools(self, mcp_instance) -> None:
         @mcp_instance.tool(
             annotations=ToolAnnotations(
                 title="Manage Rollout Lifecycle",
@@ -36,396 +55,489 @@ class RolloutOperationTools(BaseTool):
             name: str = Field(..., min_length=1, description="Rollout name"),
             action: LIFECYCLE_ACTIONS = Field(
                 ...,
-                description="Lifecycle action: promote (next step), promote_full (skip to 100%), pause, resume, abort, retry (clear abort to resume), skip_analysis (emergency override)",
+                description=(
+                    "Lifecycle action: promote (next step), promote_full (skip to 100%), "
+                    "pause, resume, abort, retry, or skip_analysis"
+                ),
             ),
             namespace: str = Field(default="default", description="Kubernetes namespace"),
+            confirm: bool = Field(
+                default=False,
+                description="Confirm high-impact action (abort, promote_full, skip_analysis)",
+            ),
             ctx: Context = None,
-        ) -> Dict[str, Any]:
-            """Manage rollout lifecycle: promote, pause, resume, abort, retry, or skip analysis.
+        ) -> ExecutionResult:
+            """Execute a progressive delivery lifecycle action on an active Rollout."""
+            self.check_write_access("argo_manage_rollout_lifecycle")
 
-            Unified tool for changing execution state of an active rollout.
-
-            **WARNING: promote_full skips all remaining steps. abort
-            rolls back to stable. skip_analysis is an emergency override.**
-
-            Returns:
-            - {"message": str, "next_action_hints": [...]}
-
-            When NOT to use:
-            - To update image/strategy → use argo_update_rollout.
-            - To delete a rollout → use argo_delete_rollout.
-
-            Common errors:
-            - RolloutNotFoundError: Rollout does not exist.
-            - RolloutPromotionError: Promotion failed (wrong state).
-            """
-            valid_actions = ("promote", "promote_full", "pause", "resume", "abort", "retry", "skip_analysis")
+            valid_actions = (
+                "promote",
+                "promote_full",
+                "pause",
+                "resume",
+                "abort",
+                "retry",
+                "skip_analysis",
+            )
             if action not in valid_actions:
-                raise ValueError(
-                    f"Invalid action '{action}'. Must be one of: {', '.join(valid_actions)}"
+                self.handle_error(
+                    ValueError(f"Invalid action '{action}'. Must be one of: {', '.join(valid_actions)}"),
+                    "argo_manage_rollout_lifecycle",
+                    namespace=namespace,
+                    resource_name=name,
                 )
 
-            await ctx.info(
-                f"Executing lifecycle action '{action}' on rollout '{name}'",
-                extra={"app_name": name, "namespace": namespace, "action": action},
-            )
+            if action in ("abort", "promote_full", "skip_analysis"):
+                confirmed = await confirm_destructive_action(
+                    ctx,
+                    action_summary=f"Execute '{action}' on Rollout '{name}' in namespace '{namespace}'",
+                    confirm=confirm,
+                    resource_uri=f"argorollout://rollouts/{namespace}/{name}/detail",
+                    details={"rollout_name": name, "namespace": namespace, "action": action},
+                )
+                if not confirmed:
+                    return ExecutionResult(
+                        status="cancelled",
+                        summary=(
+                            f"Confirmation required to execute '{action}' on Rollout '{name}'. "
+                            "Re-run with confirm=True after user approval."
+                        ),
+                        dry_run=False,
+                        resource_uri=f"argorollout://rollouts/{namespace}/{name}/detail",
+                        details={"name": name, "namespace": namespace, "action": action, "requires_confirmation": True},
+                    )
 
             try:
                 if action == "promote":
-                    result = await self.argo_service.promote_rollout(
-                        name=name, namespace=namespace, full=False
-                    )
-                    result.setdefault("next_action_hints", [])
-                    result["next_action_hints"].append({
-                        "label": "Monitor health after promotion",
-                        "description": (
-                            "After each promotion step, poll rollout and health resources to "
-                            "ensure error rate and latency remain within acceptable bounds."
-                        ),
-                        "resources": [
-                            f"argorollout://rollouts/{namespace}/{name}/detail",
-                            f"argorollout://health/{namespace}/{name}/details",
-                        ],
-                    })
-                    result["next_action_hints"].append({
-                        "label": "Decide next step",
-                        "description": (
-                            "If metrics look good after the wait period, call "
-                            "argo_manage_rollout_lifecycle(action='promote') again. "
-                            "If they degrade, use action='abort'."
-                        ),
-                        "suggested_tool": "argo_manage_rollout_lifecycle",
-                        "suggested_args": {"name": name, "namespace": namespace},
-                    })
+                    result = await self.argo_service.promote_rollout(name=name, namespace=namespace, full=False)
                 elif action == "promote_full":
-                    result = await self.argo_service.promote_rollout(
-                        name=name, namespace=namespace, full=True
-                    )
-                    result.setdefault("next_action_hints", [])
-                    result["next_action_hints"].append({
-                        "label": "Monitor health after promotion",
-                        "description": (
-                            "After each promotion step, poll rollout and health resources to "
-                            "ensure error rate and latency remain within acceptable bounds."
-                        ),
-                        "resources": [
-                            f"argorollout://rollouts/{namespace}/{name}/detail",
-                            f"argorollout://health/{namespace}/{name}/details",
-                        ],
-                    })
-                    result["next_action_hints"].append({
-                        "label": "Final verification",
-                        "description": (
-                            "Once fully promoted, verify the rollout is Healthy via the "
-                            "rollout detail and health resources."
-                        ),
-                        "resources": [
-                            f"argorollout://rollouts/{namespace}/{name}/detail",
-                            f"argorollout://health/{namespace}/{name}/details",
-                        ],
-                    })
+                    result = await self.argo_service.promote_rollout(name=name, namespace=namespace, full=True)
                 elif action == "abort":
-                    await ctx.warning(
-                        f"Aborting rollout '{name}' - will rollback to stable",
-                        extra={"app_name": name, "namespace": namespace},
-                    )
-                    result = await self.argo_service.abort_rollout(
-                        name=name, namespace=namespace
-                    )
-                    result.setdefault("next_action_hints", [])
-                    result["next_action_hints"].append({
-                        "label": "Confirm rollback to stable",
-                        "description": (
-                            "Check the rollout detail resource and cluster health to verify that "
-                            "traffic and pods are fully reverted to the previous stable version."
-                        ),
-                        "resources": [
-                            f"argorollout://rollouts/{namespace}/{name}/detail",
-                            "argorollout://health/summary",
-                        ],
-                    })
+                    result = await self.argo_service.abort_rollout(name=name, namespace=namespace)
                 elif action == "retry":
-                    result = await self.argo_service.retry_rollout(
-                        name=name, namespace=namespace
-                    )
-                    result.setdefault("next_action_hints", [])
-                    result["next_action_hints"].append({
-                        "label": "Monitor deployment progression",
-                        "description": (
-                            "After retry, the rollout will resume. Poll the rollout detail "
-                            "until canary is at the first step (5%), then promote through steps."
-                        ),
-                        "resources": [
-                            f"argorollout://rollouts/{namespace}/{name}/detail",
-                            f"argorollout://health/{namespace}/{name}/details",
-                        ],
-                        "suggested_tool": "argo_manage_rollout_lifecycle",
-                        "suggested_args": {"name": name, "namespace": namespace, "action": "promote"},
-                    })
+                    result = await self.argo_service.retry_rollout(name=name, namespace=namespace)
                 elif action == "pause":
-                    result = await self.argo_service.pause_rollout(
-                        name=name, namespace=namespace
-                    )
-                    result.setdefault("next_action_hints", [])
-                    result["next_action_hints"].append({
-                        "label": "While paused",
-                        "description": (
-                            "Inspect rollout and health resources to decide whether to "
-                            "resume promotion, keep the rollout paused, or abort."
-                        ),
-                        "resources": [
-                            f"argorollout://rollouts/{namespace}/{name}/detail",
-                            f"argorollout://health/{namespace}/{name}/details",
-                        ],
-                    })
+                    result = await self.argo_service.pause_rollout(name=name, namespace=namespace)
                 elif action == "resume":
-                    result = await self.argo_service.resume_rollout(
-                        name=name, namespace=namespace
-                    )
-                    result.setdefault("next_action_hints", [])
-                    result["next_action_hints"].append({
-                        "label": "After resuming",
-                        "description": (
-                            "Monitor the rollout and health resources to ensure the resumed "
-                            "promotion behaves as expected; be ready to abort if metrics regress."
-                        ),
-                        "resources": [
-                            f"argorollout://rollouts/{namespace}/{name}/detail",
-                            f"argorollout://health/{namespace}/{name}/details",
-                        ],
-                        "suggested_tool": "argo_manage_rollout_lifecycle",
-                        "suggested_args": {
-                            "name": name,
-                            "namespace": namespace,
-                            "action": "abort",
-                        },
-                    })
-                elif action == "skip_analysis":
-                    await ctx.warning(
-                        f"EMERGENCY OVERRIDE: Skipping analysis for rollout '{name}'",
-                        extra={"app_name": name, "namespace": namespace},
-                    )
-                    result = await self.argo_service.skip_analysis_promote(
-                        name=name, namespace=namespace
-                    )
-                    await ctx.warning(
-                        f"Analysis skipped for rollout '{name}' - ensure manual validation was performed",
-                        extra={"app_name": name},
-                    )
-                    result.setdefault("next_action_hints", [])
-                    result["next_action_hints"].append({
-                        "label": "Post-override safety checks",
-                        "description": (
-                            "Immediately check rollout and application health, and consider "
-                            "configuring proper analysis templates to avoid needing this "
-                            "emergency override in the future."
-                        ),
-                        "resources": [
-                            f"argorollout://rollouts/{namespace}/{name}/detail",
-                            f"argorollout://health/{namespace}/{name}/details",
-                        ],
-                        "suggested_tool": "argo_configure_analysis_template",
-                        "suggested_args": {
-                            "rollout_name": name,
-                            "namespace": namespace,
-                            "mode": "execute",
-                        },
-                    })
-                else:
-                    raise ValueError(f"Unhandled action: {action}")
+                    result = await self.argo_service.resume_rollout(name=name, namespace=namespace)
+                else:  # skip_analysis
+                    result = await self.argo_service.skip_analysis_promote(name=name, namespace=namespace)
 
-                await ctx.info(
-                    f"Successfully executed '{action}' on rollout '{name}'",
-                    extra={"app_name": name, "action": action},
+                return ExecutionResult(
+                    status="success",
+                    summary=result.get("message", f"Executed '{action}' on Rollout '{name}'."),
+                    dry_run=False,
+                    resource_uri=f"argorollout://rollouts/{namespace}/{name}/detail",
+                    details=result,
                 )
-                return result
-
-            except RolloutPromotionError as e:
-                await ctx.error(f"Promotion failed: {str(e)}")
-                raise
-            except RolloutAbortError as e:
-                await ctx.error(f"Abort failed: {str(e)}")
-                raise
-            except RolloutNotFoundError as e:
-                await ctx.error(f"Rollout not found: {str(e)}")
-                raise
             except Exception as e:
-                if isinstance(e, (RolloutPromotionError, RolloutAbortError, RolloutNotFoundError)):
-                    raise
-                await ctx.error(f"Lifecycle action '{action}' failed: {str(e)}")
-                raise ArgoRolloutError(f"Lifecycle action failed: {str(e)}")
+                self.handle_error(e, "argo_manage_rollout_lifecycle", namespace=namespace, resource_name=name)
 
+    def _register_analysis_write_tools(self, mcp_instance) -> None:
         @mcp_instance.tool(
             annotations=ToolAnnotations(
                 title="Configure Analysis Template",
                 readOnlyHint=False,
                 destructiveHint=False,
-                idempotentHint=False,
+                idempotentHint=True,
                 openWorldHint=True,
             )
         )
         async def argo_configure_analysis_template(
-            rollout_name: str = Field(..., min_length=1, description="Rollout name"),
-            mode: Literal["execute", "generate_yaml", "delete"] = Field(
-                ...,
-                description="execute: create AnalysisTemplate CRD and link to rollout. generate_yaml: return YAML only (GitOps review). delete: remove AnalysisTemplate from cluster.",
-            ),
+            rollout_name: str = Field(..., min_length=1, description="Rollout name to attach analysis to"),
             namespace: str = Field(default="default", description="Kubernetes namespace"),
             template_name: Optional[str] = Field(
                 default=None,
-                description="Analysis template name. Defaults to {rollout_name}-analysis or {service_name}-analysis.",
+                description="AnalysisTemplate name (defaults to {service_name}-analysis)",
             ),
             metrics: Optional[List[Dict[str, Any]]] = Field(
                 default=None,
-                description="Custom metrics (execute only). If omitted with execute, uses threshold-based or default.",
+                description="Custom AnalysisTemplate metric definitions (if omitted, uses thresholds)",
             ),
-            service_name: Optional[str] = Field(
+            thresholds: Optional[AnalysisThresholds] = Field(
                 default=None,
-                description="Service name for Prometheus job selector (threshold-based). Defaults to rollout_name.",
+                description="Error rate and P95/P99 latency thresholds for Prometheus analysis",
             ),
-            prometheus_url: Optional[str] = Field(
-                default=None,
-                description="Prometheus URL for threshold-based metrics. If omitted, uses PROMETHEUS_URL env var or http://prometheus:9090.",
-            ),
-            error_rate_threshold: float = Field(default=5.0, description="Max error rate percent (threshold-based)."),
-            latency_p99_threshold: float = Field(default=2000.0, description="Max P99 latency ms (threshold-based)."),
-            latency_p95_threshold: float = Field(default=1000.0, description="Max P95 latency ms (threshold-based)."),
             scope: Literal["namespace", "cluster"] = Field(
                 default="namespace",
-                description="namespace: create AnalysisTemplate (namespace-scoped). cluster: create ClusterAnalysisTemplate (reusable across cluster).",
+                description="'namespace' for AnalysisTemplate or 'cluster' for ClusterAnalysisTemplate",
+            ),
+            dry_run: bool = Field(
+                default=True,
+                description="If True (default), return rendered AnalysisTemplate YAML without mutating cluster",
             ),
             ctx: Context = None,
-        ):
-            """Configure AnalysisTemplate for rollout validation.
+        ) -> ExecutionResult:
+            """Create (or preview) an AnalysisTemplate/ClusterAnalysisTemplate and link it to a Rollout."""
+            self.check_write_access("argo_configure_analysis_template")
 
-            Create and link an AnalysisTemplate (execute), generate YAML
-            only for GitOps review (generate_yaml), or delete an existing
-            template (delete).
-
-            Returns:
-            - execute: {"status": str, "template_name": str, "next_action_hints": [...]}
-            - generate_yaml: {"template_yaml": str, "next_action_hints": [...]}
-            - delete: {"message": str}
-
-            When NOT to use:
-            - To create an experiment → use argo_create_experiment.
-            - To promote/abort → use argo_manage_rollout_lifecycle.
-            """
-            svc_name = service_name or rollout_name
+            t_cfg = thresholds or AnalysisThresholds()
+            svc_name = t_cfg.service_name or rollout_name
             tpl_name = template_name or f"{svc_name}-analysis"
-            effective_prometheus_url = None
-            if mode != "delete":
-                effective_prometheus_url = (
-                    prometheus_url
-                    or (self.config.prometheus_url if self.config else None)
-                    or "http://prometheus:9090"
-                )
-
-            if mode == "delete":
-                await ctx.info(
-                    f"Deleting AnalysisTemplate '{tpl_name}'",
-                    extra={"template_name": tpl_name, "namespace": namespace},
-                )
-                result = self.argo_service.delete_analysis_template(
-                    name=tpl_name,
-                    namespace=namespace,
-                )
-                await ctx.info(result["message"])
-                return result
-
-            if mode == "generate_yaml":
-                await ctx.info(
-                    f"Generating AnalysisTemplate YAML for '{svc_name}'",
-                    extra={"service_name": svc_name, "namespace": namespace},
-                )
-                try:
-                    result = await self.generator_service.create_analysis_template_for_rollout(
-                        service_name=svc_name,
-                        prometheus_url=effective_prometheus_url,
-                        namespace=namespace,
-                        error_rate_threshold=error_rate_threshold,
-                        latency_p99_threshold=latency_p99_threshold,
-                        latency_p95_threshold=latency_p95_threshold,
-                        scope=scope,
-                    )
-                    result.setdefault("next_action_hints", [])
-                    result["next_action_hints"].append({
-                        "label": "Apply and link to rollout",
-                        "description": (
-                            "Use argo_configure_analysis_template(mode='execute') with the same "
-                            "params to create the CRD and link it to the rollout."
-                        ),
-                        "suggested_tool": "argo_configure_analysis_template",
-                        "suggested_args": {
-                            "rollout_name": rollout_name,
-                            "mode": "execute",
-                            "namespace": namespace,
-                            "service_name": svc_name,
-                            "prometheus_url": effective_prometheus_url,
-                            "error_rate_threshold": error_rate_threshold,
-                            "latency_p99_threshold": latency_p99_threshold,
-                            "latency_p95_threshold": latency_p95_threshold,
-                            "scope": scope,
-                        },
-                    })
-                    return result
-                except Exception as e:
-                    await ctx.error(f"AnalysisTemplate generation failed: {str(e)}")
-                    raise ArgoRolloutError(f"AnalysisTemplate generation failed: {str(e)}")
-
-            # mode == "execute"
-            await ctx.info(
-                f"Configuring analysis template '{tpl_name}' for rollout '{rollout_name}'",
-                extra={"rollout_name": rollout_name, "template_name": tpl_name, "namespace": namespace},
+            prom_url = (
+                t_cfg.prometheus_url
+                or (self.config.prometheus_url if self.config else None)
+                or "http://prometheus:9090"
             )
-            if metrics:
-                await ctx.debug(f"Using custom metrics: {len(metrics)} metric(s)")
-                metrics_to_use = metrics
-            else:
-                metrics_to_use = self.generator_service.get_analysis_metrics_from_thresholds(
-                    service_name=svc_name,
-                    prometheus_url=effective_prometheus_url,
-                    error_rate_threshold=error_rate_threshold,
-                    latency_p99_threshold=latency_p99_threshold,
-                    latency_p95_threshold=latency_p95_threshold,
-                )
-                await ctx.debug(f"Using threshold-based metrics (error<{error_rate_threshold}%%, p99<{latency_p99_threshold}ms)")
 
             try:
+                metrics_to_use = metrics or self.generator_service.get_analysis_metrics_from_thresholds(
+                    service_name=svc_name,
+                    prometheus_url=prom_url,
+                    error_rate_threshold=t_cfg.error_rate_percent,
+                    latency_p99_threshold=t_cfg.latency_p99_ms,
+                    latency_p95_threshold=t_cfg.latency_p95_ms,
+                )
+
+                kind = "ClusterAnalysisTemplate" if scope == "cluster" else "AnalysisTemplate"
+                meta: Dict[str, Any] = {"name": tpl_name}
+                if scope == "namespace":
+                    meta["namespace"] = namespace
+                template_obj = {
+                    "apiVersion": "argoproj.io/v1alpha1",
+                    "kind": kind,
+                    "metadata": meta,
+                    "spec": {"metrics": metrics_to_use},
+                }
+                manifest_yaml = yaml.dump(template_obj, default_flow_style=False)
+
+                if dry_run:
+                    return ExecutionResult(
+                        status="preview",
+                        summary=f"Previewed {kind} '{tpl_name}' for Rollout '{rollout_name}' (dry_run=True). Re-run with dry_run=False to apply.",
+                        dry_run=True,
+                        manifest=manifest_yaml,
+                        resource_uri=f"argorollout://analysistemplates/{namespace}",
+                        details={
+                            "rollout_name": rollout_name,
+                            "template_name": tpl_name,
+                            "scope": scope,
+                            "metrics_count": len(metrics_to_use),
+                        },
+                    )
+
                 result = await self.argo_service.set_analysis_template(
                     rollout_name=rollout_name,
                     template_name=tpl_name,
                     namespace=namespace,
                     metrics=metrics_to_use,
                     scope=scope,
+                    dry_run=False,
                 )
-                await ctx.info(
-                    f"Successfully configured analysis template '{tpl_name}' for rollout '{rollout_name}'",
-                    extra={"rollout_name": rollout_name, "template_name": tpl_name},
-                )
-                result.setdefault("next_action_hints", [])
-                result["next_action_hints"].append({
-                    "label": "Use analysis in future deployments",
-                    "description": (
-                        "When you next update the rollout image, the analysis template "
-                        "will auto-validate canary health. Use argo_update_rollout(update_type='image')."
+                return ExecutionResult(
+                    status="success",
+                    summary=result.get(
+                        "message",
+                        f"Configured {kind} '{tpl_name}' and linked to Rollout '{rollout_name}'.",
                     ),
-                    "suggested_tool": "argo_update_rollout",
-                    "suggested_args": {
-                        "name": rollout_name,
-                        "namespace": namespace,
-                        "update_type": "image",
-                    },
-                })
-                return result
-            except AnalysisTemplateError as e:
-                await ctx.error(f"Analysis template configuration failed: {str(e)}")
-                raise
-            except RolloutNotFoundError as e:
-                await ctx.error(f"Rollout not found: {str(e)}")
-                raise
+                    dry_run=False,
+                    manifest=manifest_yaml,
+                    resource_uri=f"argorollout://rollouts/{namespace}/{rollout_name}/detail",
+                    details=result,
+                )
             except Exception as e:
-                await ctx.error(f"Failed to configure analysis template: {str(e)}")
-                raise ArgoRolloutError("Analysis configuration failed")
+                self.handle_error(
+                    e,
+                    "argo_configure_analysis_template",
+                    namespace=namespace,
+                    resource_name=rollout_name,
+                )
 
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Delete Analysis Template",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
+        async def argo_delete_analysis_template(
+            name: str = Field(..., min_length=1, description="AnalysisTemplate or ClusterAnalysisTemplate name"),
+            namespace: str = Field(default="default", description="Kubernetes namespace (when scope='namespace')"),
+            scope: Literal["namespace", "cluster"] = Field(
+                default="namespace",
+                description="'namespace' for AnalysisTemplate or 'cluster' for ClusterAnalysisTemplate",
+            ),
+            confirm: bool = Field(
+                default=False,
+                description="Confirm permanent deletion when interactive elicitation is unavailable",
+            ),
+            ctx: Context = None,
+        ) -> ExecutionResult:
+            """Permanently delete an AnalysisTemplate or ClusterAnalysisTemplate."""
+            self.check_write_access("argo_delete_analysis_template")
 
+            confirmed = await confirm_destructive_action(
+                ctx,
+                action_summary=f"Delete {scope}-scoped AnalysisTemplate '{name}'",
+                confirm=confirm,
+                resource_uri=f"argorollout://analysistemplates/{namespace}",
+                details={"name": name, "namespace": namespace, "scope": scope},
+            )
+            if not confirmed:
+                return ExecutionResult(
+                    status="cancelled",
+                    summary=(
+                        f"Confirmation required to delete AnalysisTemplate '{name}'. "
+                        "Re-run with confirm=True after user approval."
+                    ),
+                    dry_run=False,
+                    resource_uri=f"argorollout://analysistemplates/{namespace}",
+                    details={"name": name, "namespace": namespace, "scope": scope, "requires_confirmation": True},
+                )
+
+            try:
+                result = self.argo_service.delete_analysis_template(
+                    name=name,
+                    namespace=namespace,
+                    scope=scope,
+                )
+                return ExecutionResult(
+                    status="success",
+                    summary=result.get("message", f"Deleted AnalysisTemplate '{name}'."),
+                    dry_run=False,
+                    details=result,
+                )
+            except Exception as e:
+                self.handle_error(e, "argo_delete_analysis_template", namespace=namespace, resource_name=name)
+
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Create Argo Experiment",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
+        async def argo_create_experiment(
+            name: str = Field(..., min_length=1, description="Experiment name"),
+            templates: List[Dict[str, Any]] = Field(
+                ...,
+                description=(
+                    "Experiment template specs: [{name, replicas, specRef: 'stable'|'canary'}] "
+                    "or [{name, replicas, template: {podTemplateSpec}}]"
+                ),
+            ),
+            namespace: str = Field(default="default", description="Kubernetes namespace"),
+            duration: Optional[str] = Field(default=None, description="Experiment duration (e.g., '20m', '1h')"),
+            analyses: Optional[List[Dict[str, Any]]] = Field(
+                default=None,
+                description="Optional AnalysisTemplate references to run during the experiment",
+            ),
+            rollout_name: Optional[str] = Field(
+                default=None,
+                description="Rollout name (required when templates use specRef: 'stable'|'canary')",
+            ),
+            progress_deadline_seconds: int = Field(
+                default=300,
+                ge=30,
+                description="Seconds for Experiment ReplicaSets to become available",
+            ),
+            dry_run: bool = Field(
+                default=False,
+                description="If True, preview Experiment YAML without creating it in the cluster",
+            ),
+            ctx: Context = None,
+        ) -> ExecutionResult:
+            """Create a standalone Argo Experiment for baseline vs. canary comparison."""
+            self.check_write_access("argo_create_experiment")
+
+            if dry_run:
+                exp_preview = {
+                    "apiVersion": "argoproj.io/v1alpha1",
+                    "kind": "Experiment",
+                    "metadata": {"name": name, "namespace": namespace},
+                    "spec": {
+                        "templates": templates,
+                        "progressDeadlineSeconds": progress_deadline_seconds,
+                        **({"duration": duration} if duration else {}),
+                        **({"analyses": analyses} if analyses else {}),
+                    },
+                }
+                return ExecutionResult(
+                    status="preview",
+                    summary=f"Previewed Experiment '{name}' in namespace '{namespace}' (dry_run=True).",
+                    dry_run=True,
+                    manifest=yaml.dump(exp_preview, default_flow_style=False),
+                    resource_uri=f"argorollout://experiments/{namespace}/{name}/status",
+                    details={"experiment": name, "namespace": namespace, "templates": templates},
+                )
+
+            try:
+                result = await self.argo_service.create_experiment(
+                    name=name,
+                    namespace=namespace,
+                    templates=templates,
+                    duration=duration,
+                    analyses=analyses,
+                    progress_deadline_seconds=progress_deadline_seconds,
+                    rollout_name=rollout_name,
+                    rollout_namespace=namespace,
+                    dry_run=False,
+                )
+                warnings = [result["traefik_note"]] if result.get("traefik_note") else []
+                return ExecutionResult(
+                    status="success",
+                    summary=result.get("message", f"Created Experiment '{name}' in namespace '{namespace}'."),
+                    dry_run=False,
+                    manifest=result.get("manifest"),
+                    warnings=warnings,
+                    resource_uri=f"argorollout://experiments/{namespace}/{name}/status",
+                    details=result,
+                )
+            except Exception as e:
+                self.handle_error(e, "argo_create_experiment", namespace=namespace, resource_name=name)
+
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Delete Argo Experiment",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=True,
+            )
+        )
+        async def argo_delete_experiment(
+            name: str = Field(..., min_length=1, description="Experiment name"),
+            namespace: str = Field(default="default", description="Kubernetes namespace"),
+            confirm: bool = Field(
+                default=False,
+                description="Confirm permanent deletion when interactive elicitation is unavailable",
+            ),
+            ctx: Context = None,
+        ) -> ExecutionResult:
+            """Permanently delete an Argo Experiment and its ephemeral ReplicaSets."""
+            self.check_write_access("argo_delete_experiment")
+
+            confirmed = await confirm_destructive_action(
+                ctx,
+                action_summary=f"Delete Experiment '{name}' in namespace '{namespace}'",
+                confirm=confirm,
+                resource_uri=f"argorollout://experiments/{namespace}/{name}/status",
+                details={"experiment": name, "namespace": namespace},
+            )
+            if not confirmed:
+                return ExecutionResult(
+                    status="cancelled",
+                    summary=(
+                        f"Confirmation required to delete Experiment '{name}'. "
+                        "Re-run with confirm=True after user approval."
+                    ),
+                    dry_run=False,
+                    resource_uri=f"argorollout://experiments/{namespace}/{name}/status",
+                    details={"name": name, "namespace": namespace, "requires_confirmation": True},
+                )
+
+            try:
+                result = await self.argo_service.delete_experiment(name=name, namespace=namespace)
+                return ExecutionResult(
+                    status="success",
+                    summary=result.get("message", f"Deleted Experiment '{name}'."),
+                    dry_run=False,
+                    details=result,
+                )
+            except Exception as e:
+                self.handle_error(e, "argo_delete_experiment", namespace=namespace, resource_name=name)
+
+    def _register_analysis_read_tools(self, mcp_instance) -> None:
+        @mcp_instance.tool(
+            annotations=ToolAnnotations(
+                title="Compare Canary vs Stable Metrics",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            )
+        )
+        async def argo_compare_canary_metrics(
+            rollout_name: str = Field(..., min_length=1, description="Rollout name"),
+            namespace: str = Field(default="default", description="Kubernetes namespace"),
+            window: str = Field(default="5m", description="Prometheus rate window (e.g., '1m', '5m', '15m')"),
+            ctx: Context = None,
+        ) -> CanaryMetricsComparison:
+            """Compare live Prometheus HTTP error rate, latency (P95/P99), and RPS between stable and canary Services."""
+            prometheus_url = (
+                (self.config.prometheus_url if self.config else None)
+                or "http://prometheus:9090"
+            ).rstrip("/")
+
+            stable_svc = f"{rollout_name}-stable"
+            canary_svc = f"{rollout_name}-canary"
+
+            def _query_prom(promql: str) -> float:
+                resp = requests.get(
+                    f"{prometheus_url}/api/v1/query",
+                    params={"query": promql},
+                    timeout=5,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                results = data.get("data", {}).get("result", [])
+                if results and results[0].get("value"):
+                    val = float(results[0]["value"][1])
+                    return 0.0 if val != val else round(val, 3)  # NaN guard
+                return 0.0
+
+            def _collect_variant(svc: str) -> Dict[str, float]:
+                err_q = (
+                    f'(sum(rate(http_requests_total{{job="{svc}",status=~"5.."}}[{window}])) / '
+                    f'sum(rate(http_requests_total{{job="{svc}"}}[{window}]))) * 100'
+                )
+                p95_q = (
+                    f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{{job="{svc}"}}[{window}])) by (le)) * 1000'
+                )
+                p99_q = (
+                    f'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{{job="{svc}"}}[{window}])) by (le)) * 1000'
+                )
+                rps_q = f'sum(rate(http_requests_total{{job="{svc}"}}[{window}]))'
+                return {
+                    "error_rate_pct": _query_prom(err_q),
+                    "latency_p95_ms": _query_prom(p95_q),
+                    "latency_p99_ms": _query_prom(p99_q),
+                    "requests_per_sec": _query_prom(rps_q),
+                }
+
+            try:
+                stable_metrics, canary_metrics = await asyncio.gather(
+                    asyncio.to_thread(_collect_variant, stable_svc),
+                    asyncio.to_thread(_collect_variant, canary_svc),
+                )
+            except Exception as e:
+                raise ToolError(
+                    f"Prometheus metrics comparison unavailable at '{prometheus_url}' for Rollout '{rollout_name}': {e}. "
+                    "Check 'argorollout://metrics/prometheus/status' or configure --prometheus-url / PROMETHEUS_URL."
+                )
+
+            delta = {
+                "error_rate_pct_diff": round(
+                    canary_metrics["error_rate_pct"] - stable_metrics["error_rate_pct"], 3
+                ),
+                "latency_p95_ms_diff": round(
+                    canary_metrics["latency_p95_ms"] - stable_metrics["latency_p95_ms"], 3
+                ),
+                "latency_p99_ms_diff": round(
+                    canary_metrics["latency_p99_ms"] - stable_metrics["latency_p99_ms"], 3
+                ),
+            }
+
+            if canary_metrics["error_rate_pct"] > 5.0 or delta["error_rate_pct_diff"] > 2.0:
+                recommendation = "abort"
+            elif canary_metrics["requests_per_sec"] == 0.0 and stable_metrics["requests_per_sec"] == 0.0:
+                recommendation = "hold"
+            else:
+                recommendation = "promote"
+
+            return CanaryMetricsComparison(
+                rollout_name=rollout_name,
+                namespace=namespace,
+                window=window,
+                prometheus_reachable=True,
+                stable_service=stable_svc,
+                canary_service=canary_svc,
+                stable=stable_metrics,
+                canary=canary_metrics,
+                delta=delta,
+                recommendation=recommendation,
+            )

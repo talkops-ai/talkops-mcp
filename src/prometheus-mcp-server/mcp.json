@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "prometheus": {
+      "type": "stdio",
+      "command": "prometheus-mcp-server",
+      "args": [
+        "--transport",
+        "stdio",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "cwd": "./",
+      "env": {
+        "PROMETHEUS_BASE_URL": "http://localhost:9090",
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "PROMETHEUS_TOOLSETS": "all",
+        "PROMETHEUS_AUDIT_LOG_PATH": "${PLUGIN_DATA}/audit.jsonl"
+      }
+    }
+  }
+}

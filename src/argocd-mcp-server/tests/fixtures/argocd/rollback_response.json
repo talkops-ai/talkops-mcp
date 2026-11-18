@@ -1,0 +1,14 @@
+{
+  "metadata": {
+    "name": "payments-service"
+  },
+  "status": {
+    "sync": {
+      "status": "Synced",
+      "revision": "3333cccc4444dddd"
+    },
+    "health": {
+      "status": "Healthy"
+    }
+  }
+}

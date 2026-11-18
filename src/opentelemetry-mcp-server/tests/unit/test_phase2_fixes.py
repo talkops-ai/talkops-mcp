@@ -528,25 +528,26 @@ class TestMultiClusterContext:
         assert result[1]["is_current"] is False
         assert result[1]["namespace"] == "otel-demo"
 
-    def test_client_pool_caches_default(self):
+    def test_single_context_binding_no_client_pool(self):
         from opentelemetry_mcp_server.services.kubernetes_service import (
             KubernetesService,
         )
         from opentelemetry_mcp_server.config import KubernetesConfig
 
-        with patch("kubernetes.config.load_kube_config"):
-            with patch("kubernetes.client.CoreV1Api") as mock_core:
-                with patch("kubernetes.client.AppsV1Api") as mock_apps:
-                    with patch("kubernetes.client.CustomObjectsApi") as mock_custom:
+        with patch("kubernetes.config.load_kube_config") as mock_load:
+            with patch("kubernetes.client.CoreV1Api"):
+                with patch("kubernetes.client.AppsV1Api"):
+                    with patch("kubernetes.client.CustomObjectsApi"):
                         svc = KubernetesService(
                             k8s_config=KubernetesConfig(
-                                enabled=True
+                                enabled=True,
+                                context_name="prod-us-east",
                             )
                         )
 
-        # Default context should be cached in pool
-        assert None in svc._client_pool
+        assert not hasattr(svc, "_client_pool")
         assert svc._initialized is True
+        mock_load.assert_called_once_with(context="prod-us-east")
 
 
 

@@ -3,19 +3,16 @@
 import json
 from typing import Any, Dict, List
 
-from prometheus_mcp_server.exceptions import PrometheusResourceError
+from prometheus_mcp_server.exceptions import (
+    PrometheusResourceError,
+    PrometheusResourceNotFoundError,
+)
 from prometheus_mcp_server.resources.base import BaseResource
 from prometheus_mcp_server.services.kubernetes_service import KubernetesService
 
 
 class KubernetesResources(BaseResource):
-    """Kubernetes CRD MCP resources.
-
-    Exposes Kubernetes-native metadata (PrometheusRule CRDs) that cannot
-    be discovered through the Prometheus HTTP API alone. This bridges
-    the gap between rule discovery (prom://rules/groups) and rule
-    mutation (prom_upsert_rule_group with storage_mode: k8s_crd).
-    """
+    """Kubernetes CRD MCP resources (`prom://kubernetes/scrape-crds` and `prom://kubernetes/manifests/...`)."""
 
     def __init__(self, service_locator: Dict[str, Any]):
         super().__init__(service_locator)
@@ -24,73 +21,117 @@ class KubernetesResources(BaseResource):
     def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
 
         @mcp_instance.resource(
-            "prom://kubernetes/prometheusrules",
-            name="prom_kubernetes_prometheusrules",
+            "prom://kubernetes/scrape-crds",
+            name="prom_kubernetes_scrape_crds",
             description=(
-                "Snapshot of all PrometheusRule CRDs across the cluster, "
-                "exposing Kubernetes metadata (name, namespace, labels) "
-                "required for safe rule upsert operations via prom_upsert_rule_group"
+                "Inventory of deployed Prometheus Operator CRDs across the cluster: "
+                "ServiceMonitor, PodMonitor, Probe, ScrapeConfig, and PrometheusRule"
             ),
             mime_type="application/json",
         )
-        async def prometheus_rules_resource() -> str:
+        async def kubernetes_scrape_crds_resource() -> str:
             try:
                 if self.kubernetes_service is None:
-                    return json.dumps({
-                        "error": "Kubernetes service not configured",
-                        "hint": "Set K8S_ENABLED=true in your environment",
-                    })
+                    return json.dumps(
+                        {
+                            "error": "Kubernetes service not configured",
+                            "hint": "Set K8S_ENABLED=true in your environment",
+                        }
+                    )
 
-                raw = await self.kubernetes_service.list_prometheus_rules()
-                items = raw.get("items", [])
+                scrape_crds = await self.kubernetes_service.list_scrape_crds()
+                rules_list: List[Dict[str, Any]] = []
+                try:
+                    raw_rules = await self.kubernetes_service.list_prometheus_rules()
+                    for item in raw_rules.get("items", []):
+                        meta = item.get("metadata", {})
+                        groups = item.get("spec", {}).get("groups", [])
+                        rules_list.append(
+                            {
+                                "kind": "PrometheusRule",
+                                "name": meta.get("name", ""),
+                                "namespace": meta.get("namespace", ""),
+                                "labels": meta.get("labels", {}),
+                                "group_names": [g.get("name", "") for g in groups],
+                            }
+                        )
+                except Exception:
+                    pass
 
-                rules: List[Dict[str, Any]] = []
-                for item in items:
-                    metadata = item.get("metadata", {})
-                    spec = item.get("spec", {})
+                crd_namespaces = sorted(
+                    {
+                        item.get("namespace", "")
+                        for items in scrape_crds.values()
+                        for item in items
+                        if item.get("namespace")
+                    }
+                    | {
+                        r.get("namespace", "")
+                        for r in rules_list
+                        if r.get("namespace")
+                    }
+                )
+                payload: Dict[str, Any] = {}
+                try:
+                    import inspect
 
-                    # Extract group summaries with rule counts
-                    group_summaries = []
-                    total_alert_rules = 0
-                    total_recording_rules = 0
-                    for group in spec.get("groups", []):
-                        alert_count = 0
-                        recording_count = 0
-                        for rule in group.get("rules", []):
-                            if "alert" in rule:
-                                alert_count += 1
-                            elif "record" in rule:
-                                recording_count += 1
-                        total_alert_rules += alert_count
-                        total_recording_rules += recording_count
-                        group_summaries.append({
-                            "name": group.get("name", ""),
-                            "interval": group.get("interval"),
-                            "alert_rules": alert_count,
-                            "recording_rules": recording_count,
-                            "total_rules": alert_count + recording_count,
-                        })
+                    op_ctx_fn = getattr(self.kubernetes_service, "list_operator_context", None)
+                    if callable(op_ctx_fn):
+                        maybe_ctx = op_ctx_fn(crd_namespaces or None)
+                        if inspect.isawaitable(maybe_ctx):
+                            maybe_ctx = await maybe_ctx
+                        if isinstance(maybe_ctx, dict):
+                            payload["operator_selectors"] = maybe_ctx.get("operator_selectors", {})
+                            payload["prometheus_instances"] = maybe_ctx.get("prometheus_instances", [])
+                            extra_ctx = {
+                                k: v
+                                for k, v in maybe_ctx.items()
+                                if k not in ("operator_selectors", "prometheus_instances")
+                            }
+                        else:
+                            extra_ctx = {}
+                    else:
+                        extra_ctx = {}
+                except Exception:
+                    extra_ctx = {}
 
-                    rules.append({
-                        "name": metadata.get("name", ""),
-                        "namespace": metadata.get("namespace", ""),
-                        "labels": metadata.get("labels", {}),
-                        "annotations": metadata.get("annotations", {}),
-                        "groups": group_summaries,
-                        "total_groups": len(group_summaries),
-                        "total_alert_rules": total_alert_rules,
-                        "total_recording_rules": total_recording_rules,
-                    })
+                payload["scrape_crds"] = scrape_crds
+                payload["prometheus_rules"] = rules_list
+                payload.update(extra_ctx)
 
-                return json.dumps({
-                    "prometheus_rules": rules,
-                    "total_crds": len(rules),
-                    "total_groups": sum(r["total_groups"] for r in rules),
-                    "total_alert_rules": sum(r["total_alert_rules"] for r in rules),
-                    "total_recording_rules": sum(r["total_recording_rules"] for r in rules),
-                }, default=str, indent=2)
+                return json.dumps(payload, default=str, separators=(",", ":"))
+            except Exception as e:
+                raise PrometheusResourceError(f"Failed to list Kubernetes CRDs: {e}")
 
+        @mcp_instance.resource(
+            "prom://kubernetes/manifests/{kind}/{namespace}/{name}",
+            name="prom_kubernetes_manifest_detail",
+            description=(
+                "Live redacted Kubernetes CRD manifest for a specific ServiceMonitor, "
+                "PodMonitor, Probe, ScrapeConfig, or PrometheusRule"
+            ),
+            mime_type="application/json",
+        )
+        async def kubernetes_manifest_detail_resource(
+            kind: str, namespace: str, name: str
+        ) -> str:
+            try:
+                if self.kubernetes_service is None:
+                    raise PrometheusResourceError(
+                        "Kubernetes service is not enabled (set K8S_ENABLED=true)."
+                    )
+                manifest = await self.kubernetes_service.get_crd_manifest(
+                    kind, namespace, name
+                )
+                if manifest is None:
+                    raise PrometheusResourceNotFoundError(
+                        f"{kind} '{namespace}/{name}' not found. "
+                        "Read prom://kubernetes/scrape-crds to list available CRDs."
+                    )
+                return json.dumps(manifest, default=str, indent=2)
+            except (PrometheusResourceError, PrometheusResourceNotFoundError):
+                raise
             except Exception as e:
                 raise PrometheusResourceError(
-                    f"Failed to list PrometheusRule CRDs: {e}"
+                    f"Failed to fetch {kind} '{namespace}/{name}': {e}"
                 )

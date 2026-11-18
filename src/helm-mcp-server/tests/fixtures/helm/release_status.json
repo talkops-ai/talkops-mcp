@@ -1,0 +1,14 @@
+{
+  "name": "my-postgres",
+  "namespace": "prod",
+  "version": 2,
+  "info": {
+    "first_deployed": "2026-11-01T10:00:00Z",
+    "last_deployed": "2026-11-03T10:15:30Z",
+    "deleted": "",
+    "description": "Upgrade complete",
+    "status": "deployed",
+    "notes": "PostgreSQL can be accessed via port 5432 on the following DNS name from within your cluster:\nmy-postgres-postgresql.prod.svc.cluster.local"
+  },
+  "manifest": "---\napiVersion: v1\nkind: Service\nmetadata:\n  name: my-postgres\n  namespace: prod\nspec:\n  ports:\n    - port: 5432\n---\napiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: my-postgres\n  namespace: prod\nspec:\n  replicas: 1\n"
+}

@@ -56,10 +56,13 @@ def get_text(result: Any) -> str:
 
 @pytest.fixture
 def server_config() -> ServerConfig:
-    """Provide a test ServerConfig."""
+    """Provide a test ServerConfig with write enabled for full tool surface tests."""
     return ServerConfig(
         name="test-otel-mcp-server",
         version="0.0.1-test",
+        allow_write=True,
+        read_only=False,
+        toolsets=["all"],
         kubernetes=KubernetesConfig(enabled=False),
     )
 
@@ -88,6 +91,7 @@ def mock_kubernetes_service() -> KubernetesService:
     service = MagicMock(spec=KubernetesService)
     service.is_available = True
 
+    deployments = _load_fixture("deployments_response")
     # Default mock responses
     service.list_otel_collectors = AsyncMock(
         return_value={"items": [_load_fixture("collector_cr")]}
@@ -101,9 +105,88 @@ def mock_kubernetes_service() -> KubernetesService:
     service.get_instrumentation = AsyncMock(
         return_value=_load_fixture("instrumentation_cr")
     )
-    service.list_deployments = AsyncMock(return_value=_load_fixture("deployments_response"))
+    service.list_deployments = AsyncMock(return_value=deployments)
+    service.list_workloads = AsyncMock(return_value=deployments)
+    service.get_workload = AsyncMock(
+        return_value=deployments[0] if deployments else {"name": "checkout", "namespace": "otel-demo", "kind": "Deployment", "annotations": {}, "labels": {}, "containers": []}
+    )
+    service.get_deployment = AsyncMock(
+        return_value=deployments[0] if deployments else {"name": "checkout", "namespace": "otel-demo", "annotations": {}, "labels": {}, "containers": []}
+    )
+    service.patch_workload_annotations = AsyncMock(
+        return_value=deployments[0] if deployments else {"name": "checkout", "namespace": "otel-demo"}
+    )
+    service.restart_workload = AsyncMock(
+        return_value=deployments[0] if deployments else {"name": "checkout", "namespace": "otel-demo"}
+    )
+    service.strip_otel_env_vars = AsyncMock(
+        return_value={"action": "no_change", "removed": {}, "would_remove": {}}
+    )
     service.list_pods = AsyncMock(return_value=_load_fixture("pods_ebpf_response"))
     service.health_check = AsyncMock(return_value=_load_fixture("k8s_health_response"))
+    service.list_available_contexts = AsyncMock(
+        return_value=[{"name": "test-context", "cluster": "test-cluster", "user": "admin", "namespace": "default", "is_current": True}]
+    )
+    service.get_operator_diagnostics = AsyncMock(
+        return_value={
+            "operator_found": True,
+            "operator_pod": "opentelemetry-operator-controller-manager-xyz",
+            "operator_namespace": "opentelemetry-operator-system",
+            "operator_status": "Running",
+            "recent_errors": [],
+            "instrumentation_cr_counts": {"otel-demo": 1},
+            "warnings": [],
+        }
+    )
+    service.list_target_allocators = AsyncMock(return_value={"items": []})
+    service.list_opamp_bridges = AsyncMock(return_value={"items": []})
+    service.list_services = AsyncMock(return_value=[])
+    service.list_namespaces = AsyncMock(return_value=["default", "observability"])
+    service.get_node_count = AsyncMock(return_value=3)
+    service.count_nodes = AsyncMock(return_value=3)
+    service.list_namespace_events = AsyncMock(return_value=[])
+    service.get_collector_pod_logs = AsyncMock(
+        return_value={
+            "pod_name": "otel-collector-0",
+            "lines": [],
+            "error_lines": [],
+            "auth_errors": [],
+            "tls_errors": [],
+            "dns_errors": [],
+        }
+    )
+    service.check_cluster_role_binding_exists = AsyncMock(return_value=True)
+    service.list_otel_cluster_roles = AsyncMock(return_value=[])
+    service.check_secret_key_exists = AsyncMock(return_value={"exists": True, "has_key": True})
+    service.create_or_patch_collector = AsyncMock(return_value=_load_fixture("collector_cr"))
+    service.create_or_patch_instrumentation = AsyncMock(return_value=_load_fixture("instrumentation_cr"))
+    service.delete_custom_resource = AsyncMock(
+        return_value={"deleted": True, "kind": "OpenTelemetryCollector", "name": "otel-collector", "namespace": "otel-demo"}
+    )
+    service.create_receiver_rbac = AsyncMock(
+        return_value={"cluster_role_action": "created", "cluster_role_binding_action": "created"}
+    )
+    service.build_receiver_rbac_manifests = KubernetesService.build_receiver_rbac_manifests
+    service.build_k8sattributes_rbac_manifests = KubernetesService.build_k8sattributes_rbac_manifests
+    service.get_config_snapshot = AsyncMock(
+        return_value={
+            "has_snapshot": True,
+            "collector_name": "otel-collector",
+            "namespace": "otel-demo",
+            "last_mutation_timestamp": "2026-01-01T00:00:00Z",
+            "last_mutation_tool": "otel_patch_collector",
+            "snapshot_config": "receivers:\n  otlp:\n",
+        }
+    )
+    service.rollback_collector_config = AsyncMock(
+        return_value={
+            "action": "rolled_back",
+            "collector": "otel-demo/otel-collector",
+            "dry_run": False,
+            "restored_from_timestamp": "2026-01-01T00:00:00Z",
+            "restored_config_preview": "receivers:\n  otlp:\n",
+        }
+    )
 
     return service
 
@@ -129,7 +212,6 @@ def bootstrapped_mcp(
     """Provide a fully bootstrapped MCP server with mocked services."""
     os.environ["K8S_ENABLED"] = "false"
 
-    from opentelemetry_mcp_server.prompts import initialize_prompts
     from opentelemetry_mcp_server.resources import initialize_resources
     from opentelemetry_mcp_server.server.core import create_mcp_server
     from opentelemetry_mcp_server.tools import initialize_tools
@@ -147,8 +229,5 @@ def bootstrapped_mcp(
 
     resource_registry = initialize_resources(locator)
     resource_registry.register_all_resources(mcp)
-
-    prompt_registry = initialize_prompts(locator)
-    prompt_registry.register_all_prompts(mcp)
 
     return mcp

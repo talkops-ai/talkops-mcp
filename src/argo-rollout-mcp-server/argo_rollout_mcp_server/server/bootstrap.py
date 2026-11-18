@@ -1,67 +1,58 @@
-"""Server initialization and bootstrap."""
+"""Server initialization and dependency-injected bootstrap."""
 
-import asyncio
-from argo_rollout_mcp_server.config import ServerConfig, Config
+from typing import Any, Dict, Optional, Tuple
+
+from argo_rollout_mcp_server.config import Config, ServerConfig
+from argo_rollout_mcp_server.resources import initialize_resources
 from argo_rollout_mcp_server.server.core import create_mcp_server
 from argo_rollout_mcp_server.services.argo_rollouts_service import ArgoRolloutsService
 from argo_rollout_mcp_server.services.generator_service import GeneratorService
-from argo_rollout_mcp_server.services.orchestration_service import OrchestrationService
 from argo_rollout_mcp_server.tools import initialize_tools
-from argo_rollout_mcp_server.resources import initialize_resources
-from argo_rollout_mcp_server.prompts import initialize_prompts
 
 
 class ServerBootstrap:
-    """Bootstrap the MCP server with all components."""
-    
+    """Bootstrap the Argo Rollouts MCP server with lazy Kubernetes client initialization."""
+
     @staticmethod
-    def initialize() -> tuple:
-        """Initialize server and all components.
-        
-        Returns:
-            Tuple of (mcp_instance, config)
+    def build(
+        config: Optional[ServerConfig] = None,
+        services: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Any, ServerConfig]:
+        """Build the FastMCP server instance with optional injected services for testing.
+
+        Does not block or crash at startup if a Kubernetes cluster is unreachable (fixes B10).
         """
-        # 1. Load configuration
-        config = Config.from_env()
-        
-        # 2. Create FastMCP instance
-        mcp = create_mcp_server(config)
-        
-        # 3. Create services (Argo-only — no Traefik or Migration services)
-        generator_service = GeneratorService(config=config)
-        argo_service = ArgoRolloutsService(config, generator_service=generator_service)
-        orch_service = OrchestrationService(
-            config=config,
-            argo_service=argo_service,
-        )
-        
-        # 4. Initialize services asynchronously
-        async def init_services():
-            """Initialize all async services."""
-            await argo_service.initialize()
-            await orch_service.initialize()
-        
-        # Run async initialization
-        asyncio.run(init_services())
-        
-        # 5. Create service locator (dependency injection)
+        cfg = config or Config.from_env()
+        mcp = create_mcp_server(cfg)
+
+        if services is not None:
+            generator_service = services.get("generator_service") or GeneratorService(config=cfg)
+            argo_service = services.get("argo_service") or ArgoRolloutsService(
+                cfg, generator_service=generator_service
+            )
+        else:
+            generator_service = GeneratorService(config=cfg)
+            argo_service = ArgoRolloutsService(cfg, generator_service=generator_service)
+            argo_service.enable_lazy_init()
+
         service_locator = {
-            'argo_service': argo_service,
-            'orchestration_service': orch_service,
-            'generator_service': generator_service,
-            'config': config,
+            "argo_service": argo_service,
+            "generator_service": generator_service,
+            "config": cfg,
         }
-        
-        # 6. Initialize and register tools
+
         tool_registry = initialize_tools(service_locator)
         tool_registry.register_all_tools(mcp)
-        
-        # 7. Initialize and register resources
+
         resource_registry = initialize_resources(service_locator)
         resource_registry.register_all_resources(mcp)
-        
-        # 8. Initialize and register prompts
-        prompt_registry = initialize_prompts(service_locator)
-        prompt_registry.register_all_prompts(mcp)
-        
-        return mcp, config
+
+        return mcp, cfg
+
+    @staticmethod
+    def initialize(
+        argv: Optional[list[str]] = None,
+    ) -> Tuple[Any, ServerConfig]:
+        """Initialize server from CLI arguments and environment variables."""
+        cfg = Config.from_cli_and_env(argv)
+        return ServerBootstrap.build(config=cfg)

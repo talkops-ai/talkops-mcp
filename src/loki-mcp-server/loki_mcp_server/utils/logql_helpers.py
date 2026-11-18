@@ -37,6 +37,11 @@ HIGH_CARDINALITY_LABELS: set[str] = {
     "requestId",
     "ip",
     "ip_address",
+    "pod_ip",
+    "client_ip",
+    "uuid",
+    "container_id",
+    "k8s_pod_name",
     "session_id",
     "sessionID",
     "sessionId",
@@ -139,21 +144,47 @@ def validate_stream_selector(query: str) -> str:
             f"NOT service_name=\"frontend-proxy-service\""
         )
 
-    # ── Check for balanced braces ────────────────────────────
+    # ── Check for balanced & non-empty braces ────────────────
     brace_depth = 0
-    for ch in stripped:
+    first_open: Optional[int] = None
+    for idx, ch in enumerate(stripped):
         if ch == "{":
+            if brace_depth == 0 and first_open is None:
+                first_open = idx
             brace_depth += 1
         elif ch == "}":
             brace_depth -= 1
+            if brace_depth < 0:
+                raise LokiValidationError(
+                    f"LogQL stream selector has unbalanced braces: '{stripped[:80]}'."
+                )
             if brace_depth == 0:
-                return stripped  # Found closing brace — valid
+                inner = stripped[(first_open or 0) + 1 : idx].strip()
+                if not inner:
+                    raise LokiValidationError(
+                        "Empty stream selector '{}' is rejected by Grafana Loki. "
+                        "Specify at least one non-empty indexed label matcher, e.g., "
+                        "'{service_name=\"checkout\", namespace=\"prod\"}'."
+                    )
+                return stripped  # Found non-empty closing brace — valid
 
     raise LokiValidationError(
         "LogQL stream selector has unbalanced braces: "
         f"'{stripped[:80]}...'. "
         f"Ensure every '{{' has a matching '}}'."
     )
+
+
+def extract_stream_selector_for_stats(query: str) -> str:
+    """Extract the `{...}` stream selector from any LogQL log or metric query.
+
+    Used when `/loki/api/v1/index/stats` rejects full pipeline parsers (`| json`,
+    `| unwrap`) or metric aggregations (`rate(...)`).
+    """
+    m = _SELECTOR_CONTENT_RE.search(query or "")
+    if not m or not m.group(1).strip():
+        return query
+    return "{" + m.group(1).strip() + "}"
 
 
 def detect_high_cardinality_in_selector(query: str) -> List[str]:

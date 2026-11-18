@@ -5,6 +5,7 @@ for non-blocking async operation in the FastMCP event loop.
 """
 
 import asyncio
+from datetime import datetime, timezone
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -12,21 +13,31 @@ from opentelemetry_mcp_server.config import KubernetesConfig, OtelOperatorConfig
 from opentelemetry_mcp_server.exceptions import (
     OtelConnectionError,
     OtelResourceNotFoundError,
+    OtelValidationError,
+)
+from opentelemetry_mcp_server.utils.redaction import (
+    REDACTED_VALUE,
+    redact_log_text,
 )
 
 logger = logging.getLogger(__name__)
 
+VALID_WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
+VALID_CR_KINDS = (
+    "OpenTelemetryCollector",
+    "Instrumentation",
+    "TargetAllocator",
+    "OpAMPBridge",
+)
+
 
 class KubernetesService:
-    """Async-wrapped Kubernetes API client for OTel CRD operations.
+    """Async-wrapped Kubernetes API client for OTel CRD and workload operations.
 
     Handles both in-cluster and out-of-cluster (kubeconfig) authentication.
-    All K8s API calls are wrapped in ``asyncio.to_thread()`` to avoid
-    blocking the FastMCP event loop.
-
-    Supports multi-cluster via a client pool: each kubeconfig context
-    gets its own set of API clients, created lazily on first use.
-    The default context is used.
+    Bound to a single cluster context per server instance (`--context` /
+    `KUBE_CONTEXT`). All K8s API calls are wrapped in ``asyncio.to_thread()``
+    to avoid blocking the FastMCP event loop.
     """
 
     def __init__(
@@ -41,58 +52,64 @@ class KubernetesService:
         self._custom_api: Any = None
         self._initialized = False
 
-        # Multi-context client pool: context_name -> (core_v1, apps_v1, custom_api)
-        self._client_pool: Dict[Optional[str], Any] = {}
-
         if k8s_config.enabled:
             self._init_client()
 
     def _init_client(self) -> None:
-        """Initialize the Kubernetes client."""
+        """Initialize the Kubernetes client bound to the configured context."""
         try:
             from kubernetes import client, config as k8s_config_loader
 
             if self._k8s_config.in_cluster:
                 k8s_config_loader.load_incluster_config()
             else:
-                k8s_config_loader.load_kube_config()
+                load_kwargs: Dict[str, Any] = {}
+                if self._k8s_config.kubeconfig:
+                    load_kwargs["config_file"] = self._k8s_config.kubeconfig
+                if self._k8s_config.context_name:
+                    load_kwargs["context"] = self._k8s_config.context_name
+                k8s_config_loader.load_kube_config(**load_kwargs)
 
             self._core_v1 = client.CoreV1Api()
             self._apps_v1 = client.AppsV1Api()
             self._custom_api = client.CustomObjectsApi()
             self._initialized = True
 
-            # Cache default context clients in pool
-            self._client_pool[None] = (
-                self._core_v1, self._apps_v1, self._custom_api
+            logger.info(
+                "Kubernetes client initialized successfully (context=%s)",
+                self._k8s_config.context_name or "default",
             )
-
-            logger.info("Kubernetes client initialized successfully")
         except Exception as e:
             logger.warning(f"Kubernetes client initialization failed: {e}")
             self._initialized = False
 
-
-
     async def list_available_contexts(self) -> List[Dict[str, Any]]:
         """List all available kubeconfig contexts.
 
-        Returns context names and which one is the current default.
-        Used by agents to discover which clusters they can access.
-
-        Returns:
-            List of context dicts with name, cluster, and is_current.
+        Returns context names and which one is the active context for this server.
         """
         try:
             from kubernetes import config as k8s_config_loader
 
-            contexts, current = k8s_config_loader.list_kube_config_contexts()
+            kwargs: Dict[str, Any] = {}
+            cfg_kubeconfig = getattr(self._k8s_config, "kubeconfig", None)
+            if isinstance(cfg_kubeconfig, str) and cfg_kubeconfig:
+                kwargs["config_file"] = cfg_kubeconfig
+            contexts, current = k8s_config_loader.list_kube_config_contexts(**kwargs)
 
             result = []
-            current_name = current.get("name", "") if current else ""
+            cfg_ctx = getattr(self._k8s_config, "context_name", None)
+            if not isinstance(cfg_ctx, str):
+                cfg_ctx = None
+            current_name = (
+                cfg_ctx
+                or (current.get("name", "") if isinstance(current, dict) else "")
+            )
 
             for ctx in contexts:
-                ctx_dict: Dict[str, Any] = dict(ctx) if not isinstance(ctx, dict) else ctx
+                ctx_dict: Dict[str, Any] = (
+                    dict(ctx) if not isinstance(ctx, dict) else ctx
+                )
                 cluster_info: Dict[str, Any] = ctx_dict.get("context", {})
                 if isinstance(cluster_info, dict):
                     cluster = cluster_info.get("cluster", "")
@@ -113,7 +130,7 @@ class KubernetesService:
         except Exception as e:
             logger.warning(f"Failed to list kubeconfig contexts: {e}")
             return [{
-                "name": "default",
+                "name": self._k8s_config.context_name or "default",
                 "cluster": "unknown",
                 "is_current": True,
                 "error": str(e),
@@ -141,15 +158,7 @@ class KubernetesService:
         namespace: Optional[str] = None,
         label_selector: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """List OpenTelemetryCollector CRDs.
-
-        Args:
-            namespace: Namespace to query, or None for all namespaces.
-            label_selector: Optional K8s label selector string.
-
-        Returns:
-            Raw K8s API response dict with ``items`` list.
-        """
+        """List OpenTelemetryCollector CRDs."""
         self._ensure_available()
 
         kwargs: Dict[str, Any] = {
@@ -160,30 +169,25 @@ class KubernetesService:
         if label_selector:
             kwargs["label_selector"] = label_selector
 
-        if namespace:
-            kwargs["namespace"] = namespace
+        try:
+            if namespace:
+                kwargs["namespace"] = namespace
+                return await asyncio.to_thread(
+                    self._custom_api.list_namespaced_custom_object, **kwargs
+                )
             return await asyncio.to_thread(
-                self._custom_api.list_namespaced_custom_object, **kwargs
+                self._custom_api.list_cluster_custom_object, **kwargs
             )
-        return await asyncio.to_thread(
-            self._custom_api.list_cluster_custom_object, **kwargs
-        )
+        except Exception as e:
+            if getattr(e, "status", None) == 404 or "404" in str(e) or "NotFound" in str(e):
+                logger.debug("OpenTelemetryCollector CRD not installed or namespace not found: %s", e)
+                return {"items": [], "crd_installed": False}
+            raise
 
     async def get_otel_collector(
         self, namespace: str, name: str
     ) -> Dict[str, Any]:
-        """Get a single OpenTelemetryCollector CRD.
-
-        Args:
-            namespace: CRD namespace.
-            name: CRD name.
-
-        Returns:
-            Raw K8s API response dict.
-
-        Raises:
-            OtelResourceNotFoundError: If the CRD is not found.
-        """
+        """Get a single OpenTelemetryCollector CRD."""
         self._ensure_available()
         try:
             return await asyncio.to_thread(
@@ -210,15 +214,7 @@ class KubernetesService:
         namespace: Optional[str] = None,
         label_selector: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """List Instrumentation CRDs.
-
-        Args:
-            namespace: Namespace to query, or None for all namespaces.
-            label_selector: Optional label selector.
-
-        Returns:
-            Raw K8s API response dict.
-        """
+        """List Instrumentation CRDs."""
         self._ensure_available()
 
         kwargs: Dict[str, Any] = {
@@ -229,30 +225,25 @@ class KubernetesService:
         if label_selector:
             kwargs["label_selector"] = label_selector
 
-        if namespace:
-            kwargs["namespace"] = namespace
+        try:
+            if namespace:
+                kwargs["namespace"] = namespace
+                return await asyncio.to_thread(
+                    self._custom_api.list_namespaced_custom_object, **kwargs
+                )
             return await asyncio.to_thread(
-                self._custom_api.list_namespaced_custom_object, **kwargs
+                self._custom_api.list_cluster_custom_object, **kwargs
             )
-        return await asyncio.to_thread(
-            self._custom_api.list_cluster_custom_object, **kwargs
-        )
+        except Exception as e:
+            if getattr(e, "status", None) == 404 or "404" in str(e) or "NotFound" in str(e):
+                logger.debug("Instrumentation CRD not installed or namespace not found: %s", e)
+                return {"items": [], "crd_installed": False}
+            raise
 
     async def get_instrumentation(
         self, namespace: str, name: str
     ) -> Dict[str, Any]:
-        """Get a single Instrumentation CRD.
-
-        Args:
-            namespace: CRD namespace.
-            name: CRD name.
-
-        Returns:
-            Raw K8s API response dict.
-
-        Raises:
-            OtelResourceNotFoundError: If the CRD is not found.
-        """
+        """Get a single Instrumentation CRD."""
         self._ensure_available()
         try:
             return await asyncio.to_thread(
@@ -271,87 +262,315 @@ class KubernetesService:
             raise OtelConnectionError(f"Failed to get instrumentation: {e}")
 
     # ──────────────────────────────────────────────
-    # Workload operations (Deployments, StatefulSets)
+    # TargetAllocator & OpAMPBridge CRD operations
     # ──────────────────────────────────────────────
 
-    async def list_deployments(
+    async def list_target_allocators(
         self,
-        namespace: str,
+        namespace: Optional[str] = None,
         label_selector: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """List Deployments in a namespace.
+    ) -> Dict[str, Any]:
+        """List TargetAllocator CRDs across v1beta1 and v1alpha1."""
+        self._ensure_available()
+        candidate_versions = [self._otel_config.target_allocator_api_version]
+        for fallback_ver in ("v1beta1", "v1alpha1"):
+            if fallback_ver not in candidate_versions:
+                candidate_versions.append(fallback_ver)
 
-        Args:
-            namespace: Target namespace.
-            label_selector: Optional label selector.
+        for ver in candidate_versions:
+            kwargs: Dict[str, Any] = {
+                "group": self._otel_config.crd_group,
+                "version": ver,
+                "plural": self._otel_config.target_allocator_plural,
+            }
+            if label_selector:
+                kwargs["label_selector"] = label_selector
+            try:
+                if namespace:
+                    kwargs["namespace"] = namespace
+                    return await asyncio.to_thread(
+                        self._custom_api.list_namespaced_custom_object, **kwargs
+                    )
+                return await asyncio.to_thread(
+                    self._custom_api.list_cluster_custom_object, **kwargs
+                )
+            except Exception as e:
+                logger.debug("TargetAllocator CRD list (%s) returned error: %s", ver, e)
+                continue
+        return {"items": []}
 
-        Returns:
-            List of deployment dicts.
+    async def get_target_allocator(
+        self, namespace: str, name: str
+    ) -> Dict[str, Any]:
+        """Get a single TargetAllocator CRD across v1beta1 and v1alpha1."""
+        self._ensure_available()
+        candidate_versions = [self._otel_config.target_allocator_api_version]
+        for fallback_ver in ("v1beta1", "v1alpha1"):
+            if fallback_ver not in candidate_versions:
+                candidate_versions.append(fallback_ver)
+
+        last_err: Optional[Exception] = None
+        for ver in candidate_versions:
+            try:
+                return await asyncio.to_thread(
+                    self._custom_api.get_namespaced_custom_object,
+                    group=self._otel_config.crd_group,
+                    version=ver,
+                    namespace=namespace,
+                    plural=self._otel_config.target_allocator_plural,
+                    name=name,
+                )
+            except Exception as e:
+                last_err = e
+                if "404" in str(e) or "NotFound" in str(e):
+                    continue
+                raise OtelConnectionError(f"Failed to get TargetAllocator: {e}")
+
+        raise OtelResourceNotFoundError(
+            f"TargetAllocator '{name}' not found in namespace '{namespace}'"
+            + (f" ({last_err})" if last_err and "404" not in str(last_err) else "")
+        )
+
+    async def list_opamp_bridges(
+        self,
+        namespace: Optional[str] = None,
+        label_selector: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List OpAMPBridge CRDs (read-only visibility per D6)."""
+        self._ensure_available()
+        kwargs: Dict[str, Any] = {
+            "group": self._otel_config.crd_group,
+            "version": self._otel_config.opamp_bridge_api_version,
+            "plural": self._otel_config.opamp_bridge_plural,
+        }
+        if label_selector:
+            kwargs["label_selector"] = label_selector
+
+        try:
+            if namespace:
+                kwargs["namespace"] = namespace
+                return await asyncio.to_thread(
+                    self._custom_api.list_namespaced_custom_object, **kwargs
+                )
+            return await asyncio.to_thread(
+                self._custom_api.list_cluster_custom_object, **kwargs
+            )
+        except Exception as e:
+            logger.debug("OpAMPBridge CRD list returned error: %s", e)
+            return {"items": []}
+
+    async def get_opamp_bridge(
+        self, namespace: str, name: str
+    ) -> Dict[str, Any]:
+        """Get a single OpAMPBridge CRD."""
+        self._ensure_available()
+        try:
+            return await asyncio.to_thread(
+                self._custom_api.get_namespaced_custom_object,
+                group=self._otel_config.crd_group,
+                version=self._otel_config.opamp_bridge_api_version,
+                namespace=namespace,
+                plural=self._otel_config.opamp_bridge_plural,
+                name=name,
+            )
+        except Exception as e:
+            if "404" in str(e) or "NotFound" in str(e):
+                raise OtelResourceNotFoundError(
+                    f"OpAMPBridge '{name}' not found in namespace '{namespace}'"
+                )
+            raise OtelConnectionError(f"Failed to get OpAMPBridge: {e}")
+
+    async def delete_custom_resource(
+        self,
+        kind: str,
+        namespace: str,
+        name: str,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Delete an OpenTelemetry Custom Resource.
+
+        Supports OpenTelemetryCollector, Instrumentation, TargetAllocator,
+        and OpAMPBridge.
         """
         self._ensure_available()
+        kind_map = {
+            "OpenTelemetryCollector": (
+                self._otel_config.crd_api_version,
+                self._otel_config.collector_plural,
+                self.get_otel_collector,
+            ),
+            "Instrumentation": (
+                self._otel_config.instrumentation_api_version,
+                self._otel_config.instrumentation_plural,
+                self.get_instrumentation,
+            ),
+            "TargetAllocator": (
+                self._otel_config.target_allocator_api_version,
+                self._otel_config.target_allocator_plural,
+                self.get_target_allocator,
+            ),
+            "OpAMPBridge": (
+                self._otel_config.opamp_bridge_api_version,
+                self._otel_config.opamp_bridge_plural,
+                self.get_opamp_bridge,
+            ),
+        }
+        if kind not in kind_map:
+            raise OtelValidationError(
+                f"Unsupported custom resource kind '{kind}'. "
+                f"Valid kinds: {list(VALID_CR_KINDS)}"
+            )
+
+        version, plural, getter = kind_map[kind]
+        existing = await getter(namespace, name)
+        api_ver = str(existing.get("apiVersion", "") or "")
+        if "/" in api_ver:
+            version = api_ver.split("/", 1)[1] or version
+
+        if dry_run:
+            return {
+                "kind": kind,
+                "name": name,
+                "namespace": namespace,
+                "dry_run": True,
+                "action": "would_delete",
+                "existing_metadata": {
+                    "labels": existing.get("metadata", {}).get("labels", {}),
+                    "annotations": existing.get("metadata", {}).get("annotations", {}),
+                },
+            }
+
+        await asyncio.to_thread(
+            self._custom_api.delete_namespaced_custom_object,
+            group=self._otel_config.crd_group,
+            version=version,
+            namespace=namespace,
+            plural=plural,
+            name=name,
+        )
+        return {
+            "kind": kind,
+            "name": name,
+            "namespace": namespace,
+            "dry_run": False,
+            "action": "deleted",
+        }
+
+    # ──────────────────────────────────────────────
+    # Workload operations (Deployments, StatefulSets, DaemonSets)
+    # ──────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_workload_kind(kind: str) -> str:
+        """Normalize workload kind casing."""
+        normalized = (kind or "Deployment").strip().lower()
+        mapping = {
+            "deployment": "Deployment",
+            "deployments": "Deployment",
+            "statefulset": "StatefulSet",
+            "statefulsets": "StatefulSet",
+            "daemonset": "DaemonSet",
+            "daemonsets": "DaemonSet",
+        }
+        if normalized not in mapping:
+            raise OtelValidationError(
+                f"Invalid workload_kind '{kind}'. "
+                f"Supported kinds: {list(VALID_WORKLOAD_KINDS)}"
+            )
+        return mapping[normalized]
+
+    async def list_workloads(
+        self,
+        namespace: str,
+        kinds: Optional[List[str]] = None,
+        label_selector: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List workloads (Deployments, StatefulSets, DaemonSets) in a namespace."""
+        self._ensure_available()
+        target_kinds = (
+            [self._normalize_workload_kind(k) for k in kinds]
+            if kinds
+            else ["Deployment", "StatefulSet", "DaemonSet"]
+        )
         kwargs: Dict[str, Any] = {"namespace": namespace}
         if label_selector:
             kwargs["label_selector"] = label_selector
 
-        result = await asyncio.to_thread(
-            self._apps_v1.list_namespaced_deployment, **kwargs
-        )
-        return [
-            self._deployment_to_dict(d)
-            for d in result.items
-        ]
+        workloads: List[Dict[str, Any]] = []
+        for kind in target_kinds:
+            try:
+                if kind == "Deployment":
+                    res = await asyncio.to_thread(
+                        self._apps_v1.list_namespaced_deployment, **kwargs
+                    )
+                elif kind == "StatefulSet":
+                    res = await asyncio.to_thread(
+                        self._apps_v1.list_namespaced_stateful_set, **kwargs
+                    )
+                elif kind == "DaemonSet":
+                    res = await asyncio.to_thread(
+                        self._apps_v1.list_namespaced_daemon_set, **kwargs
+                    )
+                else:
+                    continue
+                for item in getattr(res, "items", []) or []:
+                    workloads.append(self._workload_to_dict(item, kind=kind))
+            except Exception as e:
+                logger.debug("Failed listing %s in %s: %s", kind, namespace, e)
 
-    async def get_deployment(
-        self, namespace: str, name: str
-    ) -> Dict[str, Any]:
-        """Get a single Deployment.
+        return workloads
 
-        Args:
-            namespace: Deployment namespace.
-            name: Deployment name.
-
-        Returns:
-            Deployment dict.
-
-        Raises:
-            OtelResourceNotFoundError: If not found.
-        """
-        self._ensure_available()
-        try:
-            result = await asyncio.to_thread(
-                self._apps_v1.read_namespaced_deployment,
-                name=name,
-                namespace=namespace,
-            )
-            return self._deployment_to_dict(result)
-        except Exception as e:
-            if "404" in str(e) or "NotFound" in str(e):
-                raise OtelResourceNotFoundError(
-                    f"Deployment '{name}' not found in namespace '{namespace}'"
-                )
-            raise OtelConnectionError(f"Failed to get deployment: {e}")
-
-    async def patch_deployment_annotations(
+    async def get_workload(
         self,
         namespace: str,
         name: str,
-        annotations: Dict[str, str],
+        kind: str = "Deployment",
+    ) -> Dict[str, Any]:
+        """Get a single Deployment, StatefulSet, or DaemonSet."""
+        self._ensure_available()
+        norm_kind = self._normalize_workload_kind(kind)
+        try:
+            if norm_kind == "Deployment":
+                result = await asyncio.to_thread(
+                    self._apps_v1.read_namespaced_deployment,
+                    name=name,
+                    namespace=namespace,
+                )
+            elif norm_kind == "StatefulSet":
+                result = await asyncio.to_thread(
+                    self._apps_v1.read_namespaced_stateful_set,
+                    name=name,
+                    namespace=namespace,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    self._apps_v1.read_namespaced_daemon_set,
+                    name=name,
+                    namespace=namespace,
+                )
+            return self._workload_to_dict(result, kind=norm_kind)
+        except Exception as e:
+            if "404" in str(e) or "NotFound" in str(e):
+                raise OtelResourceNotFoundError(
+                    f"{norm_kind} '{name}' not found in namespace '{namespace}'"
+                )
+            raise OtelConnectionError(f"Failed to get {norm_kind.lower()}: {e}")
+
+    async def patch_workload_annotations(
+        self,
+        namespace: str,
+        name: str,
+        annotations: Dict[str, Optional[str]],
+        kind: str = "Deployment",
         dry_run: bool = True,
     ) -> Dict[str, Any]:
-        """Patch annotations on a Deployment's pod template.
+        """Patch annotations on a workload's pod template.
 
-        Used for applying auto-instrumentation annotations.
-
-        Args:
-            namespace: Deployment namespace.
-            name: Deployment name.
-            annotations: Annotations to merge into the pod template.
-            dry_run: If True, performs a server-side dry run without persisting.
-
-        Returns:
-            Updated deployment dict.
+        Passing ``None`` as an annotation value removes that annotation key
+        via Kubernetes strategic merge patch.
         """
         self._ensure_available()
+        norm_kind = self._normalize_workload_kind(kind)
         body = {
             "spec": {
                 "template": {
@@ -370,10 +589,81 @@ class KubernetesService:
         if dry_run:
             kwargs["dry_run"] = "All"
 
-        result = await asyncio.to_thread(
-            self._apps_v1.patch_namespaced_deployment, **kwargs
+        try:
+            if norm_kind == "Deployment":
+                result = await asyncio.to_thread(
+                    self._apps_v1.patch_namespaced_deployment, **kwargs
+                )
+            elif norm_kind == "StatefulSet":
+                result = await asyncio.to_thread(
+                    self._apps_v1.patch_namespaced_stateful_set, **kwargs
+                )
+            else:
+                result = await asyncio.to_thread(
+                    self._apps_v1.patch_namespaced_daemon_set, **kwargs
+                )
+            return self._workload_to_dict(result, kind=norm_kind)
+        except Exception as e:
+            if "404" in str(e) or "NotFound" in str(e):
+                raise OtelResourceNotFoundError(
+                    f"{norm_kind} '{name}' not found in namespace '{namespace}'"
+                )
+            raise OtelConnectionError(f"Failed to patch {norm_kind.lower()}: {e}")
+
+    async def restart_workload(
+        self,
+        namespace: str,
+        name: str,
+        kind: str = "Deployment",
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Trigger a rolling restart of a Deployment, StatefulSet, or DaemonSet."""
+        restarted_at = datetime.now(timezone.utc).isoformat()
+        return await self.patch_workload_annotations(
+            namespace=namespace,
+            name=name,
+            annotations={"kubectl.kubernetes.io/restartedAt": restarted_at},
+            kind=kind,
+            dry_run=dry_run,
         )
-        return self._deployment_to_dict(result)
+
+    async def list_deployments(
+        self,
+        namespace: str,
+        label_selector: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List Deployments in a namespace."""
+        self._ensure_available()
+        kwargs: Dict[str, Any] = {"namespace": namespace}
+        if label_selector:
+            kwargs["label_selector"] = label_selector
+
+        result = await asyncio.to_thread(
+            self._apps_v1.list_namespaced_deployment, **kwargs
+        )
+        return [self._deployment_to_dict(d) for d in result.items]
+
+    async def get_deployment(
+        self, namespace: str, name: str
+    ) -> Dict[str, Any]:
+        """Get a single Deployment."""
+        return await self.get_workload(namespace, name, kind="Deployment")
+
+    async def patch_deployment_annotations(
+        self,
+        namespace: str,
+        name: str,
+        annotations: Dict[str, Optional[str]],
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        """Patch annotations on a Deployment's pod template."""
+        return await self.patch_workload_annotations(
+            namespace=namespace,
+            name=name,
+            annotations=annotations,
+            kind="Deployment",
+            dry_run=dry_run,
+        )
 
     # ──────────────────────────────────────────────
     # Pod operations
@@ -385,16 +675,7 @@ class KubernetesService:
         label_selector: Optional[str] = None,
         field_selector: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """List pods.
-
-        Args:
-            namespace: Namespace, or None for all namespaces.
-            label_selector: Optional label selector.
-            field_selector: Optional field selector.
-
-        Returns:
-            List of pod dicts.
-        """
+        """List pods."""
         self._ensure_available()
         kwargs: Dict[str, Any] = {}
         if label_selector:
@@ -424,20 +705,11 @@ class KubernetesService:
         name: str,
         spec: Dict[str, Any],
         overwrite: bool = False,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
-        """Create or patch an Instrumentation CRD.
-
-        Args:
-            namespace: Target namespace.
-            name: Instrumentation CR name.
-            spec: CRD spec dict.
-            overwrite: If True, replaces existing; if False, merges.
-
-        Returns:
-            Created/updated CRD dict.
-        """
+        """Create or patch an Instrumentation CRD."""
         self._ensure_available()
-        body = {
+        body: Dict[str, Any] = {
             "apiVersion": f"{self._otel_config.crd_group}/{self._otel_config.instrumentation_api_version}",
             "kind": "Instrumentation",
             "metadata": {
@@ -447,37 +719,37 @@ class KubernetesService:
             "spec": spec,
         }
 
+        base_kwargs: Dict[str, Any] = {
+            "group": self._otel_config.crd_group,
+            "version": self._otel_config.instrumentation_api_version,
+            "namespace": namespace,
+            "plural": self._otel_config.instrumentation_plural,
+        }
+        if dry_run:
+            base_kwargs["dry_run"] = "All"
+
         try:
-            # Try to get existing
-            await self.get_instrumentation(namespace, name)
-            # Exists — patch or replace
+            existing = await self.get_instrumentation(namespace, name)
             if overwrite:
+                existing_rv = existing.get("metadata", {}).get("resourceVersion")
+                if existing_rv:
+                    body["metadata"]["resourceVersion"] = existing_rv
                 return await asyncio.to_thread(
                     self._custom_api.replace_namespaced_custom_object,
-                    group=self._otel_config.crd_group,
-                    version=self._otel_config.instrumentation_api_version,
-                    namespace=namespace,
-                    plural=self._otel_config.instrumentation_plural,
+                    **base_kwargs,
                     name=name,
                     body=body,
                 )
             return await asyncio.to_thread(
                 self._custom_api.patch_namespaced_custom_object,
-                group=self._otel_config.crd_group,
-                version=self._otel_config.instrumentation_api_version,
-                namespace=namespace,
-                plural=self._otel_config.instrumentation_plural,
+                **base_kwargs,
                 name=name,
                 body=body,
             )
         except OtelResourceNotFoundError:
-            # Does not exist — create
             return await asyncio.to_thread(
                 self._custom_api.create_namespaced_custom_object,
-                group=self._otel_config.crd_group,
-                version=self._otel_config.instrumentation_api_version,
-                namespace=namespace,
-                plural=self._otel_config.instrumentation_plural,
+                **base_kwargs,
                 body=body,
             )
 
@@ -495,21 +767,7 @@ class KubernetesService:
         overwrite: bool = False,
         dry_run: bool = True,
     ) -> Dict[str, Any]:
-        """Create or patch an OpenTelemetryCollector CRD.
-
-        Args:
-            namespace: Target namespace.
-            name: Collector CR name.
-            spec: CRD spec dict (mode, config, image, replicas, etc.).
-            labels: Optional metadata labels to apply.
-            annotations: Optional metadata annotations to apply.
-            overwrite: If True, replaces existing; if False, merges.
-            dry_run: If True, performs a server-side dry run without
-                persisting changes.
-
-        Returns:
-            Created/updated CRD dict.
-        """
+        """Create or patch an OpenTelemetryCollector CRD."""
         self._ensure_available()
 
         metadata: Dict[str, Any] = {
@@ -538,16 +796,12 @@ class KubernetesService:
             base_kwargs["dry_run"] = "All"
 
         try:
-            # Try to get existing
             existing = await self.get_otel_collector(namespace, name)
 
-            # Snapshot current config before mutation (non-dry-run only)
             if not dry_run:
                 self._store_config_snapshot(existing, body)
 
-            # Exists — patch or replace
             if overwrite:
-                # replace (PUT) requires metadata.resourceVersion
                 existing_rv = (
                     existing.get("metadata", {}).get("resourceVersion")
                 )
@@ -566,7 +820,6 @@ class KubernetesService:
                 body=body,
             )
         except OtelResourceNotFoundError:
-            # Does not exist — create
             return await asyncio.to_thread(
                 self._custom_api.create_namespaced_custom_object,
                 **base_kwargs,
@@ -574,51 +827,37 @@ class KubernetesService:
             )
 
     # ──────────────────────────────────────────────
-    # RBAC for k8sattributes processor
+    # RBAC for k8sattributes & Infrastructure Receivers
     # ──────────────────────────────────────────────
 
     @staticmethod
-    def build_k8sattributes_rbac_manifests(
+    def build_receiver_rbac_manifests(
         namespace: str,
         collector_name: str,
+        receivers: Optional[List[str]] = None,
+        include_k8sattributes: bool = True,
+        target_allocator_enabled: bool = False,
     ) -> Dict[str, Any]:
-        """Build ClusterRole and ClusterRoleBinding manifests for k8sattributes.
+        """Build least-privilege ClusterRole and ClusterRoleBinding manifests.
 
-        The k8sattributes processor needs permissions to watch Pods,
-        ReplicaSets, Namespaces, Nodes, and Jobs. The OTel Operator
-        does NOT auto-create these RBAC resources.
-
-        Args:
-            namespace: Namespace where the collector runs.
-            collector_name: Collector CR name (used to derive the
-                ServiceAccount name created by the Operator).
-
-        Returns:
-            Dict with ``cluster_role`` and ``cluster_role_binding``
-            manifest dicts ready for YAML serialization or K8s apply.
+        Supports RBAC rules for:
+        - k8sattributes processor
+        - kubeletstats receiver
+        - k8s_cluster receiver
+        - k8sobjects / k8s_events receiver
+        - prometheus Target Allocator (monitoring.coreos.com CRDs)
         """
-        # The OTel Operator creates a ServiceAccount named
-        # "{collector_name}-collector" in the target namespace
         sa_name = f"{collector_name}-collector"
         role_name = f"otel-k8sattr-{collector_name}"
+        receiver_set = set(receivers or [])
 
-        cluster_role = {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "ClusterRole",
-            "metadata": {
-                "name": role_name,
-                "labels": {
-                    "app.kubernetes.io/managed-by": "talkops-mcp",
-                    "app.kubernetes.io/component": "rbac",
-                    "talkops.ai/collector": collector_name,
-                },
-            },
-            "rules": [
+        rules: List[Dict[str, Any]] = []
+
+        if include_k8sattributes:
+            rules.extend([
                 {
                     "apiGroups": [""],
-                    "resources": [
-                        "pods", "namespaces", "nodes",
-                    ],
+                    "resources": ["pods", "namespaces", "nodes"],
                     "verbs": ["get", "list", "watch"],
                 },
                 {
@@ -631,8 +870,136 @@ class KubernetesService:
                     "resources": ["jobs"],
                     "verbs": ["get", "list", "watch"],
                 },
-            ],
+            ])
+
+        if "kubeletstats" in receiver_set:
+            rules.append({
+                "apiGroups": [""],
+                "resources": [
+                    "nodes",
+                    "nodes/stats",
+                    "nodes/metrics",
+                    "nodes/proxy",
+                ],
+                "verbs": ["get", "list", "watch"],
+            })
+
+        if "k8s_cluster" in receiver_set:
+            rules.extend([
+                {
+                    "apiGroups": [""],
+                    "resources": [
+                        "events",
+                        "namespaces",
+                        "nodes",
+                        "pods",
+                        "replicationcontrollers",
+                        "resourcequotas",
+                        "services",
+                    ],
+                    "verbs": ["get", "list", "watch"],
+                },
+                {
+                    "apiGroups": ["apps"],
+                    "resources": [
+                        "daemonsets",
+                        "deployments",
+                        "replicasets",
+                        "statefulsets",
+                    ],
+                    "verbs": ["get", "list", "watch"],
+                },
+                {
+                    "apiGroups": ["batch"],
+                    "resources": ["jobs", "cronjobs"],
+                    "verbs": ["get", "list", "watch"],
+                },
+                {
+                    "apiGroups": ["autoscaling"],
+                    "resources": ["horizontalpodautoscalers"],
+                    "verbs": ["get", "list", "watch"],
+                },
+            ])
+
+        if "k8sobjects" in receiver_set or "k8s_events" in receiver_set:
+            rules.extend([
+                {
+                    "apiGroups": [""],
+                    "resources": ["events"],
+                    "verbs": ["get", "list", "watch"],
+                },
+                {
+                    "apiGroups": ["events.k8s.io"],
+                    "resources": ["events"],
+                    "verbs": ["get", "list", "watch"],
+                },
+            ])
+
+        if "prometheus_ta" in receiver_set or target_allocator_enabled:
+            rules.extend([
+                {
+                    "apiGroups": [""],
+                    "resources": [
+                        "nodes",
+                        "nodes/metrics",
+                        "services",
+                        "endpoints",
+                        "pods",
+                        "namespaces",
+                    ],
+                    "verbs": ["get", "list", "watch"],
+                },
+                {
+                    "apiGroups": ["networking.k8s.io"],
+                    "resources": ["ingresses"],
+                    "verbs": ["get", "list", "watch"],
+                },
+                {
+                    "apiGroups": ["discovery.k8s.io"],
+                    "resources": ["endpointslices"],
+                    "verbs": ["get", "list", "watch"],
+                },
+                {
+                    "apiGroups": ["monitoring.coreos.com"],
+                    "resources": [
+                        "servicemonitors",
+                        "podmonitors",
+                        "scrapeconfigs",
+                        "probes",
+                    ],
+                    "verbs": ["get", "list", "watch"],
+                },
+            ])
+
+        cluster_role = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRole",
+            "metadata": {
+                "name": role_name,
+                "labels": {
+                    "app.kubernetes.io/managed-by": "talkops-mcp",
+                    "app.kubernetes.io/component": "rbac",
+                    "talkops.ai/collector": collector_name,
+                },
+            },
+            "rules": rules,
         }
+
+        subjects: List[Dict[str, str]] = [
+            {
+                "kind": "ServiceAccount",
+                "name": sa_name,
+                "namespace": namespace,
+            },
+        ]
+        if "prometheus_ta" in receiver_set or target_allocator_enabled:
+            subjects.append(
+                {
+                    "kind": "ServiceAccount",
+                    "name": f"{collector_name}-targetallocator",
+                    "namespace": namespace,
+                }
+            )
 
         cluster_role_binding = {
             "apiVersion": "rbac.authorization.k8s.io/v1",
@@ -650,13 +1017,7 @@ class KubernetesService:
                 "kind": "ClusterRole",
                 "name": role_name,
             },
-            "subjects": [
-                {
-                    "kind": "ServiceAccount",
-                    "name": sa_name,
-                    "namespace": namespace,
-                },
-            ],
+            "subjects": subjects,
         }
 
         return {
@@ -664,42 +1025,55 @@ class KubernetesService:
             "cluster_role_binding": cluster_role_binding,
         }
 
-    async def create_k8sattributes_rbac(
-        self,
+    @staticmethod
+    def build_k8sattributes_rbac_manifests(
         namespace: str,
         collector_name: str,
     ) -> Dict[str, Any]:
-        """Create RBAC resources required by the k8sattributes processor.
+        """Build ClusterRole and ClusterRoleBinding manifests for k8sattributes."""
+        return KubernetesService.build_receiver_rbac_manifests(
+            namespace=namespace,
+            collector_name=collector_name,
+            receivers=[],
+            include_k8sattributes=True,
+        )
 
-        Creates a ClusterRole and ClusterRoleBinding so the collector's
-        ServiceAccount can list/watch Pods, ReplicaSets, Namespaces,
-        Nodes, and Jobs.
+    async def create_receiver_rbac(
+        self,
+        namespace: str,
+        collector_name: str,
+        receivers: Optional[List[str]] = None,
+        include_k8sattributes: bool = True,
+        target_allocator_enabled: bool = False,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Create or update RBAC resources required by k8sattributes and receivers."""
+        manifests = self.build_receiver_rbac_manifests(
+            namespace=namespace,
+            collector_name=collector_name,
+            receivers=receivers,
+            include_k8sattributes=include_k8sattributes,
+            target_allocator_enabled=target_allocator_enabled,
+        )
+        role_name = manifests["cluster_role"]["metadata"]["name"]
+        if dry_run:
+            return {
+                "cluster_role": {"name": role_name, "action": "dry_run"},
+                "cluster_role_binding": {"name": role_name, "action": "dry_run"},
+                "manifests": manifests,
+            }
 
-        Args:
-            namespace: Namespace where the collector runs.
-            collector_name: Collector CR name.
-
-        Returns:
-            Dict with created resource metadata.
-        """
         self._ensure_available()
-
         from kubernetes import client as k8s_client
 
         rbac_api = k8s_client.RbacAuthorizationV1Api()
-        manifests = self.build_k8sattributes_rbac_manifests(
-            namespace, collector_name
-        )
-
         results: Dict[str, Any] = {}
 
         # Create or update ClusterRole
-        role_name = manifests["cluster_role"]["metadata"]["name"]
         try:
-            existing = await asyncio.to_thread(
+            await asyncio.to_thread(
                 rbac_api.read_cluster_role, name=role_name
             )
-            # Exists — patch it
             await asyncio.to_thread(
                 rbac_api.patch_cluster_role,
                 name=role_name,
@@ -724,7 +1098,7 @@ class KubernetesService:
 
         # Create or update ClusterRoleBinding
         try:
-            existing = await asyncio.to_thread(
+            await asyncio.to_thread(
                 rbac_api.read_cluster_role_binding, name=role_name
             )
             await asyncio.to_thread(
@@ -749,15 +1123,169 @@ class KubernetesService:
                     f"Failed to create ClusterRoleBinding '{role_name}': {e}"
                 )
 
-        logger.info(
-            f"RBAC for k8sattributes created: ClusterRole={role_name}, "
-            f"ClusterRoleBinding={role_name}, "
-            f"ServiceAccount={namespace}/{collector_name}-collector"
-        )
         return results
 
+    async def create_k8sattributes_rbac(
+        self,
+        namespace: str,
+        collector_name: str,
+    ) -> Dict[str, Any]:
+        """Create RBAC resources required by the k8sattributes processor."""
+        return await self.create_receiver_rbac(
+            namespace=namespace,
+            collector_name=collector_name,
+            include_k8sattributes=True,
+            dry_run=False,
+        )
+
+    async def check_cluster_role_binding_exists(
+        self,
+        collector_name: str,
+        namespace: Optional[str] = None,
+    ) -> bool:
+        """Check if a ClusterRoleBinding exists for a collector's ServiceAccount."""
+        self._ensure_available()
+        from kubernetes import client as k8s_client
+
+        rbac_api = k8s_client.RbacAuthorizationV1Api()
+        role_name = f"otel-k8sattr-{collector_name}"
+        try:
+            await asyncio.to_thread(
+                rbac_api.read_cluster_role_binding, name=role_name
+            )
+            return True
+        except Exception:
+            pass
+
+        # Fallback: scan ClusterRoleBindings for subject matching {collector_name}-collector
+        sa_name = f"{collector_name}-collector"
+        try:
+            bindings = await asyncio.to_thread(rbac_api.list_cluster_role_binding)
+            for item in getattr(bindings, "items", []) or []:
+                for subj in getattr(item, "subjects", []) or []:
+                    if getattr(subj, "name", "") == sa_name:
+                        if namespace is None or getattr(subj, "namespace", None) == namespace:
+                            return True
+        except Exception:
+            pass
+
+        return False
+
+    async def list_otel_cluster_roles(
+        self, namespace: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """List ClusterRoles associated with OpenTelemetry collectors or agents.
+
+        Excludes the OpenTelemetry Operator's own system controller/webhook roles
+        so cluster operator installation does not produce false-positive collector
+        RBAC findings, and scopes to bound ServiceAccounts in ``namespace`` when
+        provided.
+        """
+        self._ensure_available()
+        from kubernetes import client as k8s_client
+
+        rbac_api = k8s_client.RbacAuthorizationV1Api()
+        roles: List[Dict[str, Any]] = []
+        bound_role_names_for_ns: Optional[set[str]] = None
+        if namespace:
+            bound_role_names_for_ns = set()
+            try:
+                bindings = await asyncio.to_thread(rbac_api.list_cluster_role_binding)
+                for b in getattr(bindings, "items", []) or []:
+                    role_ref = getattr(b, "role_ref", None)
+                    ref_name = getattr(role_ref, "name", "") if role_ref else ""
+                    for subj in getattr(b, "subjects", []) or []:
+                        if getattr(subj, "namespace", None) == namespace and ref_name:
+                            bound_role_names_for_ns.add(ref_name)
+            except Exception:
+                bound_role_names_for_ns = None
+
+        try:
+            res = await asyncio.to_thread(rbac_api.list_cluster_role)
+            for item in getattr(res, "items", []) or []:
+                name = getattr(item.metadata, "name", "") or ""
+                labels = getattr(item.metadata, "labels", None) or {}
+                name_low = name.lower()
+                # Skip OpenTelemetry Operator's own controller/webhook/metrics ClusterRoles
+                # and GitOps/Kargo/ArgoCD project roles that merely match a namespace substring
+                if (
+                    name_low.startswith(
+                        ("opentelemetry-operator-", "kargo-", "argocd-")
+                    )
+                    or labels.get("app.kubernetes.io/name") == "opentelemetry-operator"
+                    or labels.get("app.kubernetes.io/part-of") == "opentelemetry-operator"
+                    or labels.get("app.kubernetes.io/part-of") in ("kargo", "argocd")
+                ):
+                    continue
+                is_otel = (
+                    "otel" in name_low
+                    or "opentelemetry" in name_low
+                    or labels.get("app.kubernetes.io/managed-by") == "talkops-mcp"
+                    or "talkops.ai/collector" in labels
+                    or (bound_role_names_for_ns is not None and name in bound_role_names_for_ns and "otel" in name_low)
+                )
+                if not is_otel:
+                    continue
+                if bound_role_names_for_ns is not None and bound_role_names_for_ns:
+                    if name not in bound_role_names_for_ns and labels.get("talkops.ai/namespace") not in (None, namespace):
+                        continue
+                    if name not in bound_role_names_for_ns and namespace not in name_low and "talkops.ai/collector" not in labels:
+                        continue
+                rules_list = []
+                for r in getattr(item, "rules", []) or []:
+                    rules_list.append({
+                        "api_groups": list(getattr(r, "api_groups", None) or []),
+                        "resources": list(getattr(r, "resources", None) or []),
+                        "verbs": list(getattr(r, "verbs", None) or []),
+                    })
+                roles.append({
+                    "name": name,
+                    "labels": labels,
+                    "rules": rules_list,
+                })
+        except Exception as e:
+            logger.debug("Failed to list ClusterRoles: %s", e)
+
+        return roles
+
+    async def check_secret_key_exists(
+        self,
+        namespace: str,
+        secret_name: str,
+        key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Verify Secret and optional key existence without returning secret data."""
+        self._ensure_available()
+        try:
+            secret = await asyncio.to_thread(
+                self._core_v1.read_namespaced_secret,
+                name=secret_name,
+                namespace=namespace,
+            )
+            data_keys = list((getattr(secret, "data", None) or {}).keys())
+            key_exists = True if key is None else (key in data_keys)
+            return {
+                "exists": True,
+                "secret_name": secret_name,
+                "namespace": namespace,
+                "key": key,
+                "key_exists": key_exists,
+                "available_keys": data_keys,
+            }
+        except Exception as e:
+            if "404" in str(e) or "NotFound" in str(e):
+                return {
+                    "exists": False,
+                    "secret_name": secret_name,
+                    "namespace": namespace,
+                    "key": key,
+                    "key_exists": False,
+                    "available_keys": [],
+                }
+            raise OtelConnectionError(f"Failed to verify Secret '{secret_name}': {e}")
+
     # ──────────────────────────────────────────────
-    # Service and namespace discovery
+    # Service, Event, Log, and Namespace discovery
     # ──────────────────────────────────────────────
 
     async def list_services(
@@ -765,18 +1293,7 @@ class KubernetesService:
         namespace: str,
         label_selector: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """List Kubernetes Services in a namespace.
-
-        Used by the provisioning engine to auto-discover backend
-        endpoints (Jaeger, Tempo, Prometheus, OpenSearch, etc.).
-
-        Args:
-            namespace: Target namespace.
-            label_selector: Optional label selector.
-
-        Returns:
-            List of simplified service dicts with name, ports, and type.
-        """
+        """List Kubernetes Services in a namespace."""
         self._ensure_available()
         kwargs: Dict[str, Any] = {"namespace": namespace}
         if label_selector:
@@ -811,11 +1328,7 @@ class KubernetesService:
         return services
 
     async def list_namespaces(self) -> List[str]:
-        """List all namespace names in the cluster.
-
-        Returns:
-            List of namespace name strings.
-        """
+        """List all namespace names in the cluster."""
         self._ensure_available()
         result = await asyncio.to_thread(
             self._core_v1.list_namespace
@@ -823,29 +1336,183 @@ class KubernetesService:
         return [ns.metadata.name for ns in result.items]
 
     async def count_nodes(self) -> int:
-        """Count the number of nodes in the cluster.
-
-        Used by the provisioning engine to auto-size collectors.
-
-        Returns:
-            Node count.
-        """
+        """Count the number of nodes in the cluster."""
         self._ensure_available()
         result = await asyncio.to_thread(
             self._core_v1.list_node
         )
         return len(result.items)
 
+    async def list_namespace_events(
+        self,
+        namespace: str,
+        involved_object_name: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """List recent Kubernetes Events in a namespace."""
+        self._ensure_available()
+        try:
+            res = await asyncio.to_thread(
+                self._core_v1.list_namespaced_event,
+                namespace=namespace,
+                limit=limit,
+            )
+            events: List[Dict[str, Any]] = []
+            for ev in getattr(res, "items", []) or []:
+                involved = getattr(ev, "involved_object", None)
+                obj_name = getattr(involved, "name", "") if involved else ""
+                obj_kind = getattr(involved, "kind", "") if involved else ""
+                if involved_object_name and not (
+                    obj_name == involved_object_name
+                    or obj_name.startswith(f"{involved_object_name}-")
+                ):
+                    continue
+                last_ts = getattr(ev, "last_timestamp", None) or getattr(
+                    ev, "event_time", None
+                )
+                events.append({
+                    "type": getattr(ev, "type", "Normal") or "Normal",
+                    "reason": getattr(ev, "reason", "") or "",
+                    "message": redact_log_text(getattr(ev, "message", "") or ""),
+                    "count": getattr(ev, "count", 1) or 1,
+                    "involved_object": {
+                        "kind": obj_kind,
+                        "name": obj_name,
+                    },
+                    "last_timestamp": (
+                        last_ts.isoformat()
+                        if hasattr(last_ts, "isoformat")
+                        else str(last_ts or "")
+                    ),
+                })
+            return events
+        except Exception as e:
+            logger.debug("Failed to list events in %s: %s", namespace, e)
+            return []
+
+    async def get_collector_pod_logs(
+        self,
+        namespace: str,
+        collector_name: str,
+        tail_lines: int = 50,
+    ) -> Dict[str, Any]:
+        """Fetch and classify redacted tail logs from a collector's pods."""
+        self._ensure_available()
+        selectors = [
+            f"app.kubernetes.io/instance={namespace}.{collector_name}",
+            f"app.kubernetes.io/name={collector_name}-collector",
+        ]
+        pods: List[Dict[str, Any]] = []
+        for selector in selectors:
+            try:
+                pods = await self.list_pods(
+                    namespace=namespace, label_selector=selector
+                )
+                if pods:
+                    break
+            except Exception:
+                continue
+
+        if not pods:
+            # Fallback: match pod name prefix
+            all_pods = await self.list_pods(namespace=namespace)
+            pods = [
+                p for p in all_pods
+                if p.get("name", "").startswith(f"{collector_name}-collector")
+                or p.get("name", "").startswith(collector_name)
+            ]
+
+        if not pods:
+            return {
+                "pod_name": None,
+                "lines": [],
+                "error_lines": [],
+                "auth_errors": [],
+                "tls_errors": [],
+                "dns_errors": [],
+            }
+
+        target_pod = pods[0]["name"]
+        try:
+            raw_logs = await asyncio.to_thread(
+                self._core_v1.read_namespaced_pod_log,
+                name=target_pod,
+                namespace=namespace,
+                tail_lines=tail_lines,
+            )
+        except Exception as e:
+            return {
+                "pod_name": target_pod,
+                "lines": [],
+                "error_lines": [f"Failed to read pod logs: {e}"],
+                "auth_errors": [],
+                "tls_errors": [],
+                "dns_errors": [],
+            }
+
+        redacted_logs = redact_log_text(raw_logs or "")
+        lines = [ln.strip() for ln in redacted_logs.splitlines() if ln.strip()]
+        error_lines: List[str] = []
+        auth_errors: List[str] = []
+        tls_errors: List[str] = []
+        dns_errors: List[str] = []
+
+        for line in lines:
+            lower = line.lower()
+            if any(k in lower for k in ("error", "failed", "fatal", "panic", "warn")):
+                error_lines.append(line)
+            if any(
+                k in lower
+                for k in (
+                    "401",
+                    "403",
+                    "unauthorized",
+                    "forbidden",
+                    "unauthenticated",
+                    "invalid api key",
+                    "permission denied",
+                )
+            ):
+                auth_errors.append(line)
+            if any(
+                k in lower
+                for k in (
+                    "x509:",
+                    "certificate signed by unknown authority",
+                    "tls: failed to verify certificate",
+                    "bad certificate",
+                    "certificate has expired",
+                )
+            ):
+                tls_errors.append(line)
+            if any(
+                k in lower
+                for k in (
+                    "no such host",
+                    "connection refused",
+                    "context deadline exceeded",
+                    "dial tcp",
+                    "i/o timeout",
+                    "name resolution",
+                )
+            ):
+                dns_errors.append(line)
+
+        return {
+            "pod_name": target_pod,
+            "lines": lines[-tail_lines:],
+            "error_lines": error_lines[-20:],
+            "auth_errors": auth_errors[-10:],
+            "tls_errors": tls_errors[-10:],
+            "dns_errors": dns_errors[-10:],
+        }
+
     # ──────────────────────────────────────────────
     # Health check
     # ──────────────────────────────────────────────
 
     async def health_check(self) -> Dict[str, Any]:
-        """Check K8s API connectivity and OTel CRD availability.
-
-        Returns:
-            Health status dict with connectivity info.
-        """
+        """Check K8s API connectivity and OTel CRD availability."""
         if not self._k8s_config.enabled:
             return {"status": "disabled", "message": "Kubernetes integration is disabled"}
 
@@ -861,13 +1528,13 @@ class KubernetesService:
                 "status": "healthy",
                 "server_version": f"{version_info.major}.{version_info.minor}",
                 "git_version": version_info.git_version,
-                "context": "default",
+                "context": self._k8s_config.context_name or "default",
             }
         except Exception as e:
             return {"status": "error", "message": f"API unreachable: {e}"}
 
     # ──────────────────────────────────────────────
-    # Config snapshot and rollback (Critique 2)
+    # Config snapshot and rollback
     # ──────────────────────────────────────────────
 
     _SNAPSHOT_ANNOTATION = "otel.mcp/last-known-good"
@@ -876,14 +1543,7 @@ class KubernetesService:
 
     @staticmethod
     def _compress_config(config_str: str) -> str:
-        """Gzip + base64 encode a config string for annotation storage.
-
-        Args:
-            config_str: Raw config YAML/JSON string.
-
-        Returns:
-            Base64-encoded gzipped string.
-        """
+        """Gzip + base64 encode a config string for annotation storage."""
         import base64
         import gzip
 
@@ -892,14 +1552,7 @@ class KubernetesService:
 
     @staticmethod
     def _decompress_config(compressed: str) -> str:
-        """Decompress a base64+gzip config string.
-
-        Args:
-            compressed: Base64-encoded gzipped string.
-
-        Returns:
-            Original config string.
-        """
+        """Decompress a base64+gzip config string."""
         import base64
         import gzip
 
@@ -911,24 +1564,13 @@ class KubernetesService:
         existing_crd: Dict[str, Any],
         new_body: Dict[str, Any],
     ) -> None:
-        """Store the current config as a snapshot annotation on the new body.
-
-        Called automatically by ``create_or_patch_collector`` before
-        applying a real (non-dry-run) mutation. Stores the existing
-        config YAML in a gzip+base64 annotation.
-
-        Args:
-            existing_crd: Current CRD dict (pre-mutation).
-            new_body: The body about to be applied (modified in-place).
-        """
+        """Store the current config as a snapshot annotation on the new body."""
         import json
-        from datetime import datetime, timezone
 
         existing_config = existing_crd.get("spec", {}).get("config", "")
         if not existing_config:
             return
 
-        # If config is a dict, serialize to JSON for storage
         if isinstance(existing_config, dict):
             existing_config = json.dumps(existing_config, sort_keys=True)
 
@@ -947,7 +1589,6 @@ class KubernetesService:
                 f"Stored config snapshot ({len(compressed)} chars compressed)"
             )
         except Exception as e:
-            # Non-blocking — don't fail the mutation because snapshot failed
             logger.warning(f"Failed to store config snapshot: {e}")
 
     async def revert_collector_config(
@@ -956,19 +1597,7 @@ class KubernetesService:
         name: str,
         dry_run: bool = True,
     ) -> Dict[str, Any]:
-        """Revert a collector to its pre-mutation config.
-
-        Reads the ``otel.mcp/last-known-good`` annotation from the
-        collector CRD and restores the config. This is a one-level undo.
-
-        Args:
-            namespace: Collector namespace.
-            name: Collector CRD name.
-            dry_run: If True, returns the diff without applying.
-
-        Returns:
-            Dict with current vs. snapshot config and action taken.
-        """
+        """Revert a collector to its pre-mutation config."""
         self._ensure_available()
 
         raw = await self.get_otel_collector(namespace, name)
@@ -1020,15 +1649,28 @@ class KubernetesService:
                 ),
             }
 
-        # Apply the revert
         spec = dict(raw.get("spec", {}))
-        spec["config"] = previous_config
+        existing_cfg_raw = raw.get("spec", {}).get("config", "")
+        restored_cfg: Any = previous_config
+        if isinstance(existing_cfg_raw, dict):
+            import yaml as _yaml
 
-        # Remove the snapshot annotation (consumed)
-        result = await self.create_or_patch_collector(
+            try:
+                parsed_prev = _yaml.safe_load(previous_config)
+                if isinstance(parsed_prev, dict):
+                    restored_cfg = parsed_prev
+            except Exception:
+                pass
+        spec["config"] = restored_cfg
+        meta = raw.get("metadata", {}) or {}
+
+        await self.create_or_patch_collector(
             namespace=namespace,
             name=name,
             spec=spec,
+            labels=meta.get("labels") if isinstance(existing_cfg_raw, dict) else None,
+            annotations=meta.get("annotations") if isinstance(existing_cfg_raw, dict) else None,
+            overwrite=isinstance(existing_cfg_raw, dict),
             dry_run=False,
         )
 
@@ -1044,7 +1686,7 @@ class KubernetesService:
         }
 
     # ──────────────────────────────────────────────
-    # Operator diagnostics (Gap 2)
+    # Operator diagnostics
     # ──────────────────────────────────────────────
 
     _OPERATOR_NAMESPACES = [
@@ -1069,19 +1711,7 @@ class KubernetesService:
         self,
         tail_lines: int = 100,
     ) -> Dict[str, Any]:
-        """Scan the OTel Operator pod for recent errors and diagnostics.
-
-        Searches common operator namespaces and label selectors to find
-        the operator pod, then reads its logs and extracts error-level
-        entries. Also counts Instrumentation CRDs per namespace to detect
-        the common "multiple Instrumentation instances" problem.
-
-        Args:
-            tail_lines: Number of log lines to read from the tail.
-
-        Returns:
-            Diagnostics dict with operator status, errors, and warnings.
-        """
+        """Scan the OTel Operator pod for recent errors and diagnostics."""
         self._ensure_available()
         result: Dict[str, Any] = {
             "operator_found": False,
@@ -1093,7 +1723,6 @@ class KubernetesService:
             "warnings": [],
         }
 
-        # Find operator pod
         operator_pod = None
         operator_ns = None
         for ns in self._OPERATOR_NAMESPACES:
@@ -1128,7 +1757,6 @@ class KubernetesService:
             operator_pod.status.phase if operator_pod.status else "Unknown"
         )
 
-        # Read operator logs
         try:
             logs = await asyncio.to_thread(
                 self._core_v1.read_namespaced_pod_log,
@@ -1136,6 +1764,7 @@ class KubernetesService:
                 namespace=operator_ns,
                 tail_lines=tail_lines,
             )
+            logs = redact_log_text(logs or "")
 
             recent_errors = []
             for line in logs.splitlines():
@@ -1143,20 +1772,19 @@ class KubernetesService:
                 if any(kw in line_lower for kw in self._ERROR_KEYWORDS):
                     recent_errors.append(line.strip())
 
-            result["recent_errors"] = recent_errors[-20:]  # Cap at 20
+            result["recent_errors"] = recent_errors[-20:]
 
-            # Detect specific known issues
             log_text = logs.lower()
             if "multiple" in log_text and "instrumentation" in log_text:
                 result["warnings"].append(
-                    "⚠️ DETECTED: 'multiple OpenTelemetry Instrumentation instances' error. "
+                    "DETECTED: 'multiple OpenTelemetry Instrumentation instances' error. "
                     "The operator cannot inject auto-instrumentation when multiple "
                     "Instrumentation CRDs exist in the same namespace. "
                     "Delete duplicate Instrumentation CRDs."
                 )
             if "webhook" in log_text and ("fail" in log_text or "error" in log_text):
                 result["warnings"].append(
-                    "⚠️ DETECTED: Webhook errors in operator logs. "
+                    "DETECTED: Webhook errors in operator logs. "
                     "The mutating webhook may be failing to inject init containers. "
                     "Check cert-manager or webhook certificate expiry."
                 )
@@ -1164,10 +1792,9 @@ class KubernetesService:
         except Exception as e:
             result["warnings"].append(f"Failed to read operator logs: {e}")
 
-        # Count Instrumentation CRDs per namespace (multi-instance detection)
         try:
             namespaces = await self.list_namespaces()
-            for ns in namespaces[:20]:  # Cap at 20 namespaces
+            for ns in namespaces[:20]:
                 try:
                     instrs = await self.list_instrumentations(namespace=ns)
                     count = len(instrs.get("items", []))
@@ -1175,7 +1802,7 @@ class KubernetesService:
                         result["instrumentation_cr_counts"][ns] = count
                         if count > 1:
                             result["warnings"].append(
-                                f"⚠️ Namespace '{ns}' has {count} Instrumentation CRDs. "
+                                f"Namespace '{ns}' has {count} Instrumentation CRDs. "
                                 "The operator requires exactly 1 per namespace for injection."
                             )
                 except Exception:
@@ -1186,7 +1813,7 @@ class KubernetesService:
         return result
 
     # ──────────────────────────────────────────────
-    # Env var remediation (Gap 3)
+    # Env var remediation
     # ──────────────────────────────────────────────
 
     _OTEL_CONFLICT_ENV_VARS = [
@@ -1203,31 +1830,21 @@ class KubernetesService:
         deployment_name: str,
         env_vars: Optional[List[str]] = None,
         dry_run: bool = True,
+        kind: str = "Deployment",
     ) -> Dict[str, Any]:
-        """Remove conflicting OTEL_* env vars from a deployment.
-
-        Uses a strategic merge patch to null out specified env vars
-        from all containers in the deployment's pod template.
-
-        Args:
-            namespace: Deployment namespace.
-            deployment_name: Deployment name.
-            env_vars: Specific env var names to remove. Defaults to
-                the standard OTEL_* conflict set.
-            dry_run: If True, returns what would be removed without applying.
-
-        Returns:
-            Dict with removed vars, affected containers, and dry_run status.
-        """
+        """Remove conflicting OTEL_* env vars from a workload."""
         self._ensure_available()
+        norm_kind = self._normalize_workload_kind(kind)
 
         target_vars = env_vars or self._OTEL_CONFLICT_ENV_VARS
 
-        # Read the deployment to find which vars exist
-        dep = await self.get_deployment(namespace, deployment_name)
-        found_vars: Dict[str, List[str]] = {}  # container_name -> [env_var_names]
+        if norm_kind == "Deployment" and "get_deployment" in self.__dict__:
+            workload = await self.get_deployment(namespace, deployment_name)
+        else:
+            workload = await self.get_workload(namespace, deployment_name, kind=norm_kind)
+        found_vars: Dict[str, List[str]] = {}
 
-        for c in dep.get("containers", []):
+        for c in workload.get("containers", []):
             if c.get("is_init_container"):
                 continue
             env = c.get("env", {})
@@ -1238,6 +1855,7 @@ class KubernetesService:
         if not found_vars:
             return {
                 "deployment": f"{namespace}/{deployment_name}",
+                "workload_kind": norm_kind,
                 "dry_run": dry_run,
                 "action": "no_change",
                 "message": "No conflicting OTEL_* env vars found.",
@@ -1246,6 +1864,7 @@ class KubernetesService:
         if dry_run:
             return {
                 "deployment": f"{namespace}/{deployment_name}",
+                "workload_kind": norm_kind,
                 "dry_run": True,
                 "action": "dry_run",
                 "would_remove": found_vars,
@@ -1255,17 +1874,8 @@ class KubernetesService:
                 ),
             }
 
-        # Build strategic merge patch to remove env vars
-        # The K8s API removes an env var when its value is set to null
-        # in a strategic merge patch with $patch: delete
-        from kubernetes import client as k8s_client
-
         containers_patch = []
         for container_name, vars_to_remove in found_vars.items():
-            env_patch = [
-                k8s_client.V1EnvVar(name=v, value=None)
-                for v in vars_to_remove
-            ]
             containers_patch.append({
                 "name": container_name,
                 "env": [{"name": v, "$patch": "delete"} for v in vars_to_remove],
@@ -1281,26 +1891,42 @@ class KubernetesService:
             }
         }
 
-        await asyncio.to_thread(
-            self._apps_v1.patch_namespaced_deployment,
-            name=deployment_name,
-            namespace=namespace,
-            body=patch_body,
-        )
+        if norm_kind == "Deployment":
+            await asyncio.to_thread(
+                self._apps_v1.patch_namespaced_deployment,
+                name=deployment_name,
+                namespace=namespace,
+                body=patch_body,
+            )
+        elif norm_kind == "StatefulSet":
+            await asyncio.to_thread(
+                self._apps_v1.patch_namespaced_stateful_set,
+                name=deployment_name,
+                namespace=namespace,
+                body=patch_body,
+            )
+        else:
+            await asyncio.to_thread(
+                self._apps_v1.patch_namespaced_daemon_set,
+                name=deployment_name,
+                namespace=namespace,
+                body=patch_body,
+            )
 
         return {
             "deployment": f"{namespace}/{deployment_name}",
+            "workload_kind": norm_kind,
             "dry_run": False,
             "action": "applied",
             "removed": found_vars,
             "message": (
                 f"Removed {sum(len(v) for v in found_vars.values())} "
-                "OTEL_* env var(s). Deployment will rolling-restart."
+                f"OTEL_* env var(s). {norm_kind} will rolling-restart."
             ),
         }
 
     # ──────────────────────────────────────────────
-    # Service endpoint health (Gap 4)
+    # Service endpoint health
     # ──────────────────────────────────────────────
 
     async def get_collector_service_health(
@@ -1308,19 +1934,7 @@ class KubernetesService:
         namespace: str,
         collector_name: str,
     ) -> Dict[str, Any]:
-        """Validate the K8s Service and Endpoints backing a collector.
-
-        The OTel Operator creates Services matching the collector name
-        pattern ``{collector_name}-collector``. This method checks
-        whether the Service exists and has ready Endpoints.
-
-        Args:
-            namespace: Collector namespace.
-            collector_name: Collector CRD name.
-
-        Returns:
-            Service health dict with selector, endpoint counts, and warnings.
-        """
+        """Validate the K8s Service and Endpoints backing a collector."""
         self._ensure_available()
         result: Dict[str, Any] = {
             "service_found": False,
@@ -1331,7 +1945,6 @@ class KubernetesService:
             "warnings": [],
         }
 
-        # The OTel Operator uses the naming pattern: {name}-collector
         candidate_names = [
             f"{collector_name}-collector",
             collector_name,
@@ -1362,7 +1975,6 @@ class KubernetesService:
         result["service_name"] = svc_name
         result["selector"] = svc.spec.selector if svc.spec else None
 
-        # Check endpoints
         try:
             endpoints = await asyncio.to_thread(
                 self._core_v1.read_namespaced_endpoints,
@@ -1385,13 +1997,13 @@ class KubernetesService:
             if ready == 0:
                 if not_ready > 0:
                     result["warnings"].append(
-                        f"⚠️ CRITICAL: Service '{svc_name}' has {not_ready} "
+                        f"CRITICAL: Service '{svc_name}' has {not_ready} "
                         "endpoint(s) but NONE are ready. Collector pods may "
                         "be crashing or failing health checks."
                     )
                 else:
                     result["warnings"].append(
-                        f"⚠️ CRITICAL: Service '{svc_name}' has NO endpoints. "
+                        f"CRITICAL: Service '{svc_name}' has NO endpoints. "
                         "The selector may be orphaned (pointing to deleted pods) "
                         "or no collector pods are running. "
                         f"Selector: {svc.spec.selector if svc.spec else 'none'}"
@@ -1405,30 +2017,54 @@ class KubernetesService:
     # Internal helpers
     # ──────────────────────────────────────────────
 
-    @staticmethod
-    def _deployment_to_dict(deployment: Any) -> Dict[str, Any]:
-        """Convert a V1Deployment object to a simplified dict."""
-        metadata = deployment.metadata
-        spec = deployment.spec
-        status = deployment.status
+    _SENSITIVE_ENV_TOKENS = (
+        "secret",
+        "token",
+        "password",
+        "passwd",
+        "api_key",
+        "apikey",
+        "authorization",
+        "headers",
+        "private_key",
+    )
 
-        # Extract pod template annotations
+    @classmethod
+    def _sanitize_env_value(cls, env_name: str, env_val: str) -> str:
+        """Redact sensitive env var values while preserving normal configuration."""
+        lower = (env_name or "").lower()
+        if any(tok in lower for tok in cls._SENSITIVE_ENV_TOKENS):
+            return REDACTED_VALUE
+        return redact_log_text(env_val)
+
+    @classmethod
+    def _workload_to_dict(
+        cls,
+        workload: Any,
+        kind: str = "Deployment",
+    ) -> Dict[str, Any]:
+        """Convert a V1Deployment, V1StatefulSet, or V1DaemonSet to a simplified dict."""
+        metadata = workload.metadata
+        spec = workload.spec
+        status = workload.status
+
         pod_annotations = {}
-        if spec.template and spec.template.metadata:
+        pod_labels = {}
+        if spec and getattr(spec, "template", None) and spec.template.metadata:
             pod_annotations = spec.template.metadata.annotations or {}
+            pod_labels = spec.template.metadata.labels or {}
 
-        # Extract container info
         containers = []
-        if spec.template and spec.template.spec:
+        if spec and getattr(spec, "template", None) and spec.template.spec:
             for c in spec.template.spec.containers or []:
                 env_vars = {}
                 if c.env:
                     for e in c.env:
                         if e.value:
-                            env_vars[e.name] = e.value
+                            env_vars[e.name] = cls._sanitize_env_value(
+                                e.name, e.value
+                            )
                         elif e.value_from:
-                            # Track the env var name even for valueFrom sources.
-                            # Use a sentinel so OTEL_* key detection still fires.
                             env_vars[e.name] = "<from-ref>"
                 containers.append({
                     "name": c.name,
@@ -1436,7 +2072,6 @@ class KubernetesService:
                     "env": env_vars,
                 })
 
-            # Check for init containers (OTel agent injection)
             for ic in spec.template.spec.init_containers or []:
                 containers.append({
                     "name": ic.name,
@@ -1444,36 +2079,82 @@ class KubernetesService:
                     "is_init_container": True,
                 })
 
+        if kind == "DaemonSet":
+            replicas = (
+                getattr(status, "desired_number_scheduled", 0) or 0
+                if status
+                else 0
+            )
+            ready_replicas = (
+                getattr(status, "number_ready", 0) or 0 if status else 0
+            )
+        else:
+            replicas = getattr(spec, "replicas", 0) or 0 if spec else 0
+            ready_replicas = (
+                getattr(status, "ready_replicas", 0) or 0 if status else 0
+            )
+
+        created_ts = getattr(metadata, "creation_timestamp", None)
+
         return {
             "name": metadata.name,
             "namespace": metadata.namespace,
             "labels": metadata.labels or {},
             "annotations": metadata.annotations or {},
             "pod_annotations": pod_annotations,
-            "replicas": spec.replicas or 0,
-            "ready_replicas": status.ready_replicas or 0 if status else 0,
+            "pod_labels": pod_labels,
+            "replicas": replicas,
+            "ready_replicas": ready_replicas,
             "containers": containers,
-            "kind": "Deployment",
+            "kind": kind,
+            "creation_timestamp": (
+                created_ts.isoformat()
+                if hasattr(created_ts, "isoformat")
+                else (str(created_ts) if created_ts else None)
+            ),
         }
 
-    @staticmethod
-    def _pod_to_dict(pod: Any) -> Dict[str, Any]:
+    @classmethod
+    def _deployment_to_dict(cls, deployment: Any) -> Dict[str, Any]:
+        """Convert a V1Deployment object to a simplified dict."""
+        return cls._workload_to_dict(deployment, kind="Deployment")
+
+    @classmethod
+    def _pod_to_dict(cls, pod: Any) -> Dict[str, Any]:
         """Convert a V1Pod object to a simplified dict."""
         metadata = pod.metadata
         spec = pod.spec
         status = pod.status
 
+        pod_security_context: Dict[str, Any] = {}
+        if getattr(spec, "security_context", None):
+            psc = spec.security_context
+            pod_security_context = {
+                "run_as_non_root": getattr(psc, "run_as_non_root", None),
+                "run_as_user": getattr(psc, "run_as_user", None),
+                "fs_group": getattr(psc, "fs_group", None),
+            }
+
         containers = []
-        if spec.containers:
+        if spec and spec.containers:
             for c in spec.containers:
                 security_context = {}
                 if c.security_context:
                     sc = c.security_context
                     security_context = {
-                        "privileged": sc.privileged or False,
+                        "privileged": bool(getattr(sc, "privileged", False)),
+                        "run_as_non_root": getattr(sc, "run_as_non_root", None),
+                        "run_as_user": getattr(sc, "run_as_user", None),
+                        "read_only_root_filesystem": getattr(
+                            sc, "read_only_root_filesystem", None
+                        ),
+                        "allow_privilege_escalation": getattr(
+                            sc, "allow_privilege_escalation", None
+                        ),
                         "capabilities": (
                             [cap for cap in (sc.capabilities.add or [])]
-                            if sc.capabilities else []
+                            if getattr(sc, "capabilities", None)
+                            else []
                         ),
                     }
                 volume_mounts = []
@@ -1482,17 +2163,36 @@ class KubernetesService:
                         volume_mounts.append({
                             "name": vm.name,
                             "mount_path": vm.mount_path,
+                            "read_only": bool(getattr(vm, "read_only", False)),
                         })
+                env_vars = {}
+                if getattr(c, "env", None):
+                    for e in c.env:
+                        if getattr(e, "value", None):
+                            env_vars[e.name] = cls._sanitize_env_value(
+                                e.name, e.value
+                            )
+                        elif getattr(e, "value_from", None):
+                            env_vars[e.name] = "<from-ref>"
+
                 containers.append({
                     "name": c.name,
                     "image": c.image,
                     "security_context": security_context,
                     "volume_mounts": volume_mounts,
+                    "env": env_vars,
                 })
 
-        # Extract host volumes
+        init_containers = []
+        if spec and getattr(spec, "init_containers", None):
+            for ic in spec.init_containers or []:
+                init_containers.append({
+                    "name": ic.name,
+                    "image": ic.image,
+                })
+
         host_volumes = []
-        if spec.volumes:
+        if spec and spec.volumes:
             for v in spec.volumes:
                 if v.host_path:
                     host_volumes.append({
@@ -1500,14 +2200,70 @@ class KubernetesService:
                         "host_path": v.host_path.path,
                     })
 
+        container_statuses = []
+        if status and getattr(status, "container_statuses", None):
+            for cs in status.container_statuses or []:
+                state_obj = getattr(cs, "state", None)
+                last_state_obj = getattr(cs, "last_state", None)
+                state_name = "unknown"
+                reason = None
+                exit_code = None
+                message = None
+                if state_obj:
+                    if getattr(state_obj, "running", None):
+                        state_name = "running"
+                    elif getattr(state_obj, "waiting", None):
+                        state_name = "waiting"
+                        reason = getattr(state_obj.waiting, "reason", None)
+                        message = getattr(state_obj.waiting, "message", None)
+                    elif getattr(state_obj, "terminated", None):
+                        state_name = "terminated"
+                        reason = getattr(state_obj.terminated, "reason", None)
+                        exit_code = getattr(
+                            state_obj.terminated, "exit_code", None
+                        )
+                        message = getattr(state_obj.terminated, "message", None)
+
+                last_termination_reason = None
+                if last_state_obj and getattr(last_state_obj, "terminated", None):
+                    last_termination_reason = getattr(
+                        last_state_obj.terminated, "reason", None
+                    )
+                    if exit_code is None:
+                        exit_code = getattr(
+                            last_state_obj.terminated, "exit_code", None
+                        )
+
+                container_statuses.append({
+                    "name": getattr(cs, "name", ""),
+                    "ready": bool(getattr(cs, "ready", False)),
+                    "restart_count": getattr(cs, "restart_count", 0) or 0,
+                    "state": state_name,
+                    "reason": reason,
+                    "exit_code": exit_code,
+                    "last_termination_reason": last_termination_reason,
+                    "message": redact_log_text(message) if message else None,
+                })
+
+        created_ts = getattr(metadata, "creation_timestamp", None)
+
         return {
             "name": metadata.name,
             "namespace": metadata.namespace,
-            "node_name": spec.node_name,
+            "node_name": getattr(spec, "node_name", None),
+            "service_account": getattr(spec, "service_account_name", None),
             "labels": metadata.labels or {},
             "annotations": metadata.annotations or {},
-            "host_pid": spec.host_pid or False,
+            "host_pid": bool(getattr(spec, "host_pid", False)),
+            "pod_security_context": pod_security_context,
             "containers": containers,
+            "init_containers": init_containers,
+            "container_statuses": container_statuses,
             "host_volumes": host_volumes,
             "phase": status.phase if status else "Unknown",
+            "creation_timestamp": (
+                created_ts.isoformat()
+                if hasattr(created_ts, "isoformat")
+                else (str(created_ts) if created_ts else None)
+            ),
         }

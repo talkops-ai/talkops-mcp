@@ -6,24 +6,25 @@ Discovers Tempo services via:
 
 Manages Tempo Operator CRDs:
 3. List/Get TempoStack and TempoMonolithic resources
-4. Create/Patch TempoStack and TempoMonolithic resources
-
-Follows the OTel MCP server's CRD management pattern: all K8s client calls
-are wrapped in asyncio.to_thread() because the kubernetes client is synchronous.
+4. Apply TempoStack and TempoMonolithic manifests with Server-Side Dry-Run validation
+5. Read installed CRD OpenAPI schema for TempoStack and TempoMonolithic
 """
 
 import asyncio
 from typing import Any, Dict, List, Literal, Optional
 
-from tempo_mcp_server.config import BackendConfig, KubernetesConfig, TempoOperatorConfig
+import yaml
 
-# CRD kind → plural mapping
+from tempo_mcp_server.config import BackendConfig, KubernetesConfig, TempoOperatorConfig
+from tempo_mcp_server.utils.redaction import compute_unified_diff, sanitize_k8s_manifest
+
+# CRD kind -> plural mapping
 _KIND_PLURAL_MAP = {
     "TempoStack": "tempostacks",
     "TempoMonolithic": "tempomonolithics",
 }
 
-# CRD kind → default deployment mode
+# CRD kind -> default deployment mode
 _KIND_MODE_MAP: Dict[str, Literal["monolithic", "microservices", "unknown"]] = {
     "TempoStack": "microservices",
     "TempoMonolithic": "monolithic",
@@ -42,6 +43,7 @@ class KubernetesService:
         self._operator_config = operator_config or TempoOperatorConfig()
         self._api_client = None
         self._custom_api = None
+        self._apiext_api = None
         self._k8s_loaded = False
 
     def _ensure_k8s(self) -> bool:
@@ -59,30 +61,33 @@ class KubernetesService:
                 k8s_config.load_incluster_config()
             else:
                 k8s_config.load_kube_config(
-                    context=self._config.context_name
+                    config_file=self._config.kubeconfig,
+                    context=self._config.context_name,
                 )
             self._api_client = client.CoreV1Api()
             self._custom_api = client.CustomObjectsApi()
+            self._apiext_api = client.ApiextensionsV1Api()
             self._k8s_loaded = True
             return True
-        except Exception as e:
-            # K8s client init failure — return False (non-fatal)
+        except Exception:
             return False
 
     def _get_client(self) -> Any:
-        """Lazy-load Kubernetes CoreV1Api client."""
         if self._ensure_k8s():
             return self._api_client
         return None
 
     def _get_custom_api(self) -> Any:
-        """Lazy-load Kubernetes CustomObjectsApi client."""
         if self._ensure_k8s():
             return self._custom_api
         return None
 
+    def _get_apiext_api(self) -> Any:
+        if self._ensure_k8s():
+            return self._apiext_api
+        return None
+
     def _get_plural(self, kind: str) -> str:
-        """Get the CRD plural name for a given kind."""
         plural = _KIND_PLURAL_MAP.get(kind)
         if not plural:
             raise ValueError(
@@ -92,7 +97,7 @@ class KubernetesService:
         return plural
 
     # ──────────────────────────────────────────────────────────
-    # Discovery (existing, refactored to use cached clients)
+    # Discovery
     # ──────────────────────────────────────────────────────────
 
     async def discover_tempo_services(
@@ -107,8 +112,6 @@ class KubernetesService:
         try:
             label_selector = "app.kubernetes.io/name=tempo"
 
-            # H-03: The kubernetes client is synchronous — run in a thread pool
-            # to avoid blocking the asyncio event loop during K8s API calls.
             if namespace:
                 services = await asyncio.to_thread(
                     k8s.list_namespaced_service,
@@ -126,14 +129,12 @@ class KubernetesService:
                 ns = svc.metadata.namespace
                 labels = svc.metadata.labels or {}
 
-                # Find query-frontend port
-                port = 3200  # default Tempo port
+                port = 3200
                 for svc_port in svc.spec.ports or []:
                     if svc_port.name in ("http", "http-query", "tempo-query"):
                         port = svc_port.port
                         break
 
-                # Determine deployment mode from labels
                 component = labels.get("app.kubernetes.io/component", "")
                 if component == "query-frontend":
                     mode = "microservices"
@@ -150,9 +151,8 @@ class KubernetesService:
                 )
                 discovered.append(backend)
 
-
         except Exception:
-            pass  # Non-fatal — discovery best-effort
+            pass
 
         return discovered
 
@@ -191,7 +191,6 @@ class KubernetesService:
                     name = cr["metadata"]["name"]
                     ns = cr["metadata"]["namespace"]
 
-                    # For microservices, route to query-frontend
                     if mode == "microservices":
                         svc_name = f"tempo-{name}-query-frontend"
                     else:
@@ -206,39 +205,25 @@ class KubernetesService:
                     )
                     discovered.append(backend)
 
-
             except Exception:
-                pass  # CRD kind may not be installed
+                pass
 
         return discovered
 
     # ──────────────────────────────────────────────────────────
-    # CRD Management (new — following OTel MCP server pattern)
+    # CRD Inspection & Schema Discovery
     # ──────────────────────────────────────────────────────────
 
     async def get_tempo_operator_cr(
         self, namespace: str, name: str, kind: str
     ) -> Dict[str, Any]:
-        """Get a single TempoStack or TempoMonolithic CR.
-
-        Args:
-            namespace: K8s namespace.
-            name: CR name.
-            kind: "TempoStack" or "TempoMonolithic".
-
-        Returns:
-            Full CR dict including metadata, spec, and status.
-
-        Raises:
-            ValueError: If kind is not recognized.
-            Exception: If the CR is not found or API fails.
-        """
+        """Get a single TempoStack or TempoMonolithic CR (sanitized)."""
         custom_api = self._get_custom_api()
         if not custom_api:
             raise RuntimeError("Kubernetes not available (K8S_ENABLED=false)")
 
         plural = self._get_plural(kind)
-        return await asyncio.to_thread(
+        raw = await asyncio.to_thread(
             custom_api.get_namespaced_custom_object,
             group=self._operator_config.crd_group,
             version=self._operator_config.crd_api_version,
@@ -246,28 +231,19 @@ class KubernetesService:
             plural=plural,
             name=name,
         )
+        return sanitize_k8s_manifest(raw)
 
     async def list_tempo_operator_crs(
         self,
         namespace: Optional[str] = None,
         kind: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """List Tempo Operator CRDs, optionally filtered by namespace and kind.
-
-        Args:
-            namespace: Filter to a single namespace (None = all namespaces).
-            kind: Filter to "TempoStack" or "TempoMonolithic" (None = both).
-
-        Returns:
-            List of CR dicts.
-        """
+        """List Tempo Operator CRDs, optionally filtered by namespace and kind."""
         custom_api = self._get_custom_api()
         if not custom_api:
             return []
 
-        kinds_to_scan = (
-            [kind] if kind else list(_KIND_PLURAL_MAP.keys())
-        )
+        kinds_to_scan = [kind] if kind else list(_KIND_PLURAL_MAP.keys())
         group = self._operator_config.crd_group
         version = self._operator_config.crd_api_version
 
@@ -275,7 +251,7 @@ class KubernetesService:
         for k in kinds_to_scan:
             plural = self._get_plural(k)
             try:
-                if namespace:
+                if namespace and namespace != "_all":
                     resp = await asyncio.to_thread(
                         custom_api.list_namespaced_custom_object,
                         group=group,
@@ -291,12 +267,88 @@ class KubernetesService:
                         plural=plural,
                     )
                 for item in resp.get("items", []):
-                    item["_kind"] = k  # Tag for downstream
-                    results.append(item)
+                    sanitized = sanitize_k8s_manifest(item)
+                    sanitized["_kind"] = k
+                    results.append(sanitized)
             except Exception:
-                pass  # CRD kind may not be installed
+                pass
 
         return results
+
+    async def get_crd_schema(self, kind: str) -> Dict[str, Any]:
+        """Retrieve the installed OpenAPI v3 spec schema for TempoStack or TempoMonolithic."""
+        plural = self._get_plural(kind)
+        group = self._operator_config.crd_group
+        version = self._operator_config.crd_api_version
+        crd_name = f"{plural}.{group}"
+
+        apiext = self._get_apiext_api()
+        if apiext:
+            try:
+                crd_obj = await asyncio.to_thread(
+                    apiext.read_custom_resource_definition,
+                    name=crd_name,
+                )
+                crd_dict = crd_obj.to_dict() if hasattr(crd_obj, "to_dict") else crd_obj
+                versions = crd_dict.get("spec", {}).get("versions", [])
+                for v in versions:
+                    if v.get("name") == version or v.get("served"):
+                        schema = (
+                            v.get("schema", {})
+                            .get("open_apiv3_schema", v.get("schema", {}).get("openAPIV3Schema", {}))
+                        )
+                        spec_props = (
+                            schema.get("properties", {})
+                            .get("spec", {})
+                            .get("properties", {})
+                        )
+                        return {
+                            "kind": kind,
+                            "crd_name": crd_name,
+                            "api_version": f"{group}/{v.get('name', version)}",
+                            "source": "cluster_crd",
+                            "spec_top_level_fields": sorted(list(spec_props.keys())),
+                            "spec_schema": spec_props,
+                        }
+            except Exception:
+                pass
+
+        # Fallback minimal structural summary when cluster CRD is unreachable
+        fallback_fields = (
+            [
+                "storage",
+                "storageSize",
+                "replicationFactor",
+                "retention",
+                "resources",
+                "search",
+                "tenants",
+                "template",
+                "observability",
+                "extraConfig",
+            ]
+            if kind == "TempoStack"
+            else [
+                "storage",
+                "resources",
+                "multitenancy",
+                "jaegerui",
+                "observability",
+                "extraConfig",
+            ]
+        )
+        return {
+            "kind": kind,
+            "crd_name": crd_name,
+            "api_version": f"{group}/{version}",
+            "source": "offline_descriptor",
+            "kubernetes_enabled": self._config.enabled,
+            "spec_top_level_fields": fallback_fields,
+        }
+
+    # ──────────────────────────────────────────────────────────
+    # CRD Apply & Mutation
+    # ──────────────────────────────────────────────────────────
 
     async def create_or_patch_tempo_cr(
         self,
@@ -308,25 +360,7 @@ class KubernetesService:
         overwrite: bool = False,
         dry_run: bool = True,
     ) -> Dict[str, Any]:
-        """Create or patch a TempoStack/TempoMonolithic CR.
-
-        Follows the OTel MCP server pattern:
-        1. Try get existing → if exists, patch (or replace if overwrite=True)
-        2. If not found → create
-        3. dry_run=True → server-side dry run, no persist
-
-        Args:
-            namespace: Target namespace.
-            name: CR name.
-            kind: "TempoStack" or "TempoMonolithic".
-            spec: The CR spec dict.
-            labels: Optional labels to merge into metadata.
-            overwrite: If True, replaces entire spec. If False, merges.
-            dry_run: If True, performs a server-side dry run.
-
-        Returns:
-            The created/patched CR dict.
-        """
+        """Create or patch a TempoStack/TempoMonolithic CR (with server-side dryRun support)."""
         custom_api = self._get_custom_api()
         if not custom_api:
             raise RuntimeError("Kubernetes not available (K8S_ENABLED=false)")
@@ -353,9 +387,11 @@ class KubernetesService:
             "spec": spec,
         }
 
-        dry_run_param = ["All"] if dry_run else None
+        dry_run_param = "All" if dry_run else None
+        kwargs: Dict[str, Any] = {}
+        if dry_run_param:
+            kwargs["dry_run"] = dry_run_param
 
-        # Try to get existing
         try:
             existing = await asyncio.to_thread(
                 custom_api.get_namespaced_custom_object,
@@ -365,7 +401,6 @@ class KubernetesService:
                 plural=plural,
                 name=name,
             )
-            # Exists → patch or replace
             if overwrite:
                 body["metadata"]["resourceVersion"] = (
                     existing.get("metadata", {}).get("resourceVersion")
@@ -378,10 +413,9 @@ class KubernetesService:
                     plural=plural,
                     name=name,
                     body=body,
-                    dry_run=dry_run_param,
+                    **kwargs,
                 )
             else:
-                # Strategic merge patch
                 patch_body = {"spec": spec, "metadata": {"labels": merged_labels}}
                 result = await asyncio.to_thread(
                     custom_api.patch_namespaced_custom_object,
@@ -391,13 +425,12 @@ class KubernetesService:
                     plural=plural,
                     name=name,
                     body=patch_body,
-                    dry_run=dry_run_param,
+                    **kwargs,
                 )
-            return result
+            return sanitize_k8s_manifest(result)
 
         except Exception as e:
-            if "404" in str(e) or "NotFound" in str(e):
-                # Does not exist → create
+            if "404" in str(e) or "NotFound" in str(e) or getattr(e, "status", None) == 404:
                 result = await asyncio.to_thread(
                     custom_api.create_namespaced_custom_object,
                     group=group,
@@ -405,7 +438,106 @@ class KubernetesService:
                     namespace=namespace,
                     plural=plural,
                     body=body,
-                    dry_run=dry_run_param,
+                    **kwargs,
                 )
-                return result
+                return sanitize_k8s_manifest(result)
             raise
+
+    async def apply_tempo_cr_manifest(
+        self,
+        manifest: Dict[str, Any],
+        dry_run: bool = True,
+        field_manager: str = "talkops-tempo-mcp",
+    ) -> Dict[str, Any]:
+        """Validate and apply a TempoStack or TempoMonolithic manifest with unified diff."""
+        kind = manifest.get("kind", "")
+        if kind not in _KIND_PLURAL_MAP:
+            raise ValueError(
+                f"Invalid manifest kind '{kind}'. Only 'TempoStack' and 'TempoMonolithic' are permitted."
+            )
+
+        meta = manifest.get("metadata") or {}
+        name = meta.get("name")
+        namespace = meta.get("namespace") or "default"
+        spec = manifest.get("spec")
+        if not name or not isinstance(spec, dict):
+            raise ValueError(
+                "Manifest must contain metadata.name and a non-empty spec object."
+            )
+
+        labels = dict(meta.get("labels") or {})
+        labels.setdefault("app.kubernetes.io/managed-by", field_manager)
+        labels.setdefault("app.kubernetes.io/part-of", "tempo")
+
+        desired_obj = {
+            "apiVersion": manifest.get(
+                "apiVersion",
+                f"{self._operator_config.crd_group}/{self._operator_config.crd_api_version}",
+            ),
+            "kind": kind,
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "labels": labels,
+            },
+            "spec": spec,
+        }
+
+        existing: Optional[Dict[str, Any]] = None
+        custom_api = self._get_custom_api()
+        if custom_api:
+            try:
+                existing = await self.get_tempo_operator_cr(
+                    namespace=namespace, name=name, kind=kind
+                )
+            except Exception:
+                existing = None
+
+        diff_text = compute_unified_diff(
+            existing,
+            desired_obj,
+            fromfile=f"{kind}/{namespace}/{name} (current)",
+            tofile=f"{kind}/{namespace}/{name} (desired)",
+        )
+        sanitized_desired = sanitize_k8s_manifest(desired_obj)
+        manifest_yaml = yaml.safe_dump(sanitized_desired, sort_keys=False)
+
+        if not custom_api:
+            if dry_run:
+                return {
+                    "action": "dry_run",
+                    "dry_run": True,
+                    "server_validated": False,
+                    "server_dry_run_validated": False,
+                    "name": name,
+                    "namespace": namespace,
+                    "kind": kind,
+                    "diff": diff_text,
+                    "manifest_yaml": manifest_yaml,
+                }
+            raise RuntimeError("Kubernetes not available (K8S_ENABLED=false)")
+
+        applied = await self.create_or_patch_tempo_cr(
+            namespace=namespace,
+            name=name,
+            kind=kind,
+            spec=spec,
+            labels=labels,
+            overwrite=False,
+            dry_run=dry_run,
+        )
+
+        action = "dry_run" if dry_run else ("patched" if existing else "created")
+        return {
+            "action": action,
+            "dry_run": dry_run,
+            "server_validated": True,
+            "server_dry_run_validated": True,
+            "name": name,
+            "namespace": namespace,
+            "kind": kind,
+            "diff": diff_text,
+            "manifest_yaml": manifest_yaml,
+            "resource_version": applied.get("metadata", {}).get("resourceVersion"),
+            "uid": applied.get("metadata", {}).get("uid"),
+        }

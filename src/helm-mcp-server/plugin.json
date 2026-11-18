@@ -1,0 +1,32 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "talkops-helm-plugin",
+  "version": "0.5.0",
+  "description": "Production Helm chart deployment, upgrade, rollback, troubleshooting, and security review skills paired with the TalkOps Helm MCP execution server.",
+  "author": {
+    "name": "TalkOps",
+    "email": "contact@talkops.ai"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://talkops.ai",
+  "repository": "https://github.com/talkops-ai/talkops-mcp",
+  "extensions": {
+    "com.talkops": {
+      "category": "packaging-and-deployment",
+      "keywords": [
+        "helm",
+        "kubernetes",
+        "gitops",
+        "devops",
+        "mcp"
+      ],
+      "skills": [
+        "./skills/deploying-helm-charts",
+        "./skills/upgrading-and-rolling-back-helm-releases",
+        "./skills/troubleshooting-helm-releases",
+        "./skills/reviewing-helm-release-security"
+      ],
+      "mcpServers": "./mcp.json"
+    }
+  }
+}

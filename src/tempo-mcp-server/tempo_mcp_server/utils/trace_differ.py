@@ -44,8 +44,13 @@ def _is_error_span(span: Dict[str, Any]) -> bool:
 
 
 def _collect_attributes(span: Dict[str, Any]) -> Dict[str, Set[str]]:
-    """Collect all attribute key-value pairs from a span into a {key: {values}} map."""
+    """Collect span + resource attribute key-value pairs into a {key: {values}} map."""
     attrs: Dict[str, Set[str]] = {}
+    for rk, rv in (span.get("_resource_attrs") or {}).items():
+        if rk and rv is not None:
+            attrs.setdefault(f"resource.{rk}", set()).add(str(rv))
+            if rk not in attrs:
+                attrs.setdefault(str(rk), set()).add(str(rv))
     for attr in span.get("attributes", []):
         key = attr.get("key", "")
         if not key:
@@ -53,6 +58,54 @@ def _collect_attributes(span: Dict[str, Any]) -> Dict[str, Set[str]]:
         val = _get_attr_value(attr.get("value", {}))
         attrs.setdefault(key, set()).add(str(val))
     return attrs
+
+
+def _diff_operations(
+    spans_a: List[Dict[str, Any]],
+    spans_b: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]], List[Dict[str, str]]]:
+    """Compute per-(service, operation) count and timing deltas plus exclusive operations."""
+    ops_a: Dict[Tuple[str, str], List[float]] = {}
+    ops_b: Dict[Tuple[str, str], List[float]] = {}
+    for s in spans_a:
+        key = (_get_service_name(s), str(s.get("name", "unknown")))
+        ops_a.setdefault(key, []).append(_get_duration_ms(s))
+    for s in spans_b:
+        key = (_get_service_name(s), str(s.get("name", "unknown")))
+        ops_b.setdefault(key, []).append(_get_duration_ms(s))
+
+    all_ops = sorted(set(ops_a.keys()) | set(ops_b.keys()))
+    op_diffs: List[Dict[str, Any]] = []
+    only_in_baseline: List[Dict[str, str]] = []
+    only_in_comparison: List[Dict[str, str]] = []
+
+    for svc, op_name in all_ops:
+        durs_a = ops_a.get((svc, op_name), [])
+        durs_b = ops_b.get((svc, op_name), [])
+        cnt_a = len(durs_a)
+        cnt_b = len(durs_b)
+        avg_a = sum(durs_a) / cnt_a if cnt_a else 0.0
+        avg_b = sum(durs_b) / cnt_b if cnt_b else 0.0
+        tot_a = sum(durs_a)
+        tot_b = sum(durs_b)
+        if cnt_a > 0 and cnt_b == 0:
+            only_in_baseline.append({"service": svc, "operation": op_name})
+        elif cnt_b > 0 and cnt_a == 0:
+            only_in_comparison.append({"service": svc, "operation": op_name})
+        op_diffs.append({
+            "service": svc,
+            "operation": op_name,
+            "baseline_count": cnt_a,
+            "comparison_count": cnt_b,
+            "count_delta": cnt_b - cnt_a,
+            "avg_duration_a_ms": round(avg_a, 2),
+            "avg_duration_b_ms": round(avg_b, 2),
+            "avg_duration_delta_ms": round(avg_b - avg_a, 2),
+            "total_duration_delta_ms": round(tot_b - tot_a, 2),
+        })
+
+    op_diffs.sort(key=lambda d: (abs(d["total_duration_delta_ms"]), abs(d["count_delta"])), reverse=True)
+    return op_diffs, only_in_baseline, only_in_comparison
 
 
 def _build_service_map(
@@ -309,22 +362,31 @@ def diff_traces(
 
     errors_a = sum(1 for s in spans_a if _is_error_span(s))
     errors_b = sum(1 for s in spans_b if _is_error_span(s))
+    dur_a = round(_total_duration_ms(spans_a), 2)
+    dur_b = round(_total_duration_ms(spans_b), 2)
+    op_diffs, only_in_baseline, only_in_comparison = _diff_operations(spans_a, spans_b)
 
     return {
         "trace_a": {
             "trace_id": trace_id_a,
             "total_spans": len(spans_a),
             "services": services_a,
-            "duration_ms": round(_total_duration_ms(spans_a), 2),
+            "duration_ms": dur_a,
             "error_count": errors_a,
         },
         "trace_b": {
             "trace_id": trace_id_b,
             "total_spans": len(spans_b),
             "services": services_b,
-            "duration_ms": round(_total_duration_ms(spans_b), 2),
+            "duration_ms": dur_b,
             "error_count": errors_b,
         },
+        "duration_delta_ms": round(dur_b - dur_a, 2),
+        "span_count_delta": len(spans_b) - len(spans_a),
+        "error_count_delta": errors_b - errors_a,
+        "operation_diffs": op_diffs,
+        "only_in_baseline": only_in_baseline,
+        "only_in_comparison": only_in_comparison,
         "structural_diff": _diff_structure(map_a, map_b),
         "span_count_diff": _diff_span_counts(map_a, map_b),
         "duration_diff": _diff_durations(spans_a, spans_b, map_a, map_b),

@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: payment-service
+  namespace: prod
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+    spec:
+      containers:
+        - name: payment-service
+          image: payment:v2.0.0
+          ports:
+            - containerPort: 8443
+  strategy:
+    blueGreen:
+      activeService: payment-service-active
+      previewService: payment-service-preview
+      autoPromotionEnabled: false

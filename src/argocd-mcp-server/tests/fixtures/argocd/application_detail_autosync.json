@@ -1,0 +1,63 @@
+{
+  "metadata": {
+    "name": "payments-service",
+    "namespace": "argocd"
+  },
+  "spec": {
+    "project": "production",
+    "source": {
+      "repoURL": "https://github.com/org/gitops-manifests.git",
+      "path": "apps/payments/overlays/prod",
+      "targetRevision": "HEAD"
+    },
+    "destination": {
+      "server": "https://kubernetes.default.svc",
+      "namespace": "payments-prod"
+    },
+    "syncPolicy": {
+      "automated": {
+        "prune": true,
+        "selfHeal": true
+      },
+      "syncOptions": [
+        "CreateNamespace=true"
+      ]
+    }
+  },
+  "status": {
+    "sync": {
+      "status": "Synced",
+      "revision": "8f3c1a9d4e2b"
+    },
+    "health": {
+      "status": "Degraded"
+    },
+    "resources": [],
+    "history": [
+      {
+        "id": 12,
+        "revision": "3333cccc4444dddd",
+        "deployedAt": "2026-10-29T12:00:00Z",
+        "initiatedBy": {
+          "username": "bob"
+        },
+        "source": {
+          "path": "apps/payments/overlays/prod",
+          "targetRevision": "HEAD"
+        }
+      },
+      {
+        "id": 13,
+        "revision": "8f3c1a9d4e2b",
+        "deployedAt": "2026-10-30T15:30:00Z",
+        "initiatedBy": {
+          "username": "ci-bot"
+        },
+        "source": {
+          "path": "apps/payments/overlays/prod",
+          "targetRevision": "HEAD"
+        }
+      }
+    ]
+  }
+}

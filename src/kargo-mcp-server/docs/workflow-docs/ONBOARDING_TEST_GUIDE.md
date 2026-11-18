@@ -1,201 +1,27 @@
-# Pipeline Onboarding Guided Workflow
+# Workflow 1 Test Guide: Onboarding a Kargo Pipeline (`v0.2.0`)
 
-**Goal**: Set up a complete Kargo continuous promotion pipeline from scratch — including project, credentials, warehouse, promotion task, and stages.
+Companion Skill: [`skills/onboarding-kargo-pipelines/SKILL.md`](../../skills/onboarding-kargo-pipelines/SKILL.md)
 
-> **Prompt**: `kargo-pipeline-onboarding-guided(project="demo-project", warehouse_name="default-warehouse", stage_prefix="env")`
+## Step-by-Step Verification
 
----
-
-## 1. Verify Project
-
-The first step is to verify the Kargo project boundary exists. Projects in Kargo are namespace-level boundaries that isolate pipelines.
-
-**Natural Language Prompt:**
-```text
-Check if the project 'demo-project' exists. If not, create it.
-```
-
-**Tool Execution:**
-```python
-kargo_project_mgmt(
-    action="get",
-    name="demo-project"
-)
-```
-
-If the project doesn't exist, create it:
-```python
-kargo_project_mgmt(
-    action="create",
-    name="demo-project",
-    auto_promotion=True
-)
-```
-
----
-
-## 2. Setup Repository Credentials
-
-Before creating a warehouse, ensure Kargo can authenticate to your artifact repositories.
-
-**Natural Language Prompt:**
-```text
-Create Git credentials for repo 'https://github.com/org/repo.git' in project 'demo-project'.
-```
-
-**Tool Execution:**
-```python
-kargo_credentials_mgmt(
-    action="create",
-    project="demo-project",
-    name="git-creds",
-    type="git",
-    repo_url="https://github.com/org/repo.git",
-    username="<username>",
-    password="<token>"
-)
-```
-
----
-
-## 3. Create the Warehouse
-
-The Warehouse watches your artifact repositories. Use declarative subscriptions — no raw YAML needed.
-
-**Natural Language Prompt:**
-```text
-Create a warehouse 'default-warehouse' in project 'demo-project' that watches the container image 'ghcr.io/org/app' and the Git repo 'https://github.com/org/repo.git'.
-```
-
-**Tool Execution:**
-```python
-kargo_warehouse_mgmt(
-    action="upsert",
-    project="demo-project",
-    warehouse_name="default-warehouse",
-    subscriptions=[
-        {"type": "image", "repo_url": "ghcr.io/org/app", "semver_constraint": "^1.0.0"},
-        {"type": "git", "repo_url": "https://github.com/org/repo.git", "branch": "main"}
-    ]
-)
-```
-
-### Trigger Discovery
-
-Force Kargo to discover the latest artifacts and produce Freight payloads.
-
-**Natural Language Prompt:**
-```text
-Refresh the warehouse 'default-warehouse' in project 'demo-project' to discover new artifacts.
-```
-
-**Tool Execution:**
-```python
-kargo_warehouse_mgmt(action="refresh", 
-    project="demo-project",
-    warehouse_name="default-warehouse"
-)
-```
-
----
-
-## 4. Create the PromotionTask
-
-Define the reusable promotion workflow using a built-in preset.
-
-**Natural Language Prompt:**
-```text
-Create a promotion task called 'promote' in project 'demo-project' using the gitops-image-update preset for the Git repo and image.
-```
-
-**Tool Execution:**
-```python
-kargo_promotion_task_mgmt(
-    action="upsert",
-    project="demo-project",
-    task_name="promote",
-    preset="gitops-image-update",
-    git_repo_url="https://github.com/org/repo.git",
-    image_repo_url="ghcr.io/org/app",
-    argocd_app_name_pattern="demo-project-${{ ctx.stage }}"
-)
-```
-
-Available presets:
-- `gitops-image-update` — Clone → yaml-update → commit → push → argocd-update
-- `gitops-kustomize` — Clone → kustomize-set-image → build → commit → push → argocd-update
-- `gitops-helm-template` — Clone → helm-template → commit → push → argocd-update
-
----
-
-## 5. Create Pipeline Stages
-
-Build the promotion DAG by creating stages that reference the warehouse and each other.
-
-**Natural Language Prompt:**
-```text
-Create test and prod stages for project 'demo-project' connected as: warehouse → test → prod.
-```
-
-**Tool Execution — Test Stage:**
-```python
-kargo_stage_mgmt(
-    action="upsert",
-    project="demo-project",
-    stage_name="env-test",
-    requested_freight_origins=[{"kind": "Warehouse", "name": "default-warehouse"}],
-    promotion_template_ref="promote"
-)
-```
-
-**Tool Execution — Prod Stage:**
-```python
-kargo_stage_mgmt(
-    action="upsert",
-    project="demo-project",
-    stage_name="env-prod",
-    requested_freight_origins=[{"kind": "Warehouse", "name": "default-warehouse", "stages": ["env-test"]}],
-    promotion_template_ref="promote"
-)
-```
-
----
-
-## 6. Verify Pipeline Topology
-
-Confirm the DAG is correctly assembled.
-
-**Natural Language Prompt:**
-```text
-Describe the topology of the pipeline for project 'demo-project'.
-```
-
-**Tool Execution:**
-```python
-kargo_describe_topology(
-    project="demo-project"
-)
-```
-
-**Expected DAG Structure:**
-`default-warehouse` → `env-test` → `env-prod`
-
----
-
-## 7. Locate Initial Freight
-
-Confirm that artifacts are entering the start of the pipeline.
-
-**Natural Language Prompt:**
-```text
-List all available freight for project 'demo-project'.
-```
-
-**Tool Execution:**
-```python
-kargo_freight_mgmt(action="list", 
-    project="demo-project"
-)
-```
-
-If Freight exists, the pipeline is successfully discovering new commits/images and is ready for Promotion operations.
+1. **Check Server Capabilities**:
+   - Read resource `kargo://server/capabilities` → verify `"allow_write": true` and `"pipeline"` in `"toolsets"`.
+2. **Create Project (Preview → Apply)**:
+   - Call `kargo_manage_project(action="create", name="guestbook", dry_run=True)` → verify `"status": "preview"`.
+   - Call `kargo_manage_project(action="create", name="guestbook", dry_run=False)` → verify `"status": "success"`.
+3. **Register Repository Credentials (`0->1` Secret Omission)**:
+   - Call `kargo_manage_credentials(action="create", project="guestbook", name="gitops-creds", credential={"kind": "repo", "cred_type": "git", "repo_url": "https://github.com/example/gitops.git", "secret_ref": "GITOPS_MAIN"})`.
+   - Read `kargo://projects/guestbook/credentials` → verify `"redacted": true` and no raw secret values appear.
+4. **Create Warehouse (Kargo v1.12 Schema)**:
+   - Call `kargo_apply_warehouse(project="guestbook", name="main-warehouse", subscriptions=[{"type": "image", "repo_url": "ghcr.io/example/guestbook", "constraint": "^1.0.0", "allow_tags_regexes": ["^v?[0-9]+\\.[0-9]+\\.[0-9]+$"]}], dry_run=True)` → inspect YAML manifest (`constraint` and `allowTagsRegexes`).
+   - Re-run with `dry_run=False`.
+5. **Create PromotionTask**:
+   - Call `kargo_apply_promotion_task(project="guestbook", name="promote-task", steps=[{"uses": "git-clone", "config": {"repoURL": "https://github.com/example/gitops.git"}}, {"uses": "yaml-update", "as": "update-image", "config": {"path": "./out/values.yaml", "updates": [{"key": "image.tag", "value": "${{ quote(imageFrom('ghcr.io/example/guestbook').tag) }}"}]}}], dry_run=False)`.
+6. **Create Stages (`dev` -> `prod`)**:
+   - Call `kargo_apply_stage(project="guestbook", name="dev", requested_freight=[{"kind": "Warehouse", "name": "main-warehouse"}], promotion_template={"task_name": "promote-task"}, dry_run=False)`.
+   - Call `kargo_apply_stage(project="guestbook", name="prod", requested_freight=[{"kind": "Warehouse", "name": "main-warehouse", "stages": ["dev"]}], promotion_template={"task_name": "promote-task"}, dry_run=False)`.
+7. **Configure Auto-Promotion in `ProjectConfig`**:
+   - Call `kargo_apply_project_config(project="guestbook", promotion_policies=[{"stageSelector": {"name": "dev"}, "autoPromotionEnabled": True}], dry_run=False)`.
+8. **Refresh Warehouse & Inspect Pipeline**:
+   - Call `kargo_refresh(project="guestbook", kind="warehouse", name="main-warehouse", wait=True)`.
+   - Read `kargo://projects/guestbook/pipeline`.

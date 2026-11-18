@@ -1,0 +1,20 @@
+[
+  {
+    "name": "bitnami/postgresql",
+    "version": "15.5.0",
+    "app_version": "16.3.0",
+    "description": "PostgreSQL is an advanced object-relational database management system"
+  },
+  {
+    "name": "bitnami/postgresql-ha",
+    "version": "14.2.1",
+    "app_version": "16.3.0",
+    "description": "PostgreSQL High Availability cluster with Pgpool-II"
+  },
+  {
+    "name": "argo/argo-cd",
+    "version": "7.3.4",
+    "app_version": "v2.11.4",
+    "description": "Declarative continuous deployment for Kubernetes"
+  }
+]

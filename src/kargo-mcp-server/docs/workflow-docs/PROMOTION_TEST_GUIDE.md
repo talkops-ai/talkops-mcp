@@ -1,103 +1,16 @@
-# Promotion Execution Guided Workflow
+# Workflow 3 Test Guide: Promoting Freight & Verification (`v0.2.0`)
 
-**Goal**: Execute a `PromotionTask` to move Freight into a Stage.
+Companion Skill: [`skills/promoting-and-approving-freight/SKILL.md`](../../skills/promoting-and-approving-freight/SKILL.md)
 
-> **Prompt**: `kargo-promotion-guided(project="demo-project", stage="env-prod")`
+## Step-by-Step Verification
 
----
-
-## 1. Pre-flight Checks
-
-Before promoting, we must ensure the target stage is healthy and the freight is available.
-
-**Natural Language Prompt:**
-```text
-Check the health of stage 'env-prod' in project 'demo-project'.
-```
-
-**Tool Execution:**
-```python
-kargo_stage_mgmt(action="get", 
-    project="demo-project",
-    stage_name="env-prod"
-)
-```
-
-**Natural Language Prompt:**
-```text
-List all freight in project 'demo-project'.
-```
-
-**Tool Execution:**
-```python
-kargo_freight_mgmt(action="list", 
-    project="demo-project"
-)
-```
-
----
-
-## 2. Create Promotion
-
-Trigger the deployment of the selected Freight to the Stage.
-
-**Natural Language Prompt:**
-```text
-Promote freight '<selected-freight-id>' to the 'env-prod' stage in project 'demo-project'.
-```
-
-**Tool Execution:**
-```python
-kargo_promotion_mgmt(action="create", 
-    project="demo-project",
-    stage="env-prod",
-    freight_id="<selected-freight-id>"
-)
-```
-*Note: This command returns the `promotion_name` which is required for the next step.*
-
----
-
-## 3. Monitor Promotion Loop
-
-Watch the promotion task execute step-by-step (e.g., Git Clone, Kustomize, ArgoCD Sync).
-
-**Natural Language Prompt:**
-```text
-Show the status of the 'env-prod' stage in project 'demo-project'.
-```
-
-**Resource Poll:**
-```python
-kargo://projects/demo-project/promotions/<promotion_name>
-```
-
-**Natural Language Prompt:**
-```text
-Get the details of promotion '<promotion_name>' in project 'demo-project'.
-```
-
-**Tool Execution:**
-```python
-kargo_promotion_mgmt(action="get", 
-    project="demo-project",
-    promotion_name="<promotion_name>"
-)
-```
-
----
-
-## 4. Final Verification
-
-Confirm that the Stage has successfully adopted the new Freight.
-
-**Natural Language Prompt:**
-```text
-Check the status of stage 'env-prod' in project 'demo-project'.
-```
-
-**Resource Poll:**
-```python
-kargo://projects/demo-project/stages/env-prod
-```
-Verify that the `current_freight` matches the `freight_id` we just promoted, and that the stage's health is `Healthy`.
+1. **Preview Promotion Plan**:
+   - Call `kargo_promote(project="guestbook", stage="prod", freight_alias="vivid-falcon", dry_run=True)` → verify `"status": "preview"` and inspect `manifest`.
+2. **Promote to Single Stage**:
+   - Call `kargo_promote(project="guestbook", stage="prod", freight_alias="vivid-falcon", dry_run=False)` → verify `"status": "success"` and note the generated `Promotion` name.
+3. **Promote to Downstream Subscribers**:
+   - Call `kargo_promote(project="guestbook", stage="dev", freight_alias="vivid-falcon", downstream=True, confirm=True)` → verify downstream promotions are created via `/v1beta1/projects/{project}/stages/{stage}/promotions/downstream`.
+4. **Monitor Promotion & Verification**:
+   - Read `kargo://projects/guestbook/promotions/{promotion}` to inspect `status.phase` and `status.stepExecutionMetadata`.
+   - Read `kargo://projects/guestbook/analysis-runs/{run}` and `kargo://projects/guestbook/analysis-runs/{run}/logs`.
+   - Re-trigger verification if needed: `kargo_manage_verification(project="guestbook", stage="prod", action="reverify")`.

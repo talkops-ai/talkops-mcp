@@ -1,8 +1,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# TalkOps MCP Server — PyPI Release Pipeline
+# TalkOps MCP Server — PyPI & GitHub Release Pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 # Trigger: Push a tag like  prometheus-mcp-server/v0.2.0
-# Result:  Build → Test → Publish to PyPI → GitHub Release with artifacts
+# Result:  Validate → Test → Build → Publish to PyPI → Scoped GitHub Release
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: "📦 Release to PyPI"
@@ -10,12 +10,12 @@ name: "📦 Release to PyPI"
 on:
   push:
     tags:
-      # Matches tags like: prometheus-mcp-server/v0.1.0, helm-mcp-server/v0.2.0
+      # Matches per-server monorepo tags like: prometheus-mcp-server/v0.2.0
       - "*/v*"
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag to release (e.g., prometheus-mcp-server/v0.1.11)'
+        description: "Tag to release (e.g., prometheus-mcp-server/v0.2.0)"
         required: true
         type: string
 
@@ -28,19 +28,18 @@ permissions:
   contents: write        # GitHub Releases
   id-token: write        # PyPI Trusted Publishers (OIDC)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Reusable metadata extracted from the git tag
-# ─────────────────────────────────────────────────────────────────────────────
 jobs:
   # ── Step 1: Parse the tag and validate ──────────────────────────────────
   meta:
     name: "🏷️ Parse Release Tag"
     runs-on: ubuntu-latest
     outputs:
+      tag_name: ${{ steps.parse.outputs.tag_name }}
       server_name: ${{ steps.parse.outputs.server_name }}
       version: ${{ steps.parse.outputs.version }}
       server_dir: ${{ steps.parse.outputs.server_dir }}
       pypi_name: ${{ steps.parse.outputs.pypi_name }}
+      is_prerelease: ${{ steps.parse.outputs.is_prerelease }}
     steps:
       - name: Parse tag
         id: parse
@@ -54,21 +53,30 @@ jobs:
           SERVER_NAME="${TAG%/v*}"
           VERSION="${TAG#*/v}"
 
+          IS_PRERELEASE="false"
+          if echo "$VERSION" | grep -qE '(-|alpha|beta|rc|dev)'; then
+            IS_PRERELEASE="true"
+          fi
+
+          echo "tag_name=${TAG}" >> "$GITHUB_OUTPUT"
           echo "server_name=${SERVER_NAME}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "server_dir=src/${SERVER_NAME}" >> "$GITHUB_OUTPUT"
           echo "pypi_name=talkops-${SERVER_NAME}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
 
-          echo "📦 Server: ${SERVER_NAME}"
-          echo "🏷️  Version: ${VERSION}"
-          echo "📁 Directory: src/${SERVER_NAME}"
-          echo "🐍 PyPI name: talkops-${SERVER_NAME}"
+          echo "📦 Server:     ${SERVER_NAME}"
+          echo "🏷️  Version:    ${VERSION} (prerelease=${IS_PRERELEASE})"
+          echo "📁 Directory:  src/${SERVER_NAME}"
+          echo "🐍 PyPI name:  talkops-${SERVER_NAME}"
 
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.parse.outputs.tag_name }}
 
       - name: Validate version matches pyproject.toml
         run: |
-          TOML_VERSION=$(grep '^version' "${{ steps.parse.outputs.server_dir }}/pyproject.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TOML_VERSION=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' "${{ steps.parse.outputs.server_dir }}/pyproject.toml")
           TAG_VERSION="${{ steps.parse.outputs.version }}"
           if [ "$TOML_VERSION" != "$TAG_VERSION" ]; then
             echo "❌ Version mismatch! pyproject.toml=${TOML_VERSION} tag=${TAG_VERSION}"
@@ -86,6 +94,8 @@ jobs:
         working-directory: ${{ needs.meta.outputs.server_dir }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag_name }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -103,7 +113,8 @@ jobs:
       - name: Run tests
         run: |
           if [ "${{ needs.meta.outputs.server_name }}" = "helm-mcp-server" ]; then
-            echo "⚠️  Skipping tests for helm-mcp-server as requested"
+            echo "⚠️  Skipping full integration tests for helm-mcp-server; running plugin & skill contract tests"
+            uv run pytest tests/unit/test_plugin_and_skills.py -v --tb=short
             exit 0
           fi
           if [ -d "tests" ] && [ "$(find tests -name 'test_*.py' -o -name '*_test.py' | head -1)" ]; then
@@ -112,7 +123,7 @@ jobs:
             echo "⚠️  No tests found — skipping"
           fi
 
-  # ── Step 3: Build sdist + wheel ────────────────────────────────────────
+  # ── Step 3: Build sdist + wheel + live capability metadata ─────────────
   build:
     name: "🔨 Build"
     needs: [meta, test]
@@ -122,6 +133,8 @@ jobs:
         working-directory: ${{ needs.meta.outputs.server_dir }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag_name }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -134,25 +147,104 @@ jobs:
           python-version: "3.12"
 
       - name: Build package
-        run: uv build
+        run: |
+          rm -rf dist/ release-meta/
+          uv build
 
-      - name: Verify built artifacts
+      - name: Verify built artifacts & generate SHA256SUMS.txt
         run: |
           echo "📦 Built artifacts:"
           ls -lh dist/
-          # Verify the version in the filenames
           VERSION="${{ needs.meta.outputs.version }}"
           if ! ls dist/*${VERSION}* 1>/dev/null 2>&1; then
             echo "❌ No artifacts found with version ${VERSION}"
             exit 1
           fi
-          echo "✅ Artifacts verified"
+          mkdir -p release-meta
+          (cd dist && sha256sum *.whl *.tar.gz > ../release-meta/SHA256SUMS.txt)
+          cat release-meta/SHA256SUMS.txt
 
-      - name: Upload build artifacts
+      - name: Introspect live MCP server capabilities
+        run: |
+          uv sync --no-dev
+          uv run python - << 'PYEOF' > release-meta/metadata.json
+          import asyncio, json, logging, os, sys
+          from importlib import import_module
+          from pathlib import Path
+          from fastmcp import Client
+
+          logging.disable(logging.CRITICAL)
+          srv_dir = Path(".").resolve()
+          sys.path.insert(0, str(srv_dir))
+          pkg = srv_dir.name.replace("-", "_")
+
+          for k, v in {
+              "MCP_ALLOW_WRITE": "true",
+              "AM_READ_ONLY": "false",
+              "MCP_READ_ONLY": "false",
+              "MCP_TOOLSETS": "all",
+              "AM_TOOLSETS": "all",
+              "PROMETHEUS_TOOLSETS": "all",
+              "LOKI_TOOLSETS": "all",
+              "ARGOCD_AUTH_TOKEN": "placeholder",
+              "ARGOCD_SERVER_URL": "https://localhost:8080",
+              "KARGO_TOKEN": "placeholder",
+          }.items():
+              os.environ[k] = v
+
+          async def introspect():
+              mcp = None
+              for mod_name in (f"{pkg}.server.bootstrap", f"{pkg}.server", f"{pkg}.main"):
+                  try:
+                      mod = import_module(mod_name)
+                  except Exception:
+                      continue
+                  if hasattr(mod, "ServerBootstrap"):
+                      sb = mod.ServerBootstrap
+                      for mname in ("initialize", "create_server", "bootstrap"):
+                          if hasattr(sb, mname):
+                              res = getattr(sb, mname)()
+                              mcp = res[0] if isinstance(res, tuple) else res
+                              break
+                  for fn in ("create_mcp_server", "bootstrap_server", "create_server", "build_server"):
+                      if mcp is None and hasattr(mod, fn):
+                          res = getattr(mod, fn)()
+                          mcp = res[0] if isinstance(res, tuple) else res
+                          break
+                  if mcp is not None:
+                      break
+
+              tool_count = 0
+              resource_count = 0
+              if mcp is not None:
+                  async with Client(mcp) as client:
+                      tool_count = len(await client.list_tools())
+                      resource_count = len(await client.list_resources()) + len(await client.list_resource_templates())
+
+              skills_dir = srv_dir / "skills"
+              skills = (
+                  sorted(p.name for p in skills_dir.iterdir() if p.is_dir() and (p / "SKILL.md").is_file())
+                  if skills_dir.is_dir()
+                  else []
+              )
+              print(json.dumps({"tool_count": tool_count, "resource_count": resource_count, "skills": skills}))
+
+          asyncio.run(introspect())
+          PYEOF
+          cat release-meta/metadata.json
+
+      - name: Upload PyPI build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dist-${{ needs.meta.outputs.server_name }}
           path: ${{ needs.meta.outputs.server_dir }}/dist/
+          retention-days: 5
+
+      - name: Upload release metadata & checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-meta-${{ needs.meta.outputs.server_name }}
+          path: ${{ needs.meta.outputs.server_dir }}/release-meta/
           retention-days: 5
 
   # ── Step 4: Publish to PyPI ────────────────────────────────────────────
@@ -172,16 +264,12 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        # Uses Trusted Publishers (OIDC) — no API token needed in secrets
-        # Fallback: set PYPI_API_TOKEN in repository secrets
         with:
-          # Uncomment the next line to use API token instead of Trusted Publishers:
-          # password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: dist/
           verbose: true
           print-hash: true
 
-  # ── Step 5: Create GitHub Release ──────────────────────────────────────
+  # ── Step 5: Create Scoped GitHub Release ───────────────────────────────
   github-release:
     name: "📋 GitHub Release"
     needs: [meta, build, publish-pypi]
@@ -189,7 +277,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # Full history for changelog generation
+          ref: ${{ needs.meta.outputs.tag_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -197,184 +290,38 @@ jobs:
           name: dist-${{ needs.meta.outputs.server_name }}
           path: dist/
 
-      - name: Generate release notes
-        id: notes
-        env:
-          SERVER_NAME: ${{ needs.meta.outputs.server_name }}
-          SERVER_DIR: ${{ needs.meta.outputs.server_dir }}
-          PYPI_NAME: ${{ needs.meta.outputs.pypi_name }}
-          VERSION: ${{ needs.meta.outputs.version }}
+      - name: Download release metadata & checksums
+        uses: actions/download-artifact@v4
+        with:
+          name: release-meta-${{ needs.meta.outputs.server_name }}
+          path: release-meta/
+
+      - name: Generate scoped release notes
         run: |
-          set -euo pipefail
+          python3 scripts/generate_release_notes.py \
+            --repo-root . \
+            --server-name "${{ needs.meta.outputs.server_name }}" \
+            --version "${{ needs.meta.outputs.version }}" \
+            --pypi-name "${{ needs.meta.outputs.pypi_name }}" \
+            --github-repo "${{ github.repository }}" \
+            --dist-dir dist \
+            --meta-file release-meta/metadata.json \
+            --tag-name "${{ needs.meta.outputs.tag_name }}" \
+            --end-ref "${{ github.sha }}" \
+            --output /tmp/release_body.md
 
-          # ── Extract metadata from pyproject.toml ──
-          TOML="${SERVER_DIR}/pyproject.toml"
-          DESCRIPTION=$(grep '^description' "$TOML" | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          PYTHON_REQ=$(grep 'requires-python' "$TOML" | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo ">=3.12")
-          LICENSE=$(grep -A1 '^\[project\]' "$TOML" | grep 'license' | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "Apache-2.0")
-
-          # ── Extract dependencies ──
-          DEPS=$(sed -n '/^dependencies/,/^\[/p' "$TOML" | grep '"' | sed 's/.*"\(.*\)".*/\1/' | head -10)
-          DEPS_LIST=""
-          while IFS= read -r dep; do
-            [ -z "$dep" ] && continue
-            # Extract just the package name (before any version specifier)
-            PKG_NAME=$(echo "$dep" | sed 's/[><=!;].*//' | xargs)
-            DEPS_LIST="${DEPS_LIST}\n| \`${PKG_NAME}\` | \`${dep}\` |"
-          done <<< "$DEPS"
-
-          # ── Count available MCP tools ──
-          TOOL_COUNT=0
-          if [ -d "${SERVER_DIR}" ]; then
-            TOOL_COUNT=$(grep -r '^\s*async def [a-z]' "${SERVER_DIR}" --include="*_tools.py" 2>/dev/null \
-              | grep -v '__\|_register\|setup\|_helper\|_build\|_parse\|_validate\|_format\|_coerce\|_ensure' \
-              | wc -l | xargs || echo "0")
-          fi
-
-          # ── Extract environment variables from Dockerfile ──
-          ENV_TABLE=""
-          DOCKERFILE="${SERVER_DIR}/Dockerfile"
-          if [ -f "$DOCKERFILE" ]; then
-            # Get ENV lines after the "Application" comment block (skip build-stage ENVs)
-            ENV_VARS=$(awk '/^ENV MCP_SERVER_NAME/,0' "$DOCKERFILE" | grep '^ENV ' | grep -v 'UV_\|PIP_\|PATH=' | sed 's/ENV //' | sed 's/ *\\//')
-            while IFS= read -r line; do
-              [ -z "$line" ] && continue
-              VAR_NAME=$(echo "$line" | cut -d'=' -f1)
-              VAR_DEFAULT=$(echo "$line" | cut -d'=' -f2-)
-              ENV_TABLE="${ENV_TABLE}\n| \`${VAR_NAME}\` | \`${VAR_DEFAULT}\` |"
-            done <<< "$ENV_VARS"
-          fi
-
-          # ── Generate artifact checksums ──
-          CHECKSUMS=""
-          for f in dist/*; do
-            HASH=$(sha256sum "$f" | cut -d' ' -f1)
-            FNAME=$(basename "$f")
-            CHECKSUMS="${CHECKSUMS}\n| \`${FNAME}\` | \`${HASH:0:16}…\` |"
-          done
-
-          # ── Determine previous tag for changelog ──
-          PREV_TAG=$(git tag --list "${SERVER_NAME}/v*" --sort=-version:refname | grep -v "v${VERSION}" | head -1 || true)
-          CHANGELOG=""
-          if [ -n "$PREV_TAG" ]; then
-            COMMITS=$(git log --oneline "${PREV_TAG}..HEAD" -- "${SERVER_DIR}" 2>/dev/null | head -15)
-            if [ -n "$COMMITS" ]; then
-              CHANGELOG="### 📝 Changes since \`${PREV_TAG}\`\n\n"
-              while IFS= read -r commit; do
-                [ -z "$commit" ] && continue
-                CHANGELOG="${CHANGELOG}- ${commit}\n"
-              done <<< "$COMMITS"
-            fi
-          fi
-
-          # ── Compose the release body ──
-          cat > /tmp/release_body.md << RELEASE_EOF
-          ## 📦 ${PYPI_NAME} v${VERSION}
-
-          > ${DESCRIPTION}
-
-          ---
-
-          ### ⚡ Quick Start
-
-          \`\`\`bash
-          # Install via pip
-          pip install ${PYPI_NAME}==${VERSION}
-
-          # Install via uv (recommended)
-          uv pip install ${PYPI_NAME}==${VERSION}
-
-          # Run instantly without installing
-          uvx ${PYPI_NAME}
-          \`\`\`
-
-          ---
-
-          ### 🔌 MCP Client Configuration
-
-          **Claude Desktop / Cursor / Windsurf** — add to your \`mcp.json\`:
-          \`\`\`json
-          {
-            "mcpServers": {
-              "${SERVER_NAME}": {
-                "command": "uvx",
-                "args": ["${PYPI_NAME}"]
-              }
-            }
-          }
-          \`\`\`
-
-          **HTTP Mode** (for remote agents / multi-tenant setups):
-          \`\`\`bash
-          MCP_TRANSPORT=http PORT=8767 ${SERVER_NAME}
-          \`\`\`
-
-          ---
-
-          ### 🛠 Available Tools
-
-          This server exposes **${TOOL_COUNT}** MCP tools. See the [full documentation](https://github.com/talkops-ai/talkops-mcp/tree/main/src/${SERVER_NAME}#tools) for details.
-
-          ---
-
-          ### ⚙️ Environment Variables
-
-          | Variable | Default |
-          |----------|---------|$(echo -e "${ENV_TABLE}")
-
-          ---
-
-          $(echo -e "${CHANGELOG}")
-
-          ### 📋 Package Details
-
-          | | |
-          |---|---|
-          | **PyPI** | [\`${PYPI_NAME}\`](https://pypi.org/project/${PYPI_NAME}/${VERSION}/) |
-          | **Version** | \`${VERSION}\` |
-          | **Python** | \`${PYTHON_REQ}\` |
-          | **License** | ${LICENSE} |
-          | **Transport** | stdio (default), HTTP, SSE |
-
-          <details>
-          <summary>📦 Dependencies</summary>
-
-          | Package | Requirement |
-          |---------|-------------|$(echo -e "${DEPS_LIST}")
-
-          </details>
-
-          <details>
-          <summary>🔒 Artifact Checksums (SHA-256)</summary>
-
-          | File | SHA-256 (truncated) |
-          |------|---------------------|$(echo -e "${CHECKSUMS}")
-
-          </details>
-
-          ---
-
-          ### 🔗 Links
-
-          - 📦 [PyPI Package](https://pypi.org/project/${PYPI_NAME}/${VERSION}/)
-          - 📖 [Documentation](https://github.com/talkops-ai/talkops-mcp/tree/main/src/${SERVER_NAME})
-          - 🐳 [Docker Image](https://github.com/talkops-ai/talkops-mcp/tree/main/src/${SERVER_NAME}/Dockerfile)
-          - 🐛 [Report an Issue](https://github.com/talkops-ai/talkops-mcp/issues/new?labels=${SERVER_NAME}&title=[${SERVER_NAME}]+v${VERSION}:+)
-          RELEASE_EOF
-
-          # Remove leading whitespace from heredoc indentation
-          sed -i 's/^          //' /tmp/release_body.md
-
-          echo "✅ Release notes generated"
+          echo "✅ Generated GitHub Release notes:"
           cat /tmp/release_body.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.meta.outputs.server_name }}/v${{ needs.meta.outputs.version }}
+          tag_name: ${{ needs.meta.outputs.tag_name }}
           name: "${{ needs.meta.outputs.server_name }} v${{ needs.meta.outputs.version }}"
           body_path: /tmp/release_body.md
-          files: dist/*
+          files: |
+            dist/*
+            release-meta/SHA256SUMS.txt
           draft: false
-          prerelease: false
-          generate_release_notes: true
+          prerelease: ${{ needs.meta.outputs.is_prerelease == 'true' }}
+          generate_release_notes: false

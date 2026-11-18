@@ -1,0 +1,28 @@
+{
+  "items": [
+    {
+      "repo": "https://github.com/org/gitops-manifests.git",
+      "type": "git",
+      "project": "production",
+      "username": "git-bot",
+      "password": "SUPER_SECRET_PASSWORD_SHOULD_BE_REDACTED",
+      "insecure": false,
+      "enableLfs": false,
+      "connectionState": {
+        "status": "Successful",
+        "message": ""
+      }
+    },
+    {
+      "repo": "git@github.com:org/private-infra.git",
+      "type": "git",
+      "project": "infra",
+      "sshPrivateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nSECRET\n-----END OPENSSH PRIVATE KEY-----",
+      "insecure": false,
+      "connectionState": {
+        "status": "Successful",
+        "message": ""
+      }
+    }
+  ]
+}

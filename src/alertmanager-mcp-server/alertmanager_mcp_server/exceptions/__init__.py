@@ -1,33 +1,47 @@
-"""Custom exceptions for Alertmanager MCP server."""
+"""Custom exceptions for Alertmanager MCP server with model-directed recovery hints."""
 
 from fastmcp.exceptions import NotFoundError, ResourceError, ToolError, ValidationError
 
 
 class AlertmanagerOperationError(ToolError):
     """Error during Alertmanager tool operations."""
-    pass
 
 
 class AlertmanagerResourceError(ResourceError):
     """Error during Alertmanager resource operations."""
-    pass
 
 
-class AlertmanagerNotFoundError(NotFoundError):
-    """Error when an Alertmanager resource is not found."""
-    pass
+class AlertmanagerNotFoundError(NotFoundError, ToolError):
+    """Error when an Alertmanager backend, alert fingerprint, or silence ID is not found."""
 
 
-class AlertmanagerValidationError(ValidationError):
-    """Error validating Alertmanager parameters."""
-    pass
+class AlertmanagerValidationError(ValidationError, ToolError):
+    """Error validating Alertmanager parameters, matchers, or timestamps."""
 
 
 class AlertmanagerConnectionError(ToolError):
     """Error connecting to an Alertmanager backend."""
-    pass
 
 
 class SilenceSafetyError(ToolError):
-    """Error when a silence operation violates safety guardrails."""
-    pass
+    """Error when a silence operation violates safety or governance policy (`SP001`–`SP009`)."""
+
+
+class WriteAccessDeniedError(ToolError):
+    """Error when a mutating operation is invoked while the server is in read-only mode."""
+
+
+class ConfirmationRequiredError(ToolError):
+    """Error when a high-blast-radius or destructive mutation requires explicit confirmation."""
+
+
+__all__ = [
+    "AlertmanagerConnectionError",
+    "AlertmanagerNotFoundError",
+    "AlertmanagerOperationError",
+    "AlertmanagerResourceError",
+    "AlertmanagerValidationError",
+    "ConfirmationRequiredError",
+    "SilenceSafetyError",
+    "WriteAccessDeniedError",
+]

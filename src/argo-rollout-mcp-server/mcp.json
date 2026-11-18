@@ -1,0 +1,66 @@
+{
+  "$schema": "https://agentplugins.io/schema/v1.0.0/mcp.json",
+  "mcpServers": {
+    "argo-rollout": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "argo-rollout-mcp-server",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_TOOLSETS": "all",
+        "PROMETHEUS_URL": "${PROMETHEUS_URL}"
+      }
+    },
+    "argo-rollout-us-west": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "argo-rollout-mcp-server",
+        "--context",
+        "${KUBE_CONTEXT_US_WEST}",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_TOOLSETS": "all",
+        "PROMETHEUS_URL": "${PROMETHEUS_URL_US_WEST}"
+      }
+    },
+    "argo-rollout-eu-central": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "argo-rollout-mcp-server",
+        "--context",
+        "${KUBE_CONTEXT_EU_CENTRAL}",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_TOOLSETS": "all",
+        "PROMETHEUS_URL": "${PROMETHEUS_URL_EU_CENTRAL}"
+      }
+    }
+  }
+}

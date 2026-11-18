@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "talkops-prometheus",
+  "version": "0.2.0",
+  "description": "Operational skills and MCP execution server for Prometheus 3.0+, Thanos, Mimir, Cortex, and VictoriaMetrics: PromQL authoring, RED/SLO triage, trace exemplar pivoting, rule simulation & testing, TSDB cardinality FinOps, Kubernetes Operator scrape CRDs, and exporter lifecycle management.",
+  "author": {
+    "name": "TalkOps Team"
+  },
+  "repository": "https://github.com/talkops/talkops-mcp",
+  "license": "Apache-2.0",
+  "extensions": {
+    "com.talkops": {
+      "domain": "observability",
+      "component": "prometheus",
+      "toolsets": [
+        "diagnostics",
+        "query",
+        "rules",
+        "scrape",
+        "exporter"
+      ]
+    }
+  }
+}

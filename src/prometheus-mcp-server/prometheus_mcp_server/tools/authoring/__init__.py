@@ -1,1 +1,0 @@
-"""Alert authoring helper tools."""

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "talkops-alertmanager",
+  "version": "0.2.0",
+  "description": "Operational skills and MCP execution server for Prometheus Alertmanager triage, notification diagnostics, silence lifecycle management, routing validation, and governance.",
+  "author": {
+    "name": "TalkOps Team"
+  },
+  "repository": "https://github.com/talkops/talkops-mcp",
+  "license": "Apache-2.0",
+  "extensions": {
+    "com.talkops": {
+      "domain": "observability",
+      "component": "alertmanager",
+      "toolsets": [
+        "triage",
+        "routing",
+        "silences",
+        "governance"
+      ]
+    }
+  }
+}

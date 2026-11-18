@@ -77,6 +77,8 @@ RUN curl -fsSL "https://github.com/prometheus/prometheus/releases/download/v${PR
 # Copy application artifacts from build stage
 COPY --from=uv --chown=app:app /app/.venv /app/.venv
 COPY --from=uv --chown=app:app /root/.local /root/.local
+COPY --from=uv --chown=app:app /app/plugin.json /app/mcp.json /app/
+COPY --from=uv --chown=app:app /app/skills /app/skills
 
 # Copy scripts and make them executable
 COPY ./docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -93,7 +95,7 @@ WORKDIR /app
 
 # Default environment variables
 ENV MCP_SERVER_NAME=prometheus-mcp-server
-ENV MCP_SERVER_VERSION=0.1.0
+ENV MCP_SERVER_VERSION=0.2.0
 ENV MCP_TRANSPORT=http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8767

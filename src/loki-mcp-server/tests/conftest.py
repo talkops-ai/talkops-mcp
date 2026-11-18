@@ -71,9 +71,36 @@ def mock_loki_http():
     with respx.mock(assert_all_called=False) as mock:
         base = LOKI_BASE_URL
 
-        # Health / readiness
+        # Health / readiness & runtime config
         mock.get(f"{base}/ready").mock(
             return_value=httpx.Response(200, text="ready")
+        )
+        mock.get(f"{base}/config").mock(
+            return_value=httpx.Response(
+                200,
+                text=(
+                    "auth_enabled: true\n"
+                    "schema_config:\n"
+                    "  configs:\n"
+                    "    - from: '2024-04-01'\n"
+                    "      store: tsdb\n"
+                    "      object_store: filesystem\n"
+                    "      schema: v13\n"
+                    "compactor:\n"
+                    "  retention_enabled: true\n"
+                    "  delete_request_store: filesystem\n"
+                    "  retention_delete_delay: 2h\n"
+                    "limits_config:\n"
+                    "  allow_structured_metadata: true\n"
+                    "  volume_enabled: true\n"
+                    "  unordered_writes: true\n"
+                    "  reject_old_samples_max_age: 168h\n"
+                    "pattern_ingester:\n"
+                    "  enabled: true\n"
+                    "ruler:\n"
+                    "  enable_api: true\n"
+                ),
+            )
         )
 
         # Labels
@@ -131,6 +158,110 @@ def mock_loki_http():
         mock.get(f"{base}/loki/api/v1/detected_fields").mock(
             return_value=httpx.Response(
                 200, json=_load_fixture("detected_fields_response.json")
+            )
+        )
+
+        # Build info
+        mock.get(f"{base}/loki/api/v1/status/buildinfo").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "version": "3.2.0",
+                    "revision": "abc1234",
+                    "branch": "HEAD",
+                    "goVersion": "go1.22.4",
+                },
+            )
+        )
+
+        # Index volume
+        mock.get(f"{base}/loki/api/v1/index/volume").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "success",
+                    "data": {
+                        "resultType": "vector",
+                        "result": [
+                            {
+                                "metric": {"service_name": "api", "namespace": "prod"},
+                                "value": [1715000000, "104857600"],
+                            }
+                        ],
+                    },
+                },
+            )
+        )
+
+        # Detected labels
+        mock.get(f"{base}/loki/api/v1/detected_labels").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "detectedLabels": [
+                        {"label": "service_name", "cardinality": 12},
+                        {"label": "namespace", "cardinality": 4},
+                        {"label": "pod", "cardinality": 1800},
+                    ]
+                },
+            )
+        )
+
+        # Ruler rules
+        mock.get(url__regex=rf"{re.escape(base)}/loki/api/v1/rules.*").mock(
+            return_value=httpx.Response(
+                200,
+                text=(
+                    "prod:\n"
+                    "  - name: checkout-alerts\n"
+                    "    interval: 1m\n"
+                    "    rules:\n"
+                    "      - alert: CheckoutHighErrors\n"
+                    "        expr: rate({service_name=\"checkout\"} |= \"error\" [5m]) > 1\n"
+                    "        for: 5m\n"
+                ),
+                headers={"Content-Type": "application/yaml"},
+            )
+        )
+        mock.post(url__regex=rf"{re.escape(base)}/loki/api/v1/rules/.+").mock(
+            return_value=httpx.Response(202, json={"status": "accepted"})
+        )
+        mock.delete(url__regex=rf"{re.escape(base)}/loki/api/v1/rules/.+").mock(
+            return_value=httpx.Response(202, json={"status": "deleted"})
+        )
+
+        # Compactor delete requests
+        mock.get(f"{base}/loki/api/v1/delete").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "request_id": "del-001",
+                        "status": "received",
+                        "query": '{service_name="auth"} |= "secret"',
+                        "start_time": 1715000000,
+                        "end_time": 1715003600,
+                    }
+                ],
+            )
+        )
+        mock.post(f"{base}/loki/api/v1/delete").mock(
+            return_value=httpx.Response(204, text="")
+        )
+        mock.delete(f"{base}/loki/api/v1/delete").mock(
+            return_value=httpx.Response(204, text="")
+        )
+
+        # Prometheus metrics (discarded samples)
+        mock.get(f"{base}/metrics").mock(
+            return_value=httpx.Response(
+                200,
+                text=(
+                    '# HELP loki_discarded_samples_total The total number of samples that were discarded.\n'
+                    '# TYPE loki_discarded_samples_total counter\n'
+                    'loki_discarded_samples_total{reason="rate_limited",tenant="fake"} 42\n'
+                    'loki_discarded_samples_total{reason="line_too_long",tenant="fake"} 5\n'
+                ),
             )
         )
 

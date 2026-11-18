@@ -1,9 +1,6 @@
-"""Custom exceptions for Kargo MCP server.
+"""Custom exceptions for Kargo MCP server."""
 
-Following FastMCP exception hierarchy from:
-https://gofastmcp.com/python-sdk/fastmcp-exceptions
-"""
-
+from typing import Optional
 from fastmcp.exceptions import (
     ToolError,
     ResourceError,
@@ -12,41 +9,68 @@ from fastmcp.exceptions import (
 )
 
 
-class KargoOperationError(ToolError):
-    """Error during Kargo tool operations.
+class KargoApiError(Exception):
+    """Raised for non-2xx responses from the Kargo REST API."""
 
-    Inherits from ToolError for tool-related Kargo API failures.
-    """
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        body: Optional[str] = None,
+    ) -> None:
+        super().__init__(f"Kargo API error {status_code}: {message}")
+        self.status_code = status_code
+        self.message = message
+        self.body = body
+
+
+# Backward-compatible alias used inside service/tests
+ApiError = KargoApiError
+
+
+class KargoOperationError(ToolError):
+    """Error during Kargo tool operations."""
+
     pass
 
 
 class KargoResourceError(ResourceError):
-    """Error during Kargo resource operations.
+    """Error during Kargo resource operations."""
 
-    Inherits from ResourceError for resource-related failures.
-    """
     pass
 
 
 class KargoResourceNotFoundError(NotFoundError):
-    """Error when a Kargo resource is not found.
+    """Error when a Kargo resource is not found (HTTP 404)."""
 
-    Inherits from NotFoundError for 404 scenarios.
-    """
     pass
 
 
 class KargoValidationError(ValidationError):
-    """Error validating Kargo parameters or specs.
+    """Error validating Kargo parameters or CRD specs."""
 
-    Inherits from ValidationError for input validation failures.
-    """
     pass
 
 
-class KargoAuthError(ToolError):
-    """Error during Kargo authentication.
+class KargoPermissionError(KargoOperationError):
+    """Error when Kargo RBAC denies an operation (HTTP 401/403)."""
 
-    Raised when admin login fails or tokens are missing/expired.
-    """
+    pass
+
+
+class KargoConflictError(KargoOperationError):
+    """Error when a Kargo resource conflicts (HTTP 409)."""
+
+    pass
+
+
+class KargoPromotionError(KargoOperationError):
+    """Error when a Kargo promotion or rollback fails."""
+
+    pass
+
+
+class KargoVerificationError(KargoOperationError):
+    """Error when a Kargo stage verification fails or cannot be triggered."""
+
     pass

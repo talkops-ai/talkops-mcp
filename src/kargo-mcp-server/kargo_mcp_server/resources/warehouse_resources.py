@@ -1,69 +1,51 @@
-"""Kargo warehouse resources."""
+"""Kargo Warehouse detail and discovered artifacts resources."""
 
 import json
-import yaml
-from kargo_mcp_server.exceptions import KargoResourceError
+from typing import Any
+
+from kargo_mcp_server.models.warehouse import Warehouse
 from kargo_mcp_server.resources.base import BaseResource
+from kargo_mcp_server.utils.warehouse_spec_builder import detect_deprecated_warehouse_fields
 
 
 class WarehouseResources(BaseResource):
-    """Warehouse-related MCP resources."""
+    """Warehouse detail MCP resource."""
 
-    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
+    def register(self, mcp_instance: Any) -> None:
 
         @mcp_instance.resource(
-            "kargo://projects/{project}/warehouses",
-            name="kargo_project_warehouses",
-            description="List all warehouses in a Kargo project with their artifact source types",
+            "kargo://projects/{project}/warehouses/{warehouse}",
+            name="kargo_warehouse_detail",
+            description="Concise Warehouse status, subscriptions, lastFreightID, and discoveredArtifacts",
             mime_type="application/json",
         )
-        async def list_warehouses_resource(project: str) -> str:
-            """List all warehouses in a project."""
+        async def get_warehouse_resource(project: str, warehouse: str) -> str:
+            """Get curated Warehouse detail and discovered artifacts."""
             try:
-                warehouses = await self.kargo_service.list_warehouses(project)
-                if not warehouses:
-                    return json.dumps({"message": f"No warehouses found in project '{project}'. Next step: Use 'kargo_warehouse_mgmt' with action 'upsert' to create a warehouse with artifact subscriptions, or verify the project name."})
-                return json.dumps([w.model_dump() for w in warehouses], default=str, indent=2)
-            except Exception as e:
-                raise KargoResourceError(f"Failed to list warehouses: {e}")
-
-        @mcp_instance.resource(
-            "kargo://projects/{project}/warehouses/{warehouse_name}",
-            name="kargo_warehouse_detail",
-            description="Get detailed warehouse information including subscriptions and full YAML manifest",
-            mime_type="text/markdown",
-        )
-        async def get_warehouse_resource(project: str, warehouse_name: str) -> str:
-            """Get detailed warehouse information."""
-            try:
-                warehouse = await self.kargo_service.get_warehouse(project, warehouse_name)
-                
-                details = {
-                    "name": warehouse_name,
+                raw = await self.kargo_service.get_warehouse(project, warehouse)
+                wh = Warehouse.model_validate(raw)
+                raw_spec = raw.get("spec") if isinstance(raw, dict) else {}
+                payload = {
+                    "name": wh.metadata.name,
                     "project": project,
-                    "status": warehouse.get("status", {}),
+                    "ready": wh.is_ready(),
+                    "interval": wh.spec.interval or "5m0s",
+                    "freight_creation_policy": wh.spec.freight_creation_policy,
+                    "subscription_types": wh.get_subscription_types(),
+                    "subscriptions": wh.spec.subscriptions,
+                    "deprecated_fields": detect_deprecated_warehouse_fields(raw_spec or {}),
+                    "last_freight_id": wh.status.last_freight_id if wh.status else None,
+                    "last_handled_refresh": (
+                        wh.status.last_handled_refresh if wh.status else None
+                    ),
+                    "discovered_artifacts": (
+                        wh.status.discovered_artifacts if wh.status else {}
+                    ),
+                    "conditions": wh.status.conditions if wh.status else [],
                 }
-
-                yaml_manifest = yaml.dump(
-                    warehouse,
-                    default_flow_style=False,
-                    sort_keys=False,
-                    allow_unicode=True,
+                return json.dumps(payload, indent=2, default=str)
+            except Exception as exc:
+                return json.dumps(
+                    {"project": project, "warehouse": warehouse, "error": str(exc)},
+                    indent=2,
                 )
-
-                output_parts = [
-                    f"## Warehouse Details: {warehouse_name}",
-                    "",
-                    "```json",
-                    json.dumps(details, indent=2, default=str),
-                    "```",
-                    "",
-                    "## Full YAML Manifest",
-                    "",
-                    "```yaml",
-                    yaml_manifest.rstrip(),
-                    "```",
-                ]
-                return "\n".join(output_parts)
-            except Exception as e:
-                raise KargoResourceError(f"Failed to get warehouse: {e}")

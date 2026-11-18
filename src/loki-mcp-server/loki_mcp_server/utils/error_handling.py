@@ -92,7 +92,7 @@ def tool_error_boundary(func: F) -> F:
                 error_type="query_too_expensive",
                 suggestion=(
                     "Narrow the time range, add more label selectors, "
-                    "or use get_query_stats first to estimate cost."
+                    "or use loki_get_query_stats first to estimate cost."
                 ),
             )
         except LokiResourceNotFoundError as exc:

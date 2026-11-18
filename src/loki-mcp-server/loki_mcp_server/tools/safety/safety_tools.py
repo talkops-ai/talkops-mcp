@@ -1,11 +1,12 @@
 """Safety and cost estimation tools — query preflight.
 
-v4 Tool: get_query_stats
+Tool (`query` toolset, read-only):
+- loki_get_query_stats
 """
 
 from typing import Any, Dict, Optional
 
-from mcp.server.fastmcp import Context
+from fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
@@ -27,23 +28,21 @@ def _humanize_bytes(byte_count: int) -> str:
 
 
 class SafetyTools(BaseTool):
-    """Query cost estimation and preflight tools.
-
-    These tools must be called before heavy queries to
-    prevent backend overload.
-    """
+    """Query cost estimation and preflight tools (`query` toolset)."""
 
     def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
         """Register all safety tools with the MCP instance."""
         loki = self.loki_service
         config = self.config
+        if not config.should_register("query", is_write=False):
+            return
 
         # ──────────────────────────────────────────
-        # Tool 6: get_query_stats
+        # Tool 6: loki_get_query_stats
         # ──────────────────────────────────────────
         @mcp_instance.tool(
             annotations=ToolAnnotations(
-                title="Get Query Stats",
+                title="Get Loki Query Cost Stats",
                 readOnlyHint=True,
                 destructiveHint=False,
                 idempotentHint=True,
@@ -52,17 +51,11 @@ class SafetyTools(BaseTool):
             output_schema=None,
         )
         @tool_error_boundary
-        async def get_query_stats(
+        async def loki_get_query_stats(
             query: str = Field(
                 ...,
                 min_length=1,
-                description=(
-                    "LogQL stream selector. CRITICAL: MUST be wrapped in curly "
-                    "braces {label=\"value\"}. "
-                    "CORRECT: '{app=\"checkout\"}'. "
-                    "WRONG: 'app=\"checkout\"' (missing braces). "
-                    "WRONG: '{{app=\"checkout\"}}' (double braces)."
-                ),
+                description="LogQL stream selector wrapped in curly braces (e.g., '{app=\"checkout\"}')",
             ),
             start: Optional[str] = Field(
                 default=None,
@@ -78,24 +71,7 @@ class SafetyTools(BaseTool):
             ),
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Preflight a selector to estimate query cost.
-
-            **Always check streams/chunks/bytes before heavy queries.**
-            Returns the number of streams, chunks, entries, and bytes
-            a query would touch. Cancel or narrow queries when bytes
-            or streams exceed configurable thresholds. Read-only.
-
-            Returns:
-            - {"streams": int, "chunks": int, "entries": int, "bytes": int,
-               "human_bytes": str, "exceeds_threshold": bool,
-               "threshold_bytes": int}
-
-            When NOT to use: For executing queries use execute_logql_query
-            or execute_logql_instant.
-
-            Common errors:
-            - Stats not available: Some Loki deployments disable this endpoint.
-            """
+            """Estimate streams, chunks, entries, and uncompressed bytes touched by a LogQL selector before execution. Read-only."""
             if ctx:
                 await ctx.info(f"Estimating query cost for '{query}'...")
 
@@ -108,11 +84,18 @@ class SafetyTools(BaseTool):
 
             query_bytes = stats.get("bytes", 0)
             exceeds = query_bytes > config.guardrails.max_query_bytes
+            cost_zone = (
+                "red"
+                if (exceeds or query_bytes > 10_000_000_000)
+                else "yellow"
+                if query_bytes >= 1_000_000_000
+                else "green"
+            )
 
             if ctx:
                 human = _humanize_bytes(query_bytes)
                 await ctx.info(
-                    f"Query would touch {human}"
+                    f"Query would touch {human} ({cost_zone.upper()})"
                     f"{' ⚠️ EXCEEDS THRESHOLD' if exceeds else ''}"
                 )
 
@@ -122,6 +105,7 @@ class SafetyTools(BaseTool):
                 "entries": stats.get("entries", 0),
                 "bytes": query_bytes,
                 "human_bytes": _humanize_bytes(query_bytes),
+                "cost_zone": cost_zone,
                 "exceeds_threshold": exceeds,
                 "threshold_bytes": config.guardrails.max_query_bytes,
             }

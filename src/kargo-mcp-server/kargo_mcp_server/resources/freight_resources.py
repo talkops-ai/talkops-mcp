@@ -1,69 +1,46 @@
-"""Kargo freight resources."""
+"""Kargo Freight detail resource."""
 
 import json
-import yaml
-from kargo_mcp_server.exceptions import KargoResourceError
+from typing import Any
+
+from kargo_mcp_server.models.freight import Freight
 from kargo_mcp_server.resources.base import BaseResource
 
 
 class FreightResources(BaseResource):
-    """Freight-related MCP resources."""
+    """Freight detail MCP resource."""
 
-    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
+    def register(self, mcp_instance: Any) -> None:
 
         @mcp_instance.resource(
-            "kargo://projects/{project}/freight",
-            name="kargo_project_freight",
-            description="List all freight in a Kargo project with artifact versions and stage states",
+            "kargo://projects/{project}/freight/{freight_or_alias}",
+            name="kargo_freight_detail",
+            description="Detailed Freight bundle (SHA-1 id, alias, origin Warehouse, commits, images, charts, stage states)",
             mime_type="application/json",
         )
-        async def list_freight_resource(project: str) -> str:
-            """List all freight in a project."""
+        async def get_freight_resource(project: str, freight_or_alias: str) -> str:
+            """Get curated Freight detail by SHA-1 id or alias."""
             try:
-                freight = await self.kargo_service.list_freight(project)
-                if not freight:
-                    return json.dumps({"message": f"No freight found in project '{project}'. Next step: Use 'kargo_warehouse_mgmt' with action 'refresh' to trigger discovery, or verify the project name."})
-                return json.dumps([f.model_dump() for f in freight], default=str, indent=2)
-            except Exception as e:
-                raise KargoResourceError(f"Failed to list freight: {e}")
-
-        @mcp_instance.resource(
-            "kargo://projects/{project}/freight/{freight_id}",
-            name="kargo_freight_detail",
-            description="Get detailed freight information including artifact references and full YAML manifest",
-            mime_type="text/markdown",
-        )
-        async def get_freight_resource(project: str, freight_id: str) -> str:
-            """Get detailed freight information."""
-            try:
-                freight = await self.kargo_service.get_freight(project, freight_id)
-                
-                details = {
-                    "id": freight_id,
+                raw = await self.kargo_service.get_freight(project, freight_or_alias)
+                freight = Freight.model_validate(raw)
+                summary = freight.to_summary()
+                payload = {
+                    "id": freight.metadata.name,
                     "project": project,
-                    "status": freight.get("status", {}),
+                    "alias": summary.alias,
+                    "origin": summary.origin,
+                    "discovered_at": summary.discovered_at,
+                    "commits": [c.model_dump(by_alias=True, exclude_none=True) for c in freight.commits],
+                    "images": [i.model_dump(by_alias=True, exclude_none=True) for i in freight.images],
+                    "charts": [ch.model_dump(by_alias=True, exclude_none=True) for ch in freight.charts],
+                    "currently_in": summary.currently_in,
+                    "verified_in": summary.verified_in,
+                    "approved_for": summary.approved_for,
+                    "per_stage": [s.model_dump(exclude_none=True) for s in summary.per_stage],
                 }
-
-                yaml_manifest = yaml.dump(
-                    freight,
-                    default_flow_style=False,
-                    sort_keys=False,
-                    allow_unicode=True,
+                return json.dumps(payload, indent=2, default=str)
+            except Exception as exc:
+                return json.dumps(
+                    {"project": project, "freight": freight_or_alias, "error": str(exc)},
+                    indent=2,
                 )
-
-                output_parts = [
-                    f"## Freight Details: {freight_id}",
-                    "",
-                    "```json",
-                    json.dumps(details, indent=2, default=str),
-                    "```",
-                    "",
-                    "## Full YAML Manifest",
-                    "",
-                    "```yaml",
-                    yaml_manifest.rstrip(),
-                    "```",
-                ]
-                return "\n".join(output_parts)
-            except Exception as e:
-                raise KargoResourceError(f"Failed to get freight: {e}")
