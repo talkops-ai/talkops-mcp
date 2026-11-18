@@ -1,217 +1,251 @@
-"""Sampling configuration inspection and toggle tools."""
+"""Sampling configuration tool.
 
-from typing import Any, Dict, List, Optional
+Provides ``otel_configure_sampling`` for configuring head, probabilistic,
+tail, or disabled sampling with a trace-affinity architecture guard that
+blocks tail_sampling on DaemonSet or multi-replica collectors lacking an
+upstream loadbalancing exporter.
+"""
 
-from mcp.types import ToolAnnotations
+from typing import Any, Dict, List, Literal, Optional
+
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from opentelemetry_mcp_server.exceptions import OtelOperationError
+from opentelemetry_mcp_server.exceptions import (
+    OtelOperationError,
+    OtelResourceNotFoundError,
+    OtelValidationError,
+)
+from opentelemetry_mcp_server.models.findings import (
+    Finding,
+    FindingCode,
+    FindingSeverity,
+)
 from opentelemetry_mcp_server.tools.base import BaseTool
+from opentelemetry_mcp_server.utils.config_merger import (
+    collapse_presampling_connector_split,
+    ensure_presampling_connector_split,
+    merge_processor,
+    remove_processor,
+)
+from opentelemetry_mcp_server.utils.yaml_helpers import config_to_yaml
+
+_VALID_STRATEGIES = {"none", "head", "probabilistic", "tail"}
 
 
 class SamplingTools(BaseTool):
-    """Sampling inspection and configuration tools."""
+    """Sampling configuration tools."""
 
-    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
+    def register(self, mcp_instance: Any) -> None:
+        if not self.should_register_tool("pipeline", is_write=True):
+            return
 
         kubernetes_service = self.kubernetes_service
         collector_config_service = self.collector_config_service
 
         @mcp_instance.tool(
             annotations=ToolAnnotations(
-                title="Inspect Sampling Configuration",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=True,
-            )
-        )
-        async def otel_inspect_sampling_configuration(
-            namespace: str = Field(
-                ..., min_length=1, description="Collector namespace"
-            ),
-            collector_name: str = Field(
-                ..., min_length=1, description="Collector CRD name"
-            ),
-            instrumentation_cr_name: Optional[str] = Field(
-                default=None,
-                description="Instrumentation CR name to check head sampling config",
-            ),
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> Dict[str, Any]:
-            """Inspect the complete sampling configuration for a collector.
-
-            Cross-references head sampling (from Instrumentation CRDs) with
-            tail sampling (from collector config) to detect conflicts and
-            provide a holistic view. Read-only.
-
-            Returns:
-            - {"mode": str, "head_sampling": {...}|null, "tail_sampling": {...}|null, "warnings": [...]}
-
-            When NOT to use: For modifying sampling, use
-            otel_toggle_sampling_strategy.
-
-            Common errors:
-            - No sampling: Returns mode='none' with empty config.
-            """
-            try:
-                raw = await kubernetes_service.get_otel_collector(
-                    namespace, collector_name
-                )
-                cfg = collector_config_service.parse_collector_config(raw)
-
-                instr_cr = None
-                missing_cr_warning = None
-                if instrumentation_cr_name:
-                    try:
-                        instr_cr = await kubernetes_service.get_instrumentation(
-                            namespace, instrumentation_cr_name
-                        )
-                    except Exception:
-                        instr_cr = None
-                        missing_cr_warning = (
-                            f"Instrumentation CR '{instrumentation_cr_name}' "
-                            f"not found in namespace '{namespace}' — "
-                            "head sampling data unavailable"
-                        )
-
-                sampling_config = collector_config_service.extract_sampling_config(
-                    cfg, collector_name, namespace, instr_cr
-                )
-
-                result = sampling_config.model_dump()
-
-                # Inject missing CR warning if applicable
-                if missing_cr_warning:
-                    warnings = result.get("warnings", [])
-                    warnings.append(missing_cr_warning)
-                    result["warnings"] = warnings
-
-                return result
-            except Exception as e:
-                raise OtelOperationError(
-                    f"Failed to inspect sampling configuration: {e}"
-                )
-
-        @mcp_instance.tool(
-            annotations=ToolAnnotations(
-                title="Toggle Sampling Strategy",
+                title="Configure Sampling Strategy",
                 readOnlyHint=False,
                 destructiveHint=True,
                 idempotentHint=False,
                 openWorldHint=True,
             )
         )
-        async def otel_toggle_sampling_strategy(
+        async def otel_configure_sampling(
             namespace: str = Field(
                 ..., min_length=1, description="Collector namespace"
             ),
             collector_name: str = Field(
                 ..., min_length=1, description="Collector CRD name"
             ),
-            target_mode: str = Field(
+            strategy: Literal["none", "head", "probabilistic", "tail"] = Field(
                 ...,
-                description="Target sampling mode: 'head', 'tail', or 'none'",
+                description=(
+                    "Target sampling strategy: 'none', 'head' (SDK-level on "
+                    "Instrumentation CR), 'probabilistic' (collector processor), "
+                    "or 'tail' (collector tail_sampling processor)"
+                ),
             ),
-            sample_rate: Optional[float] = Field(
+            sampling_options: Optional[Dict[str, Any]] = Field(
                 default=None,
-                ge=0.0,
-                le=1.0,
-                description="Sample rate for head sampling (0.0-1.0)",
-            ),
-            tail_policies: Optional[List[Dict[str, Any]]] = Field(
-                default=None,
-                description="Tail sampling policies (list of policy dicts)",
+                description=(
+                    "Optional sampling parameters dict supporting keys: "
+                    "'sample_rate' (float 0.0-1.0 for head/probabilistic), "
+                    "'decision_wait' (str, default '10s' for tail), "
+                    "'num_traces' (int, default 50000 for tail), "
+                    "'expected_new_traces_per_sec' (int), "
+                    "'policies' (list of tail_sampling policy dicts), "
+                    "'has_load_balancing_exporter' (bool, True if upstream tier "
+                    "routes spans by traceID)"
+                ),
             ),
             dry_run: bool = Field(
                 default=True,
-                description="If True, generates the config patch without applying. Set False after review.",
+                description=(
+                    "If True, validates topology and returns the sampling config "
+                    "patch without applying. Set False after reviewing."
+                ),
+            ),
+            confirm: bool = Field(
+                default=False,
+                description=(
+                    "Set True to confirm applying sampling changes when dry_run=False"
+                ),
             ),
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Generate sampling configuration changes.
+            """Configure trace sampling strategy across collector and Instrumentation CRs.
 
-            Generates the configuration patch needed to switch between
-            head, tail, or no sampling. When dry_run=True, returns the
-            YAML patch for review.
-
-            **WARNING: With dry_run=False, this modifies collector or
-            Instrumentation CRD configurations.**
-
-            Returns:
-            - {"target_mode": str, "config_patch": str, "dry_run": bool, "instructions": str}
-
-            When NOT to use: For inspecting current sampling, use
-            otel_inspect_sampling_configuration.
-
-            Prerequisites: Verify current config with
-            otel_inspect_sampling_configuration first.
+            Supports 'head' (Instrumentation CR parentbased_traceidratio),
+            'probabilistic' (collector probabilistic_sampler processor),
+            'tail' (collector tail_sampling processor with trace-affinity guard),
+            and 'none' (removes both head and tail sampling).
             """
             try:
-                from opentelemetry_mcp_server.utils.yaml_helpers import config_to_yaml
+                if not dry_run:
+                    self.require_write_access("otel_configure_sampling")
 
-                if target_mode == "head":
-                    rate = sample_rate or 1.0
+                if strategy not in _VALID_STRATEGIES:
+                    raise OtelValidationError(
+                        f"Invalid strategy: '{strategy}'. "
+                        f"Supported: {sorted(_VALID_STRATEGIES)}"
+                    )
+
+                opts = dict(sampling_options or {})
+                sample_rate = float(opts.get("sample_rate", 0.1))
+                if not (0.0 <= sample_rate <= 1.0):
+                    raise OtelValidationError(
+                        f"sample_rate must be between 0.0 and 1.0 (got {sample_rate})."
+                    )
+
+                findings: List[Finding] = []
+
+                if strategy == "head":
                     config_patch = (
                         f"# Apply to Instrumentation CRD in namespace '{namespace}':\n"
-                        f"spec:\n"
-                        f"  sampler:\n"
-                        f"    type: parentbased_traceidratio\n"
-                        f"    argument: \"{rate}\"\n"
+                        "spec:\n"
+                        "  sampler:\n"
+                        "    type: parentbased_traceidratio\n"
+                        f'    argument: "{sample_rate}"\n'
                     )
-                    instructions = (
-                        f"1. Update Instrumentation CR in {namespace}\n"
-                        f"2. Set sampler.type to 'parentbased_traceidratio'\n"
-                        f"3. Set sampler.argument to '{rate}'\n"
-                        "4. Workloads will pick up the change on next restart"
+                    if dry_run:
+                        return {
+                            "strategy": strategy,
+                            "target_mode": strategy,
+                            "collector": f"{namespace}/{collector_name}",
+                            "config_patch": config_patch,
+                            "dry_run": True,
+                            "action": "dry_run",
+                            "findings": [],
+                            "message": (
+                                "Dry run — review the head sampling patch above. "
+                                "Set dry_run=False to apply to the namespace Instrumentation CR."
+                            ),
+                        }
+
+                    existing_instr = (
+                        await kubernetes_service.list_instrumentations(
+                            namespace=namespace
+                        )
                     )
+                    items = existing_instr.get("items", [])
+                    if not items:
+                        raise OtelValidationError(
+                            f"No Instrumentation CRD found in namespace '{namespace}'. "
+                            "Create one first with otel_patch_instrumentation."
+                        )
+                    instr_name = items[0].get("metadata", {}).get("name", "")
+                    existing_spec = dict(items[0].get("spec", {}) or {})
+                    existing_spec["sampler"] = {
+                        "type": "parentbased_traceidratio",
+                        "argument": str(sample_rate),
+                    }
+                    await kubernetes_service.create_or_patch_instrumentation(
+                        namespace=namespace,
+                        name=instr_name,
+                        spec=existing_spec,
+                        overwrite=False,
+                    )
+                    return {
+                        "strategy": strategy,
+                        "target_mode": strategy,
+                        "collector": f"{namespace}/{collector_name}",
+                        "dry_run": False,
+                        "action": "applied",
+                        "instrumentation_cr": instr_name,
+                        "sampler": existing_spec["sampler"],
+                        "findings": [],
+                        "message": (
+                            f"Head sampling set to {sample_rate} on Instrumentation CR "
+                            f"'{instr_name}'. Restart workloads to apply."
+                        ),
+                    }
 
-                    if not dry_run:
-                        # Apply head sampling to the Instrumentation CRD
-                        try:
-                            existing_instr = await kubernetes_service.list_instrumentations(
-                                namespace=namespace
-                            )
-                            items = existing_instr.get("items", [])
-                            if not items:
-                                return {
-                                    "error": (
-                                        f"No Instrumentation CRD found in namespace '{namespace}'. "
-                                        "Create one first with otel_patch_instrumentation."
-                                    )
-                                }
-                            instr_name = items[0].get("metadata", {}).get("name", "")
-                            existing_spec = items[0].get("spec", {})
-                            existing_spec["sampler"] = {
-                                "type": "parentbased_traceidratio",
-                                "argument": str(rate),
-                            }
-                            result = await kubernetes_service.create_or_patch_instrumentation(
-                                namespace=namespace,
-                                name=instr_name,
-                                spec=existing_spec,
-                                overwrite=False,
-                            )
-                            return {
-                                "target_mode": target_mode,
-                                "collector": f"{namespace}/{collector_name}",
-                                "dry_run": False,
-                                "action": "applied",
-                                "instrumentation_cr": instr_name,
-                                "sampler": {"type": "parentbased_traceidratio", "argument": str(rate)},
-                                "message": (
-                                    f"Head sampling set to {rate} on Instrumentation CR "
-                                    f"'{instr_name}'. Workloads pick up changes on next restart."
-                                ),
-                            }
-                        except Exception as e:
-                            raise OtelOperationError(
-                                f"Failed to apply head sampling: {e}"
-                            )
+                if strategy == "probabilistic":
+                    pct = round(sample_rate * 100.0, 4)
+                    proc_cfg = {"sampling_percentage": pct}
+                    config_patch = config_to_yaml(
+                        {"processors": {"probabilistic_sampler": proc_cfg}}
+                    )
+                    if dry_run:
+                        return {
+                            "strategy": strategy,
+                            "target_mode": strategy,
+                            "collector": f"{namespace}/{collector_name}",
+                            "config_patch": config_patch,
+                            "dry_run": True,
+                            "action": "dry_run",
+                            "findings": [],
+                            "message": (
+                                "Dry run — review the probabilistic_sampler config above. "
+                                "Set dry_run=False to apply."
+                            ),
+                        }
 
-                elif target_mode == "tail":
-                    policies = tail_policies or [
+                    raw = await kubernetes_service.get_otel_collector(
+                        namespace, collector_name
+                    )
+                    current_cfg = (
+                        collector_config_service.parse_collector_config(raw)
+                    )
+                    merged_cfg, changes = merge_processor(
+                        current_cfg,
+                        "probabilistic_sampler",
+                        proc_cfg,
+                        "traces",
+                        before="batch",
+                    )
+                    merged_cfg, split_changes = ensure_presampling_connector_split(
+                        merged_cfg
+                    )
+                    changes.extend(split_changes)
+                    spec = dict(raw.get("spec", {}) or {})
+                    spec["config"] = merged_cfg
+                    await kubernetes_service.create_or_patch_collector(
+                        namespace=namespace,
+                        name=collector_name,
+                        spec=spec,
+                        dry_run=False,
+                    )
+                    return {
+                        "strategy": strategy,
+                        "target_mode": strategy,
+                        "collector": f"{namespace}/{collector_name}",
+                        "dry_run": False,
+                        "action": "applied",
+                        "changes": changes,
+                        "sampling_percentage": pct,
+                        "findings": [],
+                        "message": (
+                            f"Probabilistic sampling ({pct}%) applied to "
+                            f"collector '{collector_name}'."
+                        ),
+                    }
+
+                if strategy == "tail":
+                    policies = opts.get("policies") or [
                         {
                             "name": "error-sampling",
                             "type": "status_code",
@@ -225,157 +259,274 @@ class SamplingTools(BaseTool):
                         {
                             "name": "probabilistic-fallback",
                             "type": "probabilistic",
-                            "probabilistic": {"sampling_percentage": 10},
+                            "probabilistic": {
+                                "sampling_percentage": round(
+                                    sample_rate * 100.0, 2
+                                )
+                            },
                         },
                     ]
+                    decision_wait = str(opts.get("decision_wait", "10s"))
+                    num_traces = int(opts.get("num_traces", 50000))
+                    has_lb = bool(opts.get("has_load_balancing_exporter", False))
 
-                    processor_config = {
-                        "decision_wait": "10s",
-                        "num_traces": 50000,
+                    processor_config: Dict[str, Any] = {
+                        "decision_wait": decision_wait,
+                        "num_traces": num_traces,
                         "policies": policies,
                     }
-                    config_patch = collector_config_service.generate_tail_sampling_patch(
-                        policies
-                    )
-                    instructions = (
-                        f"1. Add the tail_sampling processor to collector '{collector_name}'\n"
-                        "2. Add 'tail_sampling' to traces pipeline processors (before batch)\n"
-                        "3. NOTE: Tail sampling requires all spans for a trace to arrive at\n"
-                        "   the same collector instance. Use a load balancer with\n"
-                        "   trace-ID-aware routing or a Gateway deployment."
-                    )
-
-                    if not dry_run:
-                        # Fetch current config, merge, and apply
-                        from opentelemetry_mcp_server.utils.config_merger import merge_processor
-
-                        raw = await kubernetes_service.get_otel_collector(
-                            namespace, collector_name
-                        )
-                        current_cfg = collector_config_service.parse_collector_config(raw)
-
-                        merged_cfg, changes = merge_processor(
-                            current_cfg,
-                            "tail_sampling",
-                            processor_config,
-                            "traces",
-                            before="batch",
+                    if opts.get("expected_new_traces_per_sec"):
+                        processor_config["expected_new_traces_per_sec"] = int(
+                            opts["expected_new_traces_per_sec"]
                         )
 
-                        spec = dict(raw.get("spec", {}))
+                    config_patch = config_to_yaml(
+                        {"processors": {"tail_sampling": processor_config}}
+                    )
+
+                    # Inspect live collector to enforce trace-affinity guard
+                    raw_collector = None
+                    try:
+                        raw_collector = (
+                            await kubernetes_service.get_otel_collector(
+                                namespace, collector_name
+                            )
+                        )
+                    except OtelResourceNotFoundError:
+                        raw_collector = None
+
+                    if raw_collector:
+                        c_spec = raw_collector.get("spec", {}) or {}
+                        c_mode = str(
+                            c_spec.get("mode", "deployment")
+                        ).lower()
+                        c_replicas = int(c_spec.get("replicas", 1) or 1)
+                        if c_mode == "daemonset" or (
+                            c_replicas > 1 and not has_lb
+                        ):
+                            findings.append(
+                                Finding.create(
+                                    FindingCode.CFG_TAIL_SAMPLING_NO_TRACE_AFFINITY,
+                                    message=(
+                                        f"Collector '{collector_name}' runs in mode='{c_mode}' "
+                                        f"(replicas={c_replicas}) without trace-ID-aware load "
+                                        "balancing. Tail sampling requires all spans of a trace "
+                                        "to reach the same collector instance."
+                                    ),
+                                    field_path="processors.tail_sampling",
+                                    remediation=(
+                                        "Deploy a dedicated tail-sampler StatefulSet/Deployment "
+                                        "(or replica=1) fronted by a loadbalancing exporter with "
+                                        "routing_key: traceID, or pass "
+                                        "sampling_options={'has_load_balancing_exporter': True}."
+                                    ),
+                                )
+                            )
+
+                    # Check if head sampling is also active in namespace
+                    try:
+                        instrs = await kubernetes_service.list_instrumentations(
+                            namespace=namespace
+                        )
+                        for item in instrs.get("items", []):
+                            sampler_cfg = (
+                                item.get("spec", {}) or {}
+                            ).get("sampler", {})
+                            if sampler_cfg.get("type") and sampler_cfg.get(
+                                "type"
+                            ) not in ("always_on", "parentbased_always_on"):
+                                findings.append(
+                                    Finding(
+                                        code=FindingCode.CFG_TAIL_SAMPLING_NO_TRACE_AFFINITY,
+                                        severity=FindingSeverity.WARNING,
+                                        message=(
+                                            f"Instrumentation CR '{item.get('metadata', {}).get('name')}' "
+                                            f"has head sampler '{sampler_cfg.get('type')}'. "
+                                            "Head sampling drops spans at the SDK before tail_sampling "
+                                            "can evaluate error/latency policies."
+                                        ),
+                                        field_path="spec.sampler",
+                                        remediation=(
+                                            "Set head sampler to 'parentbased_always_on' when "
+                                            "using tail_sampling."
+                                        ),
+                                    )
+                                )
+                    except Exception:
+                        pass
+
+                    error_findings = [
+                        f
+                        for f in findings
+                        if f.severity == FindingSeverity.ERROR
+                    ]
+
+                    if dry_run:
+                        return {
+                            "strategy": strategy,
+                            "target_mode": strategy,
+                            "collector": f"{namespace}/{collector_name}",
+                            "config_patch": config_patch,
+                            "dry_run": True,
+                            "action": "dry_run",
+                            "valid": len(error_findings) == 0,
+                            "findings": [f.model_dump() for f in findings],
+                            "message": (
+                                "Dry run — review config_patch and findings above. "
+                                "Set dry_run=False to apply."
+                            ),
+                        }
+
+                    if error_findings:
+                        raise OtelValidationError(
+                            f"Cannot apply tail_sampling: {error_findings[0].message}"
+                        )
+
+                    if not raw_collector:
+                        raw_collector = (
+                            await kubernetes_service.get_otel_collector(
+                                namespace, collector_name
+                            )
+                        )
+                    current_cfg = (
+                        collector_config_service.parse_collector_config(
+                            raw_collector
+                        )
+                    )
+                    target_trace_pipe = (
+                        "traces/sampling"
+                        if "traces/sampling"
+                        in (current_cfg.get("service", {}) or {}).get(
+                            "pipelines", {}
+                        )
+                        else "traces"
+                    )
+                    merged_cfg, changes = merge_processor(
+                        current_cfg,
+                        "tail_sampling",
+                        processor_config,
+                        target_trace_pipe,
+                        before="batch",
+                    )
+                    merged_cfg, split_changes = ensure_presampling_connector_split(
+                        merged_cfg
+                    )
+                    changes.extend(split_changes)
+                    spec = dict(raw_collector.get("spec", {}) or {})
+                    spec["config"] = merged_cfg
+
+                    await kubernetes_service.create_or_patch_collector(
+                        namespace=namespace,
+                        name=collector_name,
+                        spec=spec,
+                        dry_run=False,
+                    )
+
+                    return {
+                        "strategy": strategy,
+                        "target_mode": strategy,
+                        "collector": f"{namespace}/{collector_name}",
+                        "dry_run": False,
+                        "action": "applied",
+                        "changes": changes,
+                        "policies": [p.get("name", "") for p in policies],
+                        "findings": [f.model_dump() for f in findings],
+                        "message": (
+                            f"Tail sampling applied to collector '{collector_name}'."
+                        ),
+                    }
+
+                # strategy == "none"
+                config_patch = (
+                    "# Remove spec.sampler from Instrumentation CRD\n"
+                    "# Remove tail_sampling and probabilistic_sampler from collector config\n"
+                )
+                if dry_run:
+                    return {
+                        "strategy": strategy,
+                        "target_mode": strategy,
+                        "collector": f"{namespace}/{collector_name}",
+                        "config_patch": config_patch,
+                        "dry_run": True,
+                        "action": "dry_run",
+                        "findings": [],
+                        "message": (
+                            "Dry run — would disable head, probabilistic, and tail sampling. "
+                            "Set dry_run=False to apply."
+                        ),
+                    }
+
+                all_changes: List[str] = []
+                try:
+                    raw = await kubernetes_service.get_otel_collector(
+                        namespace, collector_name
+                    )
+                    current_cfg = (
+                        collector_config_service.parse_collector_config(raw)
+                    )
+                    merged_cfg, changes1 = remove_processor(
+                        current_cfg, "tail_sampling"
+                    )
+                    merged_cfg, changes2 = remove_processor(
+                        merged_cfg, "probabilistic_sampler"
+                    )
+                    merged_cfg, changes3 = collapse_presampling_connector_split(
+                        merged_cfg
+                    )
+                    changes = changes1 + changes2 + changes3
+                    if changes:
+                        spec = dict(raw.get("spec", {}) or {})
                         spec["config"] = merged_cfg
-
-                        result = await kubernetes_service.create_or_patch_collector(
+                        await kubernetes_service.create_or_patch_collector(
                             namespace=namespace,
                             name=collector_name,
                             spec=spec,
                             dry_run=False,
                         )
+                        all_changes.extend(changes)
+                except Exception:
+                    all_changes.append("No collector changes needed")
 
-                        return {
-                            "target_mode": target_mode,
-                            "collector": f"{namespace}/{collector_name}",
-                            "dry_run": False,
-                            "action": "applied",
-                            "changes": changes,
-                            "policies": [p.get("name", "") for p in policies],
-                            "message": (
-                                f"Tail sampling applied to collector '{collector_name}'. "
-                                "NOTE: Tail sampling requires trace-ID-aware routing."
-                            ),
-                        }
-
-                elif target_mode == "none":
-                    config_patch = (
-                        "# To disable head sampling:\n"
-                        "# Remove spec.sampler from Instrumentation CRD\n\n"
-                        "# To disable tail sampling:\n"
-                        "# Remove tail_sampling processor from collector config\n"
-                        "# Remove it from pipeline processors lists"
+                try:
+                    instrs = await kubernetes_service.list_instrumentations(
+                        namespace=namespace
                     )
-                    instructions = (
-                        "1. Remove sampler config from Instrumentation CR\n"
-                        "2. Remove tail_sampling processor from collector config\n"
-                        "3. Remove tail_sampling from pipeline processor lists"
-                    )
-
-                    if not dry_run:
-                        from opentelemetry_mcp_server.utils.config_merger import remove_processor
-
-                        all_changes: List[str] = []
-
-                        # Remove tail sampling from collector
-                        try:
-                            raw = await kubernetes_service.get_otel_collector(
-                                namespace, collector_name
+                    for item in instrs.get("items", []):
+                        instr_spec = dict(item.get("spec", {}) or {})
+                        if "sampler" in instr_spec:
+                            del instr_spec["sampler"]
+                            instr_name = (
+                                item.get("metadata", {}) or {}
+                            ).get("name", "")
+                            await kubernetes_service.create_or_patch_instrumentation(
+                                namespace=namespace,
+                                name=instr_name,
+                                spec=instr_spec,
+                                overwrite=False,
                             )
-                            current_cfg = collector_config_service.parse_collector_config(raw)
-                            merged_cfg, changes = remove_processor(
-                                current_cfg, "tail_sampling"
+                            all_changes.append(
+                                f"Removed sampler from Instrumentation CR '{instr_name}'"
                             )
-                            if changes:
-                                spec = dict(raw.get("spec", {}))
-                                spec["config"] = merged_cfg
-                                await kubernetes_service.create_or_patch_collector(
-                                    namespace=namespace,
-                                    name=collector_name,
-                                    spec=spec,
-                                    dry_run=False,
-                                )
-                                all_changes.extend(changes)
-                        except Exception:
-                            all_changes.append("No collector changes needed")
-
-                        # Remove head sampling from Instrumentation CRD
-                        try:
-                            instrs = await kubernetes_service.list_instrumentations(
-                                namespace=namespace
-                            )
-                            for item in instrs.get("items", []):
-                                instr_spec = item.get("spec", {})
-                                if "sampler" in instr_spec:
-                                    del instr_spec["sampler"]
-                                    instr_name = item.get("metadata", {}).get("name", "")
-                                    await kubernetes_service.create_or_patch_instrumentation(
-                                        namespace=namespace,
-                                        name=instr_name,
-                                        spec=instr_spec,
-                                        overwrite=False,
-                                    )
-                                    all_changes.append(
-                                        f"Removed sampler from Instrumentation CR '{instr_name}'"
-                                    )
-                        except Exception:
-                            all_changes.append("No instrumentation changes needed")
-
-                        return {
-                            "target_mode": target_mode,
-                            "collector": f"{namespace}/{collector_name}",
-                            "dry_run": False,
-                            "action": "applied",
-                            "changes": all_changes,
-                            "message": "Sampling disabled.",
-                        }
-
-                else:
-                    return {
-                        "error": f"Invalid target_mode: '{target_mode}'. Use 'head', 'tail', or 'none'."
-                    }
+                except Exception:
+                    all_changes.append("No instrumentation changes needed")
 
                 return {
-                    "target_mode": target_mode,
+                    "strategy": strategy,
+                    "target_mode": strategy,
                     "collector": f"{namespace}/{collector_name}",
-                    "config_patch": config_patch,
-                    "dry_run": dry_run,
-                    "instructions": instructions,
-                    "message": (
-                        "Dry run — review the config_patch above. "
-                        "Set dry_run=False to apply."
-                    ),
+                    "dry_run": False,
+                    "action": "applied",
+                    "changes": all_changes,
+                    "findings": [],
+                    "message": "Sampling disabled.",
                 }
-            except OtelOperationError:
+            except (OtelValidationError, OtelOperationError):
                 raise
             except Exception as e:
-                raise OtelOperationError(
-                    f"Failed to generate/apply sampling config: {e}"
+                self.handle_error(
+                    e,
+                    tool_name="otel_configure_sampling",
+                    namespace=namespace,
+                    resource_name=collector_name,
                 )
+                raise

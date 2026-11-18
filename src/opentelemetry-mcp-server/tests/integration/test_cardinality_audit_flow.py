@@ -1,7 +1,9 @@
-"""E2E workflow test: Cardinality Audit.
+"""End-to-End Workflow Test: Cardinality & Noise Reduction Flow.
 
-Maps to the otel_cardinality_audit prompt workflow:
-  Detect cardinality → Generate transform rules → Inspect spanmetrics
+Matches the `controlling-telemetry-cardinality-and-noise` skill workflow:
+  1. Read `otel://spanmetrics/{namespace}/{collector}` and `otel://logs-profile/{namespace}/{collector}`
+  2. Configure OTTL processing (`otel_configure_processing`) with `dry_run=True`
+  3. Configure bounded connectors (`otel_configure_connectors`) with `dry_run=True`
 """
 
 import json
@@ -12,43 +14,47 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_cardinality_audit_flow(bootstrapped_mcp):
-    """End-to-end cardinality audit workflow."""
     async with Client(bootstrapped_mcp) as client:
-        # Step 1 — Get the prompt to understand the workflow
-        prompt_result = await client.get_prompt(
-            "otel_cardinality_audit",
-            arguments={
-                "collector_name": "my-collector",
+        # 1. Inspect spanmetrics and logs profile resources
+        sm_res = await client.read_resource("otel://spanmetrics/observability/my-collector")
+        sm_data = json.loads(sm_res[0].text)
+        assert sm_data["enabled"] is True
+
+        logs_res = await client.read_resource("otel://logs-profile/observability/my-collector")
+        logs_data = json.loads(logs_res[0].text)
+        assert "enabled" in logs_data
+
+        # 2. Preview OTTL cardinality & noise processing rules
+        proc_res = await client.call_tool(
+            "otel_configure_processing",
+            {
                 "namespace": "observability",
+                "collector_name": "my-collector",
+                "signals": ["logs", "traces"],
+                "rules": {
+                    "parse_json": True,
+                    "mask_pii": True,
+                    "drop_attributes": ["http.user_agent", "url.query"],
+                    "drop_noise_paths": ["/healthz", "/readyz", "/metrics"],
+                },
+                "dry_run": True,
             },
         )
-        assert len(prompt_result.messages) > 0
-        prompt_text = prompt_result.messages[0].content.text
-        assert "otel_detect_cardinality" in prompt_text
+        proc_data = json.loads(proc_res.content[0].text)
+        assert proc_data["dry_run"] is True
 
-        # Step 2 — Detect cardinality issues
-        detect_result = await client.call_tool(
-            "otel_detect_cardinality",
-            {"name": "my-collector", "namespace": "observability"},
+        # 3. Preview bounded spanmetrics + servicegraph connectors
+        conn_res = await client.call_tool(
+            "otel_configure_connectors",
+            {
+                "namespace": "observability",
+                "collector_name": "my-collector",
+                "connectors": ["spanmetrics", "servicegraph"],
+                "connector_options": {
+                    "dimensions": ["http.request.method", "http.response.status_code"],
+                },
+                "dry_run": True,
+            },
         )
-        detect_data = json.loads(detect_result.content[0].text)
-        assert "issues" in detect_data
-        assert detect_data["spanmetrics_enabled"] is True
-
-        # Step 3 — Generate transform rules for remediation
-        # Use a known high-cardinality attribute
-        transform_result = await client.call_tool(
-            "otel_gen_drop_attribute_rules",
-            {"attributes": ["http.user_agent"]},
-        )
-        transform_data = json.loads(transform_result.content[0].text)
-        assert "yaml_snippet" in transform_data
-        assert "http.user_agent" in transform_data["yaml_snippet"]
-
-        # Step 4 — Inspect spanmetrics for cross-reference
-        sm_result = await client.call_tool(
-            "otel_inspect_spanmetrics_config",
-            {"name": "my-collector", "namespace": "observability"},
-        )
-        sm_data = json.loads(sm_result.content[0].text)
-        assert sm_data["profile"]["enabled"] is True
+        conn_data = json.loads(conn_res.content[0].text)
+        assert conn_data["dry_run"] is True

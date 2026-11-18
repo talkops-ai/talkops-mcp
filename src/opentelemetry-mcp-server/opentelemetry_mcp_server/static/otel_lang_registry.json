@@ -1,19 +1,21 @@
 {
   "_metadata": {
-    "description": "OpenTelemetry language instrumentation support registry. Sourced from opentelemetry.io/docs/languages/ and the OTel Registry.",
-    "version": "2026-05",
+    "description": "Internal OpenTelemetry language auto-instrumentation defaults used by the MCP execution layer.",
+    "version": "2026-08",
     "override_env_var": "OTEL_LANG_REGISTRY_PATH"
   },
   "languages": {
     "java": {
       "display_name": "Java",
+      "default_otlp_protocol": "grpc",
+      "default_otlp_port": 4317,
       "signal_support": {
         "traces": "stable",
         "metrics": "stable",
         "logs": "stable"
       },
       "auto_instrumentation_available": true,
-      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:latest",
+      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:1.33.5",
       "ebpf_supported": true,
       "annotation_key": "instrumentation.opentelemetry.io/inject-java",
       "sdk_package": "io.opentelemetry:opentelemetry-api",
@@ -32,13 +34,15 @@
     },
     "python": {
       "display_name": "Python",
+      "default_otlp_protocol": "http/protobuf",
+      "default_otlp_port": 4318,
       "signal_support": {
         "traces": "stable",
         "metrics": "stable",
         "logs": "stable"
       },
       "auto_instrumentation_available": true,
-      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:latest",
+      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:0.50b0",
       "ebpf_supported": true,
       "annotation_key": "instrumentation.opentelemetry.io/inject-python",
       "sdk_package": "opentelemetry-api",
@@ -57,13 +61,15 @@
     },
     "nodejs": {
       "display_name": "Node.js",
+      "default_otlp_protocol": "grpc",
+      "default_otlp_port": 4317,
       "signal_support": {
         "traces": "stable",
         "metrics": "stable",
         "logs": "stable"
       },
       "auto_instrumentation_available": true,
-      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-nodejs:latest",
+      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-nodejs:0.54.0",
       "ebpf_supported": true,
       "annotation_key": "instrumentation.opentelemetry.io/inject-nodejs",
       "sdk_package": "@opentelemetry/api",
@@ -82,13 +88,16 @@
     },
     "dotnet": {
       "display_name": ".NET",
+      "default_otlp_protocol": "http/protobuf",
+      "default_otlp_port": 4318,
+      "supported_runtimes": ["linux-x64", "linux-musl-x64", "linux-arm64", "linux-musl-arm64"],
       "signal_support": {
         "traces": "stable",
         "metrics": "stable",
         "logs": "stable"
       },
       "auto_instrumentation_available": true,
-      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-dotnet:latest",
+      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-dotnet:1.9.0",
       "ebpf_supported": false,
       "annotation_key": "instrumentation.opentelemetry.io/inject-dotnet",
       "sdk_package": "OpenTelemetry",
@@ -103,13 +112,16 @@
     },
     "go": {
       "display_name": "Go",
+      "default_otlp_protocol": "http/protobuf",
+      "default_otlp_port": 4318,
+      "requires_target_exe": true,
       "signal_support": {
         "traces": "stable",
         "metrics": "stable",
         "logs": "beta"
       },
       "auto_instrumentation_available": true,
-      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-go:latest",
+      "auto_instrumentation_image": "ghcr.io/open-telemetry/opentelemetry-go-instrumentation/autoinstrumentation-go:v0.19.0-alpha",
       "ebpf_supported": true,
       "annotation_key": "instrumentation.opentelemetry.io/inject-go",
       "sdk_package": "go.opentelemetry.io/otel",
@@ -125,6 +137,8 @@
     },
     "rust": {
       "display_name": "Rust",
+      "default_otlp_protocol": "grpc",
+      "default_otlp_port": 4317,
       "signal_support": {
         "traces": "beta",
         "metrics": "alpha",

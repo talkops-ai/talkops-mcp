@@ -140,7 +140,17 @@ class CollectorConfigService:
             f"{len(pipelines)} pipeline(s) ({', '.join(signal_types)})"
         )
 
+        from opentelemetry_mcp_server.utils.redaction import redact_collector_config
         from opentelemetry_mcp_server.utils.yaml_helpers import config_to_yaml
+
+        raw_annotations = dict(metadata.get("annotations", {}) or {})
+        raw_annotations.pop("kubectl.kubernetes.io/last-applied-configuration", None)
+        if "otel.mcp/last-known-good" in raw_annotations:
+            snap_val = raw_annotations["otel.mcp/last-known-good"]
+            raw_annotations["otel.mcp/last-known-good"] = (
+                f"<snapshot:{len(str(snap_val))} chars>"
+            )
+        raw_annotations = redact_collector_config(raw_annotations)
 
         return CollectorInstance(
             name=name,
@@ -155,10 +165,12 @@ class CollectorConfigService:
             status=status,
             summary=summary,
             raw_config_yaml=(
-                config_to_yaml(cfg) if detail_level == "full" else None
+                config_to_yaml(redact_collector_config(cfg))
+                if detail_level == "full"
+                else None
             ),
             labels=metadata.get("labels", {}),
-            annotations=metadata.get("annotations", {}),
+            annotations=raw_annotations,
         )
 
     def extract_pipelines(self, cfg: Dict[str, Any]) -> List[PipelineSpec]:

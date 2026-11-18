@@ -1,7 +1,9 @@
-"""E2E workflow test: Security Audit.
+"""End-to-End Workflow Test: Security Posture Audit Flow.
 
-Maps to the otel_security_audit prompt workflow:
-  Analyze eBPF → List instrumented services → List collectors
+Matches the `auditing-observability-security-posture` skill workflow:
+  1. Read `otel://server/capabilities`
+  2. Run `otel_audit_security_posture` across collectors, RBAC, and eBPF DaemonSets
+  3. Remediate PII scrubbing via `otel_configure_processing(redact_pii=True, dry_run=True)`
 """
 
 import json
@@ -12,39 +14,26 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_security_audit_flow(bootstrapped_mcp):
-    """End-to-end security audit workflow."""
     async with Client(bootstrapped_mcp) as client:
-        # Step 1 — Get the prompt to understand the workflow
-        prompt_result = await client.get_prompt(
-            "otel_security_audit",
-            arguments={"namespace": "default"},
-        )
-        assert len(prompt_result.messages) > 0
-        prompt_text = prompt_result.messages[0].content.text
-        assert "otel_analyze_ebpf_footprint" in prompt_text
-
-        # Step 2 — Audit eBPF agents
-        ebpf_result = await client.call_tool(
-            "otel_analyze_ebpf_footprint",
+        # 1. Audit security posture
+        audit_res = await client.call_tool(
+            "otel_audit_security_posture",
             {"namespace": "default"},
         )
-        ebpf_data = json.loads(ebpf_result.content[0].text)
-        assert "risk_level" in ebpf_data
-        assert "total_ebpf_pods" in ebpf_data
+        audit_data = json.loads(audit_res.content[0].text)
+        assert "findings" in audit_data
+        assert "collectors_audited" in audit_data and "ebpf_pods" in audit_data
 
-        # Step 3 — List instrumented services
-        services_result = await client.call_tool(
-            "otel_list_instrumented_services",
-            {"namespace": "default"},
+        # 2. Preview PII redaction remediation
+        remediate_res = await client.call_tool(
+            "otel_configure_processing",
+            {
+                "namespace": "observability",
+                "collector_name": "my-collector",
+                "signals": ["logs", "traces"],
+                "rules": {"mask_pii": True},
+                "dry_run": True,
+            },
         )
-        services_data = json.loads(services_result.content[0].text)
-        assert "items" in services_data
-        assert services_data["total_count"] >= 0
-
-        # Step 4 — List all collectors
-        collectors_result = await client.call_tool(
-            "otel_list_collectors",
-            {"namespace": "default"},
-        )
-        collectors_data = json.loads(collectors_result.content[0].text)
-        assert "items" in collectors_data
+        remediate_data = json.loads(remediate_res.content[0].text)
+        assert remediate_data["dry_run"] is True

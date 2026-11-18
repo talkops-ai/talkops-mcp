@@ -1,335 +1,423 @@
-"""Metric cardinality governance and attribute management tools.
+"""Observability security posture audit tool.
 
-Read-only tools for detecting cardinality issues and generating
-transform processor YAML to remediate them.
+Provides ``otel_audit_security_posture`` for auditing collectors,
+Instrumentation CRs, eBPF/OBI agents, and RBAC ClusterRoles against
+security best practices (inline secrets, TLS settings, least-privilege
+capabilities, read-only hostPath mounts, non-root containers, and RBAC
+wildcards).
 """
 
 from typing import Any, Dict, List, Optional
 
-from mcp.types import ToolAnnotations
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from opentelemetry_mcp_server.exceptions import OtelOperationError
+from opentelemetry_mcp_server.models.findings import (
+    Finding,
+    FindingCode,
+    FindingSeverity,
+)
+from opentelemetry_mcp_server.services.config_linter import lint_collector_config
 from opentelemetry_mcp_server.tools.base import BaseTool
+from opentelemetry_mcp_server.utils.k8s_labels import EBPF_AGENT_LABELS
+from opentelemetry_mcp_server.utils.redaction import detect_inline_secrets
+
+_AUDIT_SCOPES = ("collectors", "instrumentation", "ebpf", "rbac")
 
 
 class GovernanceTools(BaseTool):
-    """Metric cardinality governance tools."""
+    """Observability security posture and governance tools."""
 
-    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
+    def register(self, mcp_instance: Any) -> None:
+        if not self.should_register_tool("governance", is_write=False):
+            return
 
         kubernetes_service = self.kubernetes_service
         collector_config_service = self.collector_config_service
 
         @mcp_instance.tool(
             annotations=ToolAnnotations(
-                title="Detect Metric Cardinality Issues",
+                title="Audit Observability Security Posture",
                 readOnlyHint=True,
                 destructiveHint=False,
                 idempotentHint=True,
                 openWorldHint=True,
             )
         )
-        async def otel_detect_cardinality(
-            namespace: str = Field(
-                ..., min_length=1, description="Collector namespace"
-            ),
-            name: str = Field(
-                ..., min_length=1, description="Collector CRD name"
-            ),
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> Dict[str, Any]:
-            """Detect potential metric cardinality issues in a collector.
-
-            Analyzes the collector's pipeline topology and spanmetrics
-            connector config to estimate metric series counts and flag
-            high-cardinality dimensions. Read-only.
-
-            Returns:
-            - {"collector": str, "issues": [{"metric_name": str, "severity": str, ...}], "total_estimated_series": int}
-
-            When NOT to use: For actual live cardinality metrics, use
-            the Prometheus MCP server with PromQL queries.
-
-            Common errors:
-            - No spanmetrics: Returns empty issues if no spanmetrics connector found.
-            """
-            try:
-                raw = await kubernetes_service.get_otel_collector(
-                    namespace, name
-                )
-                cfg = collector_config_service.parse_collector_config(raw)
-
-                sm_profile = collector_config_service.extract_spanmetrics_profile(
-                    cfg, name, namespace
-                )
-
-                issues = []
-                total_series = 0
-
-                if sm_profile.enabled:
-                    # Analyze spanmetrics dimensions
-                    dims = sm_profile.dimensions
-                    if len(dims) > 5:
-                        issues.append({
-                            "metric_name": "span.metrics.*",
-                            "estimated_series": sm_profile.estimated_series_per_service or 0,
-                            "high_cardinality_labels": [
-                                d.get("name", "unknown") for d in dims
-                            ],
-                            "source": "spanmetrics",
-                            "recommendation": (
-                                f"Reduce dimensions from {len(dims)} to ≤5. "
-                                "Use exclude_dimensions or transform processor."
-                            ),
-                            "severity": "critical" if len(dims) > 10 else "warning",
-                        })
-
-                    if sm_profile.estimated_series_per_service:
-                        total_series += sm_profile.estimated_series_per_service
-
-                    # Check histogram bucket count
-                    if sm_profile.histogram.explicit_buckets:
-                        bucket_count = len(sm_profile.histogram.explicit_buckets)
-                        if bucket_count > 20:
-                            issues.append({
-                                "metric_name": "span.metrics.duration_histogram",
-                                "estimated_series": bucket_count * max(1, len(dims)) * 10,
-                                "high_cardinality_labels": ["le (histogram bucket)"],
-                                "source": "spanmetrics",
-                                "recommendation": (
-                                    f"Reduce histogram buckets from {bucket_count} to ≤15. "
-                                    "Consider exponential histograms for automatic bucketing."
-                                ),
-                                "severity": "warning",
-                            })
-
-                # Check for transform processors that might indicate existing remediation
-                from opentelemetry_mcp_server.utils.yaml_helpers import (
-                    find_processors_of_type,
-                )
-
-                transform_procs = find_processors_of_type(cfg, "transform")
-                has_remediation = len(transform_procs) > 0
-
-                return {
-                    "collector": f"{namespace}/{name}",
-                    "total_estimated_series": total_series,
-                    "issues": issues,
-                    "total_issues": len(issues),
-                    "existing_remediation": has_remediation,
-                    "transform_processors": transform_procs,
-                    "spanmetrics_enabled": sm_profile.enabled,
-                }
-            except Exception as e:
-                raise OtelOperationError(
-                    f"Failed to detect cardinality issues: {e}"
-                )
-
-        @mcp_instance.tool(
-            annotations=ToolAnnotations(
-                title="Generate Transform Rules to Drop Attributes",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=False,
-            )
-        )
-        async def otel_gen_drop_attribute_rules(
-            attributes: List[str] = Field(
-                ...,
-                min_length=1,
-                description="List of attribute names to drop (e.g., ['http.user_agent', 'url.full'])",
-            ),
-            signal: str = Field(
-                default="metrics",
-                description="Signal type: 'metrics', 'traces', or 'logs'",
-            ),
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> Dict[str, Any]:
-            """Generate a transform processor YAML snippet to drop attributes.
-
-            Use this after detecting cardinality issues to generate the
-            config patch needed to drop high-cardinality attributes.
-            Read-only — returns YAML text, does not apply it.
-
-            Returns:
-            - {"yaml_snippet": str, "attributes_to_drop": [...], "signal": str, "instructions": str}
-
-            When NOT to use: For detecting which attributes to drop, use
-            otel_detect_cardinality first.
-            """
-            from opentelemetry_mcp_server.utils.yaml_helpers import config_to_yaml
-
-            # Build signal-specific transform config
-            context_map = {
-                "metrics": "datapoint",
-                "traces": "span",
-                "logs": "log",
-            }
-            context = context_map.get(signal, "datapoint")
-            statement_key = f"{signal}_statements"
-
-            config = {
-                "processors": {
-                    f"transform/drop_{signal}_attributes": {
-                        statement_key: [
-                            {
-                                "context": context,
-                                "statements": [
-                                    f'delete_key(attributes, "{attr}")'
-                                    for attr in attributes
-                                ],
-                            }
-                        ]
-                    }
-                }
-            }
-            yaml_snippet = config_to_yaml(config)
-
-            return {
-                "yaml_snippet": yaml_snippet,
-                "attributes_to_drop": attributes,
-                "signal": signal,
-                "instructions": (
-                    "1. Add this processor to your collector config under 'processors:'\n"
-                    f"2. Add 'transform/drop_{signal}_attributes' to the {signal} "
-                    "pipeline's processors list\n"
-                    "3. Place it BEFORE the batch processor\n"
-                    f"4. Apply the config change and verify {signal} attributes are dropping"
-                ),
-            }
-
-        @mcp_instance.tool(
-            annotations=ToolAnnotations(
-                title="Analyze eBPF Instrumentation Footprint",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=True,
-            )
-        )
-        async def otel_analyze_ebpf_footprint(
+        async def otel_audit_security_posture(
             namespace: Optional[str] = Field(
                 default=None,
-                description="Namespace to scan (all namespaces if omitted)",
+                description="Kubernetes namespace to scan (all namespaces if omitted)",
+            ),
+            scope: Optional[List[str]] = Field(
+                default=None,
+                description=(
+                    "Audit scopes to evaluate: 'collectors', 'instrumentation', "
+                    "'ebpf', 'rbac' (all four if omitted)"
+                ),
             ),
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Analyze eBPF instrumentation pods for security posture.
+            """Audit the security posture of OpenTelemetry collectors, instrumentation, eBPF/OBI agents, and RBAC.
 
-            Scans for eBPF-based observability agents (OpenTelemetry eBPF,
-            Grafana Beyla) and audits their security context: privileged
-            mode, host PID, Linux capabilities, and host volume mounts.
-            Read-only.
-
-            Returns:
-            - {"namespace": str, "total_ebpf_pods": int, "risk_level": str, "pods": [...], "recommendations": [...]}
-
-            When NOT to use: For SDK-based (non-eBPF) instrumentation
-            status, use otel_list_instrumented_services.
-
-            Common errors:
-            - No eBPF pods found: Returns empty list with risk_level='low'.
+            Detects inline plaintext secrets, insecure exporters, TLS skip-verify,
+            privileged eBPF pods, SYS_ADMIN capability usage, hostPID usage,
+            writable /var/log hostPath mounts, root container execution, and
+            wildcard RBAC rules.
             """
             try:
-                from opentelemetry_mcp_server.utils.k8s_labels import EBPF_AGENT_LABELS
+                active_scopes = set(scope or _AUDIT_SCOPES)
+                findings: List[Finding] = []
+                recommendations: List[str] = []
 
-                all_ebpf_pods = []
-                for label in EBPF_AGENT_LABELS:
-                    pods = await kubernetes_service.list_pods(
-                        namespace=namespace, label_selector=label
-                    )
-                    all_ebpf_pods.extend(pods)
-
-                # Deduplicate by pod name
-                seen = set()
-                unique_pods = []
-                for p in all_ebpf_pods:
-                    key = f"{p['namespace']}/{p['name']}"
-                    if key not in seen:
-                        seen.add(key)
-                        unique_pods.append(p)
-
-                # Analyze security context
-                pod_details = []
+                collectors_audited = 0
+                instrumentations_audited = 0
+                rbac_roles_audited = 0
+                pod_details: List[Dict[str, Any]] = []
                 total_privileged = 0
                 total_host_pid = 0
                 all_capabilities = set()
                 all_host_mounts = set()
 
-                for pod in unique_pods[:50]:  # Limit to first 50
-                    is_privileged = False
-                    pod_caps = []
-                    pod_mounts = []
+                # 1. Collectors audit
+                if "collectors" in active_scopes:
+                    raw_collectors = (
+                        await kubernetes_service.list_otel_collectors(
+                            namespace=namespace
+                        )
+                    )
+                    for item in raw_collectors.get("items", []):
+                        collectors_audited += 1
+                        meta = item.get("metadata", {}) or {}
+                        c_name = meta.get("name", "unknown")
+                        c_ns = meta.get("namespace", "default")
+                        spec = item.get("spec", {}) or {}
+                        mode = str(spec.get("mode", "deployment")).lower()
 
-                    for c in pod.get("containers", []):
-                        sc = c.get("security_context", {})
-                        if sc.get("privileged"):
-                            is_privileged = True
-                        caps = sc.get("capabilities", [])
-                        pod_caps.extend(caps)
+                        try:
+                            cfg = (
+                                collector_config_service.parse_collector_config(
+                                    item
+                                )
+                            )
+                            lint_findings = lint_collector_config(
+                                cfg,
+                                mode=mode,
+                                env_vars=spec.get("env"),
+                                volumes=spec.get("volumes"),
+                            )
+                            for lf in lint_findings:
+                                if lf.code in (
+                                    FindingCode.SEC_INLINE_SECRET,
+                                    FindingCode.SEC_INSECURE_EXPORTER,
+                                    FindingCode.SEC_TLS_SKIP_VERIFY,
+                                    FindingCode.SEC_DEBUG_EXTENSION_EXPOSED,
+                                ):
+                                    findings.append(lf)
+                        except Exception:
+                            pass
 
-                        for vm in c.get("volume_mounts", []):
-                            if "/sys" in vm.get("mount_path", "") or "/proc" in vm.get("mount_path", ""):
-                                pod_mounts.append(vm["mount_path"])
+                        # Check volumeMounts in collector CRD for writable /var/log
+                        for vm in spec.get("volumeMounts", []) or []:
+                            if not isinstance(vm, dict):
+                                continue
+                            mpath = str(
+                                vm.get("mountPath")
+                                or vm.get("mount_path")
+                                or ""
+                            )
+                            ro = bool(
+                                vm.get("readOnly")
+                                or vm.get("read_only")
+                                or False
+                            )
+                            if mpath.startswith("/var/log") and not ro:
+                                findings.append(
+                                    Finding.create(
+                                        FindingCode.SEC_HOSTPATH_WRITABLE,
+                                        message=(
+                                            f"Collector '{c_ns}/{c_name}' mounts '{mpath}' "
+                                            "without readOnly: true."
+                                        ),
+                                        field_path=f"collectors.{c_ns}.{c_name}.spec.volumeMounts",
+                                        remediation="Set readOnly: true on /var/log hostPath mounts.",
+                                    )
+                                )
 
-                    for hv in pod.get("host_volumes", []):
-                        all_host_mounts.add(hv.get("host_path", ""))
-                        pod_mounts.append(hv.get("host_path", ""))
+                    # Check collector pods for writable /var/log & runAsRoot
+                    try:
+                        all_pods = await kubernetes_service.list_pods(
+                            namespace=namespace
+                        )
+                        for p in all_pods:
+                            p_labels = p.get("labels", {}) or {}
+                            if (
+                                p_labels.get("app.kubernetes.io/component")
+                                == "opentelemetry-collector"
+                                or "collector" in p.get("name", "")
+                            ):
+                                p_name = p.get("name", "")
+                                p_ns = p.get("namespace", "default")
+                                psc = p.get("pod_security_context", {}) or {}
+                                for c in p.get("containers", []) or []:
+                                    sc = c.get("security_context", {}) or {}
+                                    if (
+                                        sc.get("run_as_user") == 0
+                                        or psc.get("run_as_user") == 0
+                                        or sc.get("run_as_non_root") is False
+                                    ):
+                                        findings.append(
+                                            Finding.create(
+                                                FindingCode.SEC_POD_RUN_AS_ROOT,
+                                                message=(
+                                                    f"Collector pod '{p_ns}/{p_name}' runs "
+                                                    "as root (UID 0)."
+                                                ),
+                                                field_path=f"pods.{p_ns}.{p_name}.securityContext",
+                                                remediation=(
+                                                    "Configure securityContext.runAsNonRoot: true "
+                                                    "unless reading root-owned host logs."
+                                                ),
+                                            )
+                                        )
+                                    for vm in c.get("volume_mounts", []) or []:
+                                        mpath = str(vm.get("mount_path", ""))
+                                        if mpath.startswith(
+                                            "/var/log"
+                                        ) and not vm.get("read_only", False):
+                                            findings.append(
+                                                Finding.create(
+                                                    FindingCode.SEC_HOSTPATH_WRITABLE,
+                                                    message=(
+                                                        f"Pod '{p_ns}/{p_name}' mounts '{mpath}' "
+                                                        "as writable."
+                                                    ),
+                                                    field_path=f"pods.{p_ns}.{p_name}.volumeMounts",
+                                                    remediation="Mount /var/log as readOnly: true.",
+                                                )
+                                            )
+                    except Exception:
+                        pass
 
-                    if is_privileged:
-                        total_privileged += 1
-                    if pod.get("host_pid"):
-                        total_host_pid += 1
+                # 2. Instrumentation CRs audit
+                if "instrumentation" in active_scopes:
+                    raw_instrs = (
+                        await kubernetes_service.list_instrumentations(
+                            namespace=namespace
+                        )
+                    )
+                    for item in raw_instrs.get("items", []):
+                        instrumentations_audited += 1
+                        meta = item.get("metadata", {}) or {}
+                        i_name = meta.get("name", "unknown")
+                        i_ns = meta.get("namespace", "default")
+                        spec = item.get("spec", {}) or {}
+                        secret_hits = detect_inline_secrets(
+                            spec, base_path=f"instrumentation.{i_ns}.{i_name}.spec"
+                        )
+                        for hit in secret_hits:
+                            findings.append(
+                                Finding.create(
+                                    FindingCode.SEC_INLINE_SECRET,
+                                    message=(
+                                        f"Instrumentation CR '{i_ns}/{i_name}' contains "
+                                        f"an inline secret at '{hit['field_path']}'."
+                                    ),
+                                    field_path=hit["field_path"],
+                                    remediation=(
+                                        "Use valueFrom.secretKeyRef instead of plaintext "
+                                        "secret values in Instrumentation CRs."
+                                    ),
+                                )
+                            )
 
-                    all_capabilities.update(pod_caps)
+                # 3. eBPF / OBI agents audit (D4: audit-only in MCP server)
+                if "ebpf" in active_scopes:
+                    all_ebpf_pods = []
+                    for label in EBPF_AGENT_LABELS:
+                        pods = await kubernetes_service.list_pods(
+                            namespace=namespace, label_selector=label
+                        )
+                        all_ebpf_pods.extend(pods)
 
-                    pod_details.append({
-                        "pod_name": pod["name"],
-                        "namespace": pod["namespace"],
-                        "node_name": pod.get("node_name"),
-                        "privileged": is_privileged,
-                        "host_pid": pod.get("host_pid", False),
-                        "capabilities": pod_caps,
-                        "volume_mounts": list(set(pod_mounts)),
-                    })
+                    seen = set()
+                    unique_pods = []
+                    for p in all_ebpf_pods:
+                        key = f"{p['namespace']}/{p['name']}"
+                        if key not in seen:
+                            seen.add(key)
+                            unique_pods.append(p)
 
-                # Risk assessment
+                    for pod in unique_pods[:50]:
+                        is_privileged = False
+                        pod_caps: List[str] = []
+                        pod_mounts: List[str] = []
+                        p_name = pod["name"]
+                        p_ns = pod["namespace"]
+
+                        for c in pod.get("containers", []):
+                            sc = c.get("security_context", {}) or {}
+                            if sc.get("privileged"):
+                                is_privileged = True
+                            caps = sc.get("capabilities", []) or []
+                            pod_caps.extend(caps)
+                            for vm in c.get("volume_mounts", []) or []:
+                                mpath = vm.get("mount_path", "")
+                                if "/sys" in mpath or "/proc" in mpath:
+                                    pod_mounts.append(mpath)
+
+                        for hv in pod.get("host_volumes", []) or []:
+                            hpath = hv.get("host_path", "")
+                            all_host_mounts.add(hpath)
+                            pod_mounts.append(hpath)
+
+                        if is_privileged:
+                            total_privileged += 1
+                            findings.append(
+                                Finding.create(
+                                    FindingCode.SEC_EBPF_PRIVILEGED,
+                                    message=(
+                                        f"eBPF agent pod '{p_ns}/{p_name}' runs with "
+                                        "privileged: true."
+                                    ),
+                                    field_path=f"pods.{p_ns}.{p_name}.securityContext.privileged",
+                                    remediation=(
+                                        "Replace privileged: true with fine-grained Linux "
+                                        "capabilities: [BPF, PERFMON, SYS_PTRACE, NET_RAW, "
+                                        "DAC_READ_SEARCH, CHECKPOINT_RESTORE]."
+                                    ),
+                                )
+                            )
+                        if "SYS_ADMIN" in pod_caps:
+                            findings.append(
+                                Finding.create(
+                                    FindingCode.SEC_EBPF_SYS_ADMIN,
+                                    message=(
+                                        f"eBPF agent pod '{p_ns}/{p_name}' grants "
+                                        "broad SYS_ADMIN capability."
+                                    ),
+                                    field_path=f"pods.{p_ns}.{p_name}.securityContext.capabilities",
+                                    remediation=(
+                                        "Replace SYS_ADMIN with least-privilege capabilities "
+                                        "(BPF, PERFMON, SYS_PTRACE) on Linux kernel >= 5.8."
+                                    ),
+                                )
+                            )
+                        if pod.get("host_pid"):
+                            total_host_pid += 1
+                            findings.append(
+                                Finding.create(
+                                    FindingCode.SEC_EBPF_HOST_PID,
+                                    message=(
+                                        f"eBPF agent pod '{p_ns}/{p_name}' enables "
+                                        "hostPID: true."
+                                    ),
+                                    field_path=f"pods.{p_ns}.{p_name}.spec.hostPID",
+                                    remediation=(
+                                        "Verify hostPID is required for Go/process symbol "
+                                        "resolution and restrict pod scheduling via PSP/PSA."
+                                    ),
+                                )
+                            )
+
+                        all_capabilities.update(pod_caps)
+                        pod_details.append({
+                            "pod_name": p_name,
+                            "namespace": p_ns,
+                            "node_name": pod.get("node_name"),
+                            "privileged": is_privileged,
+                            "host_pid": pod.get("host_pid", False),
+                            "capabilities": pod_caps,
+                            "volume_mounts": sorted(set(pod_mounts)),
+                        })
+
+                # 4. RBAC ClusterRoles audit
+                if "rbac" in active_scopes:
+                    roles = await kubernetes_service.list_otel_cluster_roles(
+                        namespace=namespace
+                    )
+                    for role in roles:
+                        rbac_roles_audited += 1
+                        r_name = role.get("name", "unknown")
+                        for idx, rule in enumerate(role.get("rules", []) or []):
+                            res_list = rule.get("resources", []) or []
+                            verb_list = rule.get("verbs", []) or []
+                            write_verbs = sorted(
+                                {"create", "update", "patch", "delete", "deletecollection"}
+                                & {str(v).lower() for v in verb_list}
+                            )
+                            has_secrets = "secrets" in {str(r).lower() for r in res_list}
+                            if "*" in res_list or "*" in verb_list or has_secrets or write_verbs:
+                                findings.append(
+                                    Finding.create(
+                                        FindingCode.SEC_RBAC_WILDCARD,
+                                        message=(
+                                            f"ClusterRole '{r_name}' rule[{idx}] grants "
+                                            f"excessive permissions (resources={res_list}, "
+                                            f"verbs={verb_list})."
+                                        ),
+                                        field_path=f"clusterRoles.{r_name}.rules[{idx}]",
+                                        remediation=(
+                                            "Scope ClusterRole rules strictly to explicit non-secret "
+                                            "resources and read-only verbs ['get', 'list', 'watch']."
+                                        ),
+                                    )
+                                )
+
+                # Compute overall risk level & recommendations
                 risk_level = "low"
-                recommendations = []
-                if total_privileged > 0:
-                    risk_level = "high"
-                    recommendations.append(
-                        "Replace privileged mode with minimal capabilities (BPF, PERFMON, SYS_PTRACE)"
+                has_critical = any(
+                    f.code
+                    in (
+                        FindingCode.SEC_EBPF_SYS_ADMIN,
+                        FindingCode.SEC_INLINE_SECRET,
+                        FindingCode.SEC_RBAC_WILDCARD,
                     )
-                if total_host_pid > 0:
-                    risk_level = max(risk_level, "medium", key=["low", "medium", "high", "critical"].index)
-                    recommendations.append(
-                        "Review hostPID requirement — newer eBPF agents may not need it"
-                    )
-                if "SYS_ADMIN" in all_capabilities:
-                    risk_level = "critical"
-                    recommendations.append(
-                        "Replace SYS_ADMIN with fine-grained capabilities (BPF, PERFMON)"
-                    )
+                    for f in findings
+                )
+                has_high = any(
+                    f.severity == FindingSeverity.ERROR for f in findings
+                )
+                has_medium = any(
+                    f.severity == FindingSeverity.WARNING for f in findings
+                )
 
+                if has_critical:
+                    risk_level = "critical"
+                elif has_high:
+                    risk_level = "high"
+                elif has_medium:
+                    risk_level = "medium"
+
+                for f in findings:
+                    if f.remediation not in recommendations:
+                        recommendations.append(f.remediation)
                 if not recommendations:
                     recommendations.append("No security concerns detected")
 
                 return {
                     "namespace": namespace or "all",
-                    "total_ebpf_pods": len(unique_pods),
+                    "scope": sorted(active_scopes),
                     "risk_level": risk_level,
+                    "collectors_audited": collectors_audited,
+                    "instrumentations_audited": instrumentations_audited,
+                    "rbac_roles_audited": rbac_roles_audited,
+                    "total_ebpf_pods": len(pod_details),
                     "total_privileged": total_privileged,
                     "total_host_pid": total_host_pid,
                     "unique_capabilities": sorted(all_capabilities),
                     "unique_host_mounts": sorted(all_host_mounts),
                     "pods": pod_details,
+                    "ebpf_pods": pod_details,
+                    "findings": [f.model_dump() for f in findings],
                     "recommendations": recommendations,
                 }
             except Exception as e:
-                raise OtelOperationError(
-                    f"Failed to analyze eBPF footprint: {e}"
+                self.handle_error(
+                    e,
+                    tool_name="otel_audit_security_posture",
+                    namespace=namespace or "default",
                 )
+                raise

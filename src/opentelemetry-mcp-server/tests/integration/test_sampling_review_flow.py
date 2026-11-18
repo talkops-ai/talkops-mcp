@@ -1,62 +1,60 @@
-"""E2E workflow test: Sampling Review.
+"""End-to-End Workflow Test: Sampling & Trace-Derived Metrics Flow.
 
-Maps to the otel_sampling_review prompt workflow:
-  Inspect sampling → Get collector → Toggle strategy (dry_run)
+Matches the `tuning-sampling-and-trace-derived-metrics` skill workflow:
+  1. Read `otel://sampling/{namespace}/{collector}`
+  2. Verify `otel_configure_sampling` blocks `tail` sampling on a DaemonSet collector (`CFG_TAIL_SAMPLING_NO_TRACE_AFFINITY`)
+  3. Configure `probabilistic` head sampling in `dry_run=True`
 """
 
 import json
 import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 
 pytestmark = pytest.mark.asyncio
 
 
 async def test_sampling_review_flow(bootstrapped_mcp):
-    """End-to-end sampling review workflow."""
     async with Client(bootstrapped_mcp) as client:
-        # Step 1 — Get the prompt to understand the workflow
-        prompt_result = await client.get_prompt(
-            "otel_sampling_review",
-            arguments={
-                "collector_name": "my-collector",
-                "namespace": "observability",
-            },
-        )
-        assert len(prompt_result.messages) > 0
-        prompt_text = prompt_result.messages[0].content.text
-        assert "otel_inspect_sampling_configuration" in prompt_text
+        # 1. Read current sampling resource
+        samp_res = await client.read_resource("otel://sampling/observability/my-collector")
+        samp_data = json.loads(samp_res[0].text)
+        assert "mode" in samp_data
 
-        # Step 2 — Inspect current sampling config
-        inspect_result = await client.call_tool(
-            "otel_inspect_sampling_configuration",
+        # 2. Verify tail sampling is blocked on a daemonset collector without trace affinity
+        try:
+            tail_res = await client.call_tool(
+                "otel_configure_sampling",
+                {
+                    "namespace": "observability",
+                    "collector_name": "my-collector",
+                    "strategy": "tail",
+                    "sampling_options": {"sample_rate": 0.10},
+                    "dry_run": True,
+                },
+            )
+            tail_data = json.loads(tail_res.content[0].text)
+            assert (
+                tail_data.get("blocked") is True
+                or tail_data.get("action") == "blocked_by_topology"
+                or any(
+                    "TAIL_SAMPLING" in str(f.get("code", ""))
+                    for f in tail_data.get("findings", [])
+                )
+            )
+        except ToolError as exc:
+            assert "tail" in str(exc).lower() or "daemonset" in str(exc).lower()
+
+        # 3. Configure probabilistic head sampling in dry_run=True
+        head_res = await client.call_tool(
+            "otel_configure_sampling",
             {
                 "namespace": "observability",
                 "collector_name": "my-collector",
-            },
-        )
-        inspect_data = json.loads(inspect_result.content[0].text)
-        assert "mode" in inspect_data
-
-        # Step 3 — Get collector to understand pipeline topology
-        collector_result = await client.call_tool(
-            "otel_get_collector",
-            {"namespace": "observability", "name": "my-collector"},
-        )
-        collector_data = json.loads(collector_result.content[0].text)
-        assert collector_data["name"] == "my-collector"
-
-        # Step 4 — Generate a config patch (dry_run)
-        toggle_result = await client.call_tool(
-            "otel_toggle_sampling_strategy",
-            {
-                "namespace": "observability",
-                "collector_name": "my-collector",
-                "target_mode": "head",
-                "sample_rate": 0.25,
+                "strategy": "probabilistic",
+                "sampling_options": {"sample_rate": 0.25},
                 "dry_run": True,
             },
         )
-        toggle_data = json.loads(toggle_result.content[0].text)
-        assert toggle_data["target_mode"] == "head"
-        assert toggle_data["dry_run"] is True
-        assert "config_patch" in toggle_data
+        head_data = json.loads(head_res.content[0].text)
+        assert head_data["dry_run"] is True

@@ -26,6 +26,12 @@ from opentelemetry_mcp_server.models.common import (
 )
 from opentelemetry_mcp_server.models.ebpf import EbpfFootprint, EbpfPodDetail
 from opentelemetry_mcp_server.models.enrichment import K8sEnrichmentProfile
+from opentelemetry_mcp_server.models.findings import (
+    FINDING_CODE_DEFAULT_SEVERITY,
+    Finding,
+    FindingCode,
+    FindingSeverity,
+)
 from opentelemetry_mcp_server.models.instrumentation import (
     InstrumentedService,
     InstrumentationEndpointConfig,
@@ -99,4 +105,9 @@ __all__ = [
     # Cardinality
     "CardinalityReport",
     "MetricCardinalityIssue",
+    # Findings
+    "FINDING_CODE_DEFAULT_SEVERITY",
+    "Finding",
+    "FindingCode",
+    "FindingSeverity",
 ]

@@ -1,24 +1,29 @@
 """Collector config revert tool.
 
-Provides the ``otel_revert_collector_config`` tool for undoing the last
-MCP-driven configuration change. Uses the annotation-based config
-snapshot stored automatically by ``create_or_patch_collector``.
+Provides ``otel_revert_collector_config`` for undoing the last MCP-driven
+configuration mutation using the ``otel.mcp/last-known-good`` annotation.
 """
 
 from typing import Any, Dict
 
-from mcp.types import ToolAnnotations
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from opentelemetry_mcp_server.exceptions import OtelOperationError
-from opentelemetry_mcp_server.tools.base import BaseTool
+from opentelemetry_mcp_server.tools.base import (
+    BaseTool,
+    confirm_destructive_action,
+)
+from opentelemetry_mcp_server.utils.redaction import redact_log_text
 
 
 class RevertTools(BaseTool):
     """Collector config rollback tools."""
 
-    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
+    def register(self, mcp_instance: Any) -> None:
+        if not self.should_register_tool("collector", is_write=True):
+            return
 
         kubernetes_service = self.kubernetes_service
 
@@ -26,7 +31,7 @@ class RevertTools(BaseTool):
             annotations=ToolAnnotations(
                 title="Revert Collector Config",
                 readOnlyHint=False,
-                destructiveHint=False,
+                destructiveHint=True,
                 idempotentHint=True,
                 openWorldHint=True,
             )
@@ -35,53 +40,68 @@ class RevertTools(BaseTool):
             namespace: str = Field(
                 ..., min_length=1, description="Collector namespace"
             ),
-            collector_name: str = Field(
+            name: str = Field(
                 ..., min_length=1, description="Collector CRD name"
             ),
             dry_run: bool = Field(
                 default=True,
                 description=(
-                    "If True, shows diff between current and snapshot. "
-                    "Set False to apply the rollback."
+                    "If True, previews the snapshot rollback without applying. "
+                    "Set False with confirm=True to apply the rollback."
                 ),
+            ),
+            confirm: bool = Field(
+                default=False,
+                description="Set True to confirm applying the rollback when dry_run=False",
             ),
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Revert a collector to its pre-mutation config (one-level undo).
+            """Revert a collector to its pre-mutation config snapshot (one-level undo).
 
-            Use this when an MCP tool mutation broke the pipeline (e.g.,
-            otel_toggle_sampling_strategy or otel_enable_spanmetrics_for_service
-            caused issues). Restores from the auto-saved config snapshot.
-
-            **WARNING: This is a one-level undo — it reverts to the config
-            from before the LAST MCP mutation. For multi-step rollback,
-            use GitOps (git revert + ArgoCD/Flux).**
-
-            Returns:
-            - {"action": "reverted"|"dry_run"|"no_snapshot", "snapshot_timestamp": str,
-               "current_config_preview": str, "snapshot_config_preview": str, ...}
-
-            When NOT to use: For inspecting configs without reverting, use
-            otel_get_collector. For provisioning new collectors, use
-            otel_provision_collector.
-
-            Prerequisites: The collector must have been previously modified
-            by an MCP tool (which auto-creates the snapshot annotation).
-
-            Common errors:
-            - No snapshot found: Collector was not modified by MCP tools.
-            - Snapshot corrupted: Manual annotation edits may break decoding.
+            Restores the configuration stored in ``otel.mcp/last-known-good``
+            before the most recent MCP mutation. Requires confirmation when
+            dry_run=False.
             """
             try:
+                if not dry_run:
+                    self.require_write_access("otel_revert_collector_config")
+                    confirmed = await confirm_destructive_action(
+                        ctx,
+                        f"Revert collector '{namespace}/{name}' to last-known-good snapshot",
+                        confirm=confirm,
+                    )
+                    if not confirmed:
+                        return {
+                            "collector": f"{namespace}/{name}",
+                            "action": "confirmation_required",
+                            "dry_run": False,
+                            "message": (
+                                f"Rollback of collector '{namespace}/{name}' requires "
+                                "confirmation. Pass confirm=True to proceed."
+                            ),
+                        }
+
                 result = await kubernetes_service.revert_collector_config(
                     namespace=namespace,
-                    name=collector_name,
+                    name=name,
                     dry_run=dry_run,
                 )
+                if "current_config_preview" in result:
+                    result["current_config_preview"] = redact_log_text(
+                        result["current_config_preview"]
+                    )
+                if "snapshot_config_preview" in result:
+                    result["snapshot_config_preview"] = redact_log_text(
+                        result["snapshot_config_preview"]
+                    )
                 return result
             except OtelOperationError:
                 raise
             except Exception as e:
-                raise OtelOperationError(
-                    f"Failed to revert collector config: {e}"
+                self.handle_error(
+                    e,
+                    tool_name="otel_revert_collector_config",
+                    namespace=namespace,
+                    resource_name=name,
                 )
+                raise

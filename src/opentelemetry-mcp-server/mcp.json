@@ -1,0 +1,63 @@
+{
+  "$schema": "https://agentplugins.io/schema/v1.0.0/mcp.json",
+  "mcpServers": {
+    "opentelemetry": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "opentelemetry-mcp-server",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_TOOLSETS": "all"
+      }
+    },
+    "opentelemetry-staging": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "opentelemetry-mcp-server",
+        "--context",
+        "${KUBE_CONTEXT_STAGING}",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_TOOLSETS": "all"
+      }
+    },
+    "opentelemetry-production": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "run",
+        "opentelemetry-mcp-server",
+        "--context",
+        "${KUBE_CONTEXT_PRODUCTION}",
+        "--read-only",
+        "--toolsets",
+        "all"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_ALLOW_WRITE": "false",
+        "MCP_TOOLSETS": "all"
+      }
+    }
+  }
+}

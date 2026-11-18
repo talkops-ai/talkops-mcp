@@ -1,372 +1,623 @@
-"""Pipeline validation and safety-check tools.
+"""Collector runtime diagnosis and configuration validation tools.
 
-Read-only tools that validate collector configurations against
-known best practices and common pitfalls.
+Provides:
+- ``otel_diagnose_collector``: Single-call N->1 diagnosis correlating
+  OpenTelemetryCollector CR status, pod container statuses (OOMKilled,
+  CrashLoopBackOff), K8s Service endpoints, namespace events, redacted pod
+  logs, internal Prometheus telemetry (:8888/metrics), and config linting.
+- ``otel_validate_collector_config``: Deep static + live cluster validation
+  of a live collector or raw YAML configuration.
 """
 
 from typing import Any, Dict, List, Optional
 
-from mcp.types import ToolAnnotations
 from fastmcp import Context
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from opentelemetry_mcp_server.exceptions import OtelOperationError
+from opentelemetry_mcp_server.exceptions import (
+    OtelOperationError,
+    OtelValidationError,
+)
+from opentelemetry_mcp_server.models.findings import (
+    Finding,
+    FindingCode,
+    FindingSeverity,
+)
+from opentelemetry_mcp_server.services.collector_metrics_service import (
+    CollectorMetricsService,
+)
+from opentelemetry_mcp_server.services.config_linter import lint_collector_config
 from opentelemetry_mcp_server.tools.base import BaseTool
+from opentelemetry_mcp_server.utils.yaml_helpers import safe_load_yaml
 
+_DIAGNOSE_SECTIONS = (
+    "status",
+    "pods",
+    "service",
+    "events",
+    "logs",
+    "metrics",
+    "config_lint",
+    "target_allocator",
+)
 
-# Recommended processor ordering per the OTel Collector best practices
-_RECOMMENDED_PROCESSOR_ORDER = [
-    "memory_limiter",
-    "k8sattributes",
-    "resourcedetection",
-    "resource",
-    "transform",
-    "filter",
-    "attributes",
-    "tail_sampling",
-    "batch",
-]
+_CHECK_CATEGORY_MAP = {
+    "pipeline": {
+        FindingCode.CFG_UNDECLARED_COMPONENT,
+        FindingCode.CFG_UNUSED_COMPONENT,
+        FindingCode.CFG_EXPORTER_NO_QUEUE_RETRY,
+        FindingCode.CFG_GOMEMLIMIT_MISMATCH,
+        FindingCode.CFG_CONNECTOR_LOOP,
+    },
+    "order": {
+        FindingCode.CFG_MEMORY_LIMITER_NOT_FIRST,
+        FindingCode.CFG_DOUBLE_BATCHING,
+    },
+    "filelog": {
+        FindingCode.CFG_FILELOG_NO_SELF_EXCLUSION,
+        FindingCode.CFG_FILELOG_EPHEMERAL_STORAGE,
+    },
+    "sampling": {
+        FindingCode.CFG_TAIL_SAMPLING_NO_TRACE_AFFINITY,
+        FindingCode.CFG_CONNECTOR_LOOP,
+    },
+    "cardinality": {
+        FindingCode.CFG_SPANMETRICS_HIGH_CARDINALITY,
+        FindingCode.CFG_PROMETHEUS_NO_TARGET_ALLOCATOR,
+    },
+    "security": {
+        FindingCode.SEC_INLINE_SECRET,
+        FindingCode.SEC_INSECURE_EXPORTER,
+        FindingCode.SEC_TLS_SKIP_VERIFY,
+        FindingCode.SEC_MISSING_SECRET_KEY,
+        FindingCode.SEC_DEBUG_EXTENSION_EXPOSED,
+        FindingCode.SEC_PII_REDACTION_MISSING,
+    },
+    "deprecations": {
+        FindingCode.CFG_DEPRECATED_TELEMETRY_ADDRESS,
+        FindingCode.CFG_DEPRECATED_COMPONENT,
+    },
+    "rbac": {
+        FindingCode.CFG_K8SATTR_MISSING_NODE_FILTER,
+        FindingCode.CFG_K8SATTR_MISSING_RBAC,
+    },
+}
 
 
 class ValidationTools(BaseTool):
-    """Pipeline validation and filelog safety tools."""
+    """Collector runtime diagnosis and configuration validation tools."""
 
-    def register(self, mcp_instance) -> None:  # type: ignore[no-untyped-def]
+    def register(self, mcp_instance: Any) -> None:
+        if not self.should_register_tool("diagnostics", is_write=False):
+            return
 
         kubernetes_service = self.kubernetes_service
         collector_config_service = self.collector_config_service
 
         @mcp_instance.tool(
             annotations=ToolAnnotations(
-                title="Validate k8sattributes Processor Order",
+                title="Diagnose Collector Runtime & Pipeline Health",
                 readOnlyHint=True,
                 destructiveHint=False,
                 idempotentHint=True,
                 openWorldHint=True,
             )
         )
-        async def otel_validate_k8sattributes_order(
+        async def otel_diagnose_collector(
             namespace: str = Field(
                 ..., min_length=1, description="Collector namespace"
             ),
             name: str = Field(
                 ..., min_length=1, description="Collector CRD name"
             ),
-            pipeline_name: Optional[str] = Field(
+            include: Optional[List[str]] = Field(
                 default=None,
-                description="Specific pipeline to validate (all pipelines if omitted)",
+                description=(
+                    "Optional diagnostic sections to include: 'status', 'pods', "
+                    "'service', 'events', 'logs', 'metrics', 'config_lint', "
+                    "'target_allocator' (all included if omitted)"
+                ),
+            ),
+            log_lines: int = Field(
+                default=50,
+                ge=10,
+                le=500,
+                description="Number of redacted pod log tail lines to analyze (default 50)",
             ),
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Validate processor ordering in collector pipelines.
+            """Perform a comprehensive single-call runtime and configuration diagnosis of a collector.
 
-            Checks that processors follow the recommended order:
-            memory_limiter → k8sattributes → resourcedetection →
-            transform → filter → tail_sampling → batch.
-
-            Misordered processors can cause data loss or attribute
-            enrichment failures. Read-only.
-
-            Returns:
-            - {"collector": str, "validations": [{"pipeline": str, "valid": bool, "issues": [...]}]}
-
-            When NOT to use: For checking filelog-specific safety issues,
-            use otel_check_filelog_safety.
-
-            Common errors:
-            - Collector not found: Verify name and namespace.
+            Correlates OpenTelemetryCollector CR status, pod container states
+            (OOMKilled, CrashLoopBackOff), Kubernetes Service endpoint readiness,
+            namespace events, redacted pod logs (auth/TLS/DNS errors), internal
+            Prometheus metrics (:8888/metrics), RBAC bindings, and configuration
+            linter checks into prioritized Finding objects.
             """
             try:
+                sections = set(include or _DIAGNOSE_SECTIONS)
                 raw = await kubernetes_service.get_otel_collector(
                     namespace, name
                 )
+                spec = raw.get("spec", {}) or {}
+                status_raw = raw.get("status", {}) or {}
+                mode = str(spec.get("mode", "deployment")).lower()
+                replicas = int(
+                    status_raw.get("replicas", spec.get("replicas", 1)) or 1
+                )
+
                 cfg = collector_config_service.parse_collector_config(raw)
-
-                from opentelemetry_mcp_server.utils.yaml_helpers import (
-                    extract_pipelines,
+                instance = collector_config_service.build_collector_instance(
+                    raw, cfg, detail_level="summary"
                 )
 
-                pipelines = extract_pipelines(cfg)
-                validations = []
+                findings: List[Finding] = []
+                result: Dict[str, Any] = {
+                    "collector": f"{namespace}/{name}",
+                    "name": name,
+                    "namespace": namespace,
+                    "mode": mode,
+                }
 
-                target_pipelines = (
-                    {pipeline_name: pipelines.get(pipeline_name, {})}
-                    if pipeline_name
-                    else pipelines
-                )
+                if "status" in sections:
+                    result["status"] = instance.status.model_dump()
+                    result["pipelines"] = [
+                        p.model_dump() for p in instance.pipelines
+                    ]
 
-                for pname, pcfg in target_pipelines.items():
-                    if not isinstance(pcfg, dict):
-                        continue
-                    result = collector_config_service.validate_processor_order(
-                        cfg, pname, _RECOMMENDED_PROCESSOR_ORDER
+                # 1. Inspect collector pods for OOMKilled / CrashLoopBackOff
+                if "pods" in sections:
+                    all_pods = await kubernetes_service.list_pods(
+                        namespace=namespace
                     )
-                    validations.append(result)
+                    collector_pods = [
+                        p
+                        for p in all_pods
+                        if p.get("name", "").startswith(f"{name}-collector")
+                        or p.get("name", "").startswith(name)
+                        or (p.get("labels") or {}).get(
+                            "app.kubernetes.io/instance"
+                        )
+                        == f"{namespace}.{name}"
+                    ]
+                    for p in collector_pods:
+                        p_name = p.get("name", "")
+                        for cs in p.get("container_statuses", []) or []:
+                            reason = cs.get("reason") or ""
+                            last_reason = (
+                                cs.get("last_termination_reason") or ""
+                            )
+                            restarts = int(cs.get("restart_count", 0) or 0)
+                            if (
+                                reason == "OOMKilled"
+                                or last_reason == "OOMKilled"
+                            ):
+                                findings.append(
+                                    Finding.create(
+                                        FindingCode.RT_POD_OOMKILLED,
+                                        message=(
+                                            f"Pod '{p_name}' container '{cs.get('name')}' "
+                                            f"was OOMKilled (restarts={restarts})."
+                                        ),
+                                        remediation=(
+                                            "Increase spec.resources.limits.memory, set "
+                                            "GOMEMLIMIT to 80% of the memory limit, and "
+                                            "ensure memory_limiter is the first processor."
+                                        ),
+                                    )
+                                )
+                            elif (
+                                reason == "CrashLoopBackOff" or restarts >= 3
+                            ):
+                                findings.append(
+                                    Finding.create(
+                                        FindingCode.RT_POD_CRASHLOOP,
+                                        message=(
+                                            f"Pod '{p_name}' container '{cs.get('name')}' "
+                                            f"is crashing (state={cs.get('state')}, "
+                                            f"reason={reason}, restarts={restarts})."
+                                        ),
+                                        remediation=(
+                                            "Inspect the logs section and config_lint findings "
+                                            "for invalid config keys or missing volume mounts."
+                                        ),
+                                    )
+                                )
+                    result["pods"] = collector_pods
 
-                all_valid = all(v.get("valid", False) for v in validations)
+                # 2. Check Service & Endpoints
+                if "service" in sections:
+                    svc_health = (
+                        await kubernetes_service.get_collector_service_health(
+                            namespace=namespace, collector_name=name
+                        )
+                    )
+                    result["service_health"] = svc_health
+                    if (
+                        mode != "sidecar"
+                        and svc_health.get("ready_endpoints", 0) == 0
+                    ):
+                        findings.append(
+                            Finding.create(
+                                FindingCode.RT_NO_READY_ENDPOINTS,
+                                message=(
+                                    f"Service for collector '{name}' has 0 ready endpoints "
+                                    f"(service_found={svc_health.get('service_found')})."
+                                ),
+                                remediation=(
+                                    "Check collector pod readiness probes and container "
+                                    "logs for startup errors."
+                                ),
+                            )
+                        )
 
-                return {
-                    "collector": f"{namespace}/{name}",
-                    "all_valid": all_valid,
-                    "validations": validations,
-                    "recommended_order": _RECOMMENDED_PROCESSOR_ORDER,
-                }
-            except Exception as e:
-                raise OtelOperationError(
-                    f"Failed to validate processor order: {e}"
-                )
+                # 3. Namespace events
+                if "events" in sections:
+                    result["events"] = (
+                        await kubernetes_service.list_namespace_events(
+                            namespace=namespace, involved_object_name=name
+                        )
+                    )
 
-        @mcp_instance.tool(
-            annotations=ToolAnnotations(
-                title="Check Filelog Safety",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=True,
-            )
-        )
-        async def otel_check_filelog_safety(
-            namespace: str = Field(
-                ..., min_length=1, description="Collector namespace"
-            ),
-            name: str = Field(
-                ..., min_length=1, description="Collector CRD name"
-            ),
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> Dict[str, Any]:
-            """Check filelog receiver configuration for safety issues.
+                # 4. Redacted pod logs & error classification
+                if "logs" in sections:
+                    log_info = await kubernetes_service.get_collector_pod_logs(
+                        namespace=namespace,
+                        collector_name=name,
+                        tail_lines=log_lines,
+                    )
+                    result["logs"] = log_info
+                    if log_info.get("auth_errors"):
+                        first_auth = str(log_info["auth_errors"][0])
+                        is_kubelet_rbac = (
+                            "nodes/stats" in first_auth
+                            or "kubeletstats" in first_auth.lower()
+                        )
+                        findings.append(
+                            Finding.create(
+                                FindingCode.RT_LOG_AUTH_ERROR,
+                                message=(
+                                    f"Collector '{name}' kubeletstats receiver failed with 403 Forbidden "
+                                    f"(ClusterRole 'otel-k8sattr-{name}' is missing 'get' permissions on both "
+                                    f"'nodes/stats' and 'nodes/proxy' subresources): {first_auth}"
+                                    if is_kubelet_rbac
+                                    else f"Collector logs contain authentication/authorization errors: {first_auth}"
+                                ),
+                                remediation=(
+                                    f"Grant 'get', 'list', 'watch' on both 'nodes/stats' and 'nodes/proxy' "
+                                    f"('nodes/metrics') in ClusterRole 'otel-k8sattr-{name}' via "
+                                    f"otel_configure_receivers(namespace='{namespace}', collector_name='{name}', receivers=['kubeletstats'])."
+                                    if is_kubelet_rbac
+                                    else "Verify backend API token/credentials Secret and collector ServiceAccount RBAC permissions."
+                                ),
+                            )
+                        )
+                    if log_info.get("tls_errors"):
+                        findings.append(
+                            Finding.create(
+                                FindingCode.RT_LOG_TLS_ERROR,
+                                message=(
+                                    f"Collector logs contain TLS certificate errors: "
+                                    f"{log_info['tls_errors'][0]}"
+                                ),
+                                remediation=(
+                                    "Verify the CA bundle mounted in exporter tls.ca_file "
+                                    "and check certificate expiration."
+                                ),
+                            )
+                        )
+                    if log_info.get("dns_errors"):
+                        findings.append(
+                            Finding.create(
+                                FindingCode.RT_LOG_DNS_ERROR,
+                                message=(
+                                    f"Collector logs contain DNS/network connectivity "
+                                    f"errors: {log_info['dns_errors'][0]}"
+                                ),
+                                remediation=(
+                                    "Verify the exporter endpoint hostname, port, and "
+                                    "NetworkPolicies in the namespace."
+                                ),
+                            )
+                        )
 
-            Detects common log collection pitfalls:
-            - Missing storage checkpoint (data loss on restart)
-            - Self-collection feedback loops
-            - Missing resource detection enrichment
+                # 5. Internal Prometheus metrics (:8888/metrics)
+                if "metrics" in sections:
+                    try:
+                        metrics_service = CollectorMetricsService(
+                            kubernetes_service
+                        )
+                        health_report = (
+                            await metrics_service.fetch_pipeline_health(
+                                namespace=namespace,
+                                collector_name=name,
+                            )
+                        )
+                        result["pipeline_health"] = health_report.to_dict()
+                        findings.extend(health_report.findings)
+                    except Exception as e:
+                        result["pipeline_health"] = {
+                            "healthy": False,
+                            "error": str(e),
+                        }
 
-            Read-only — returns warnings and recommendations.
-
-            Returns:
-            - {"collector": str, "safe": bool, "warnings": [...], "profile": {...}}
-
-            When NOT to use: For general pipeline validation, use
-            otel_validate_k8sattributes_order.
-
-            Common errors:
-            - No filelog receiver: Returns safe=True with no warnings.
-            """
-            try:
-                raw = await kubernetes_service.get_otel_collector(
-                    namespace, name
-                )
-                cfg = collector_config_service.parse_collector_config(raw)
-
-                profile = collector_config_service.extract_logs_profile(
-                    cfg, name, namespace
-                )
-
-                return {
-                    "collector": f"{namespace}/{name}",
-                    "safe": len(profile.warnings) == 0,
-                    "warnings": profile.warnings,
-                    "profile": profile.model_dump(),
-                }
-            except Exception as e:
-                raise OtelOperationError(
-                    f"Failed to check filelog safety: {e}"
-                )
-
-        @mcp_instance.tool(
-            annotations=ToolAnnotations(
-                title="Inspect Target Allocator State",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=True,
-            )
-        )
-        async def otel_inspect_target_allocator_state(
-            namespace: str = Field(
-                ..., min_length=1, description="Collector namespace"
-            ),
-            name: str = Field(
-                ..., min_length=1, description="Collector CRD name"
-            ),
-            ctx: Context = None,  # type: ignore[assignment]
-        ) -> Dict[str, Any]:
-            """Inspect Target Allocator state and scrape target assignments.
-
-            Shows the TA configuration, allocation strategy, and
-            discovered targets. Useful for debugging unbalanced scrape
-            assignments or missing metrics. Read-only.
-
-            Returns:
-            - {"collector": str, "target_allocator": {"enabled": bool, "strategy": str, "targets": int, ...}}
-
-            When NOT to use: For PromQL-based metric investigation,
-            use the Prometheus MCP server.
-
-            Common errors:
-            - TA not enabled: Returns enabled=False.
-            """
-            try:
-                raw = await kubernetes_service.get_otel_collector(
-                    namespace, name
-                )
-                spec = raw.get("spec", {})
-                ta_spec = spec.get("targetAllocator", {})
-
-                if not ta_spec.get("enabled", False):
-                    return {
-                        "collector": f"{namespace}/{name}",
-                        "target_allocator": {
-                            "enabled": False,
-                            "message": "Target Allocator is not enabled for this collector",
-                        },
+                # 6. Config linting + live RBAC correlation
+                if "config_lint" in sections:
+                    rbac_bound = (
+                        await kubernetes_service.check_cluster_role_binding_exists(
+                            collector_name=name, namespace=namespace
+                        )
+                    )
+                    lint_findings = lint_collector_config(
+                        cfg,
+                        mode=mode,
+                        replicas=replicas,
+                        cr_spec=spec,
+                        env_vars=spec.get("env"),
+                        volumes=spec.get("volumes"),
+                        rbac_bound=rbac_bound,
+                    )
+                    findings.extend(lint_findings)
+                    result["config_lint"] = {
+                        "rbac_bound": rbac_bound,
+                        "finding_count": len(lint_findings),
                     }
 
-                return {
-                    "collector": f"{namespace}/{name}",
-                    "target_allocator": {
-                        "enabled": True,
+                # 7. Target Allocator state & monitoring.coreos.com RBAC check
+                if "target_allocator" in sections:
+                    ta_spec = spec.get("targetAllocator", {}) or {}
+                    ta_enabled = bool(ta_spec.get("enabled", False))
+                    ta_pods_ready: List[Dict[str, Any]] = []
+                    monitoring_rbac_resources: List[str] = []
+                    if ta_enabled:
+                        try:
+                            ns_pods = await kubernetes_service.list_pods(
+                                namespace=namespace
+                            )
+                            ta_pods_ready = [
+                                {
+                                    "name": p.get("name"),
+                                    "phase": p.get("phase"),
+                                    "ready": p.get("ready"),
+                                }
+                                for p in ns_pods
+                                if "targetallocator" in str(p.get("name", "")).lower()
+                                and str(p.get("name", "")).startswith(name)
+                            ]
+                        except Exception:
+                            ta_pods_ready = []
+                        try:
+                            roles = await kubernetes_service.list_otel_cluster_roles(
+                                namespace=namespace
+                            )
+                            seen_res = set()
+                            for role in roles:
+                                for rule in role.get("rules", []) or []:
+                                    if "monitoring.coreos.com" in (
+                                        rule.get("api_groups") or rule.get("apiGroups") or []
+                                    ):
+                                        for res_item in rule.get("resources", []) or []:
+                                            seen_res.add(str(res_item))
+                            monitoring_rbac_resources = sorted(seen_res)
+                        except Exception:
+                            monitoring_rbac_resources = []
+
+                    prom_cr = ta_spec.get("prometheusCR") or {}
+                    result["target_allocator"] = {
+                        "enabled": ta_enabled,
                         "allocation_strategy": ta_spec.get(
                             "allocationStrategy", "consistent-hashing"
                         ),
-                        "filter_strategy": ta_spec.get("filterStrategy"),
-                        "service_monitor_selector": ta_spec.get(
+                        "prometheus_cr": bool(prom_cr.get("enabled", False)),
+                        "service_monitor_selector": prom_cr.get(
                             "serviceMonitorSelector", {}
                         ),
-                        "pod_monitor_selector": ta_spec.get(
+                        "pod_monitor_selector": prom_cr.get(
                             "podMonitorSelector", {}
                         ),
-                        "replicas": ta_spec.get("replicas", 1),
-                        "image": ta_spec.get("image"),
-                        "prometheus_cr": ta_spec.get("prometheusCR", {}).get(
-                            "enabled", False
-                        ),
-                    },
-                }
+                        "pods": ta_pods_ready,
+                        "monitoring_coreos_rbac_resources": monitoring_rbac_resources,
+                    }
+
+                error_findings = [
+                    f for f in findings if f.severity == FindingSeverity.ERROR
+                ]
+                warning_findings = [
+                    f
+                    for f in findings
+                    if f.severity == FindingSeverity.WARNING
+                ]
+                result["healthy"] = len(error_findings) == 0
+                result["error_count"] = len(error_findings)
+                result["warning_count"] = len(warning_findings)
+                result["findings"] = [f.model_dump() for f in findings]
+                return result
+            except OtelOperationError:
+                raise
             except Exception as e:
-                raise OtelOperationError(
-                    f"Failed to inspect target allocator: {e}"
+                self.handle_error(
+                    e,
+                    tool_name="otel_diagnose_collector",
+                    namespace=namespace,
+                    resource_name=name,
                 )
+                raise
 
         @mcp_instance.tool(
             annotations=ToolAnnotations(
-                title="Recommend Collector Topology",
+                title="Validate Collector Configuration",
                 readOnlyHint=True,
                 destructiveHint=False,
                 idempotentHint=True,
-                openWorldHint=False,
+                openWorldHint=True,
             )
         )
-        async def otel_recommend_collector_topology(
-            signals: List[str] = Field(
-                ...,
-                min_length=1,
-                description="Signals to collect: 'traces', 'metrics', 'logs'",
+        async def otel_validate_collector_config(
+            namespace: Optional[str] = Field(
+                default=None,
+                description="Collector namespace (when validating a live collector CR)",
             ),
-            workload_count: int = Field(
-                default=10,
-                ge=1,
-                description="Approximate number of workloads to instrument",
+            name: Optional[str] = Field(
+                default=None,
+                description="Collector CRD name (when validating a live collector CR)",
             ),
-            has_prometheus_targets: bool = Field(
-                default=False,
-                description="Whether Prometheus scrape targets need to be collected",
+            config_yaml: Optional[str] = Field(
+                default=None,
+                description="Raw OTel Collector YAML string to validate (optional if namespace+name provided)",
             ),
-            cluster_size: str = Field(
-                default="medium",
-                description="Cluster size: 'small' (<20 nodes), 'medium' (20-100), 'large' (100+)",
+            checks: Optional[List[str]] = Field(
+                default=None,
+                description=(
+                    "Optional subset of check categories to run: 'pipeline', "
+                    "'order', 'filelog', 'sampling', 'cardinality', 'security', "
+                    "'deprecations', 'rbac' (all run if omitted)"
+                ),
+            ),
+            target_version: Optional[str] = Field(
+                default=None,
+                description="Target Collector version for deprecation checks (e.g., '0.152.1')",
             ),
             ctx: Context = None,  # type: ignore[assignment]
         ) -> Dict[str, Any]:
-            """Recommend an OTel Collector deployment topology.
+            """Validate a live OpenTelemetryCollector CR or raw YAML configuration.
 
-            Analyzes workload requirements and suggests the optimal
-            collector deployment mode (DaemonSet, Deployment, Gateway),
-            pipeline topology, and resource sizing. Read-only, no
-            external calls — pure recommendation engine.
-
-            Returns:
-            - {"recommendation": {"mode": str, "pipelines": [...], "sizing": {...}, "notes": [...]}}
-
-            When NOT to use: For inspecting existing collector topology,
-            use otel_get_collector or otel_list_collectors.
+            Runs all static configuration linter checks (referential integrity,
+            processor ordering, double batching, exporter queues, filelog safety,
+            tail_sampling trace affinity, spanmetrics cardinality, v0.123+
+            deprecations, GOMEMLIMIT, inline secrets) and correlates with live
+            RBAC and Secret existence when a live collector is specified.
             """
-            recommendations = []
-            pipelines = []
-
-            # Determine collector mode
-            needs_daemonset = "logs" in signals or has_prometheus_targets
-            mode = "daemonset" if needs_daemonset else "deployment"
-
-            if "logs" in signals:
-                recommendations.append(
-                    "Use DaemonSet mode for log collection (filelog receiver needs host access)"
-                )
-                pipelines.append({
-                    "name": "logs",
-                    "signal": "logs",
-                    "receivers": ["filelog"],
-                    "processors": ["memory_limiter", "k8sattributes", "resourcedetection", "batch"],
-                    "exporters": ["otlp"],
-                })
-
-            if "traces" in signals:
-                pipelines.append({
-                    "name": "traces",
-                    "signal": "traces",
-                    "receivers": ["otlp"],
-                    "processors": ["memory_limiter", "k8sattributes", "batch"],
-                    "exporters": ["otlp"],
-                })
-                if workload_count > 50:
-                    recommendations.append(
-                        "Consider a separate Gateway deployment for traces "
-                        "with tail sampling to reduce downstream volume"
+            try:
+                if not config_yaml and not (namespace and name):
+                    raise OtelValidationError(
+                        "Provide either (namespace and name) to validate a live "
+                        "collector or config_yaml to validate raw YAML."
                     )
 
-            if "metrics" in signals:
-                receivers = ["otlp"]
-                if has_prometheus_targets:
-                    receivers.append("prometheus")
-                    recommendations.append(
-                        "Enable Target Allocator for balanced Prometheus scraping across collectors"
+                mode = "deployment"
+                replicas = 1
+                cr_spec_for_lint: Optional[Dict[str, Any]] = None
+                env_vars: Optional[List[Dict[str, Any]]] = None
+                volumes: Optional[List[Dict[str, Any]]] = None
+                rbac_bound: Optional[bool] = None
+                extra_findings: List[Finding] = []
+
+                if namespace and name:
+                    raw = await kubernetes_service.get_otel_collector(
+                        namespace, name
                     )
+                    spec = raw.get("spec", {}) or {}
+                    cr_spec_for_lint = spec
+                    mode = str(spec.get("mode", "deployment")).lower()
+                    replicas = int(spec.get("replicas", 1) or 1)
+                    env_vars = spec.get("env")
+                    volumes = spec.get("volumes")
+                    rbac_bound = (
+                        await kubernetes_service.check_cluster_role_binding_exists(
+                            collector_name=name, namespace=namespace
+                        )
+                    )
+                    # Check Secret references in spec.env
+                    for env_entry in env_vars or []:
+                        if not isinstance(env_entry, dict):
+                            continue
+                        vf = env_entry.get("valueFrom") or {}
+                        sec_ref = vf.get("secretKeyRef") or {}
+                        sec_name = sec_ref.get("name")
+                        sec_key = sec_ref.get("key")
+                        if sec_name:
+                            check = (
+                                await kubernetes_service.check_secret_key_exists(
+                                    namespace=namespace,
+                                    secret_name=sec_name,
+                                    key=sec_key,
+                                )
+                            )
+                            if not check.get("exists") or not check.get(
+                                "key_exists"
+                            ):
+                                extra_findings.append(
+                                    Finding.create(
+                                        FindingCode.SEC_MISSING_SECRET_KEY,
+                                        message=(
+                                            f"Secret '{sec_name}' (key '{sec_key}') "
+                                            f"referenced by env var '{env_entry.get('name')}' "
+                                            f"does not exist in namespace '{namespace}'."
+                                        ),
+                                        field_path=f"spec.env[{env_entry.get('name')}]",
+                                        remediation=(
+                                            f"Create Secret '{sec_name}' with key '{sec_key}' "
+                                            f"in namespace '{namespace}'."
+                                        ),
+                                    )
+                                )
+                    if not config_yaml:
+                        cfg = collector_config_service.parse_collector_config(
+                            raw
+                        )
+                    else:
+                        cfg = safe_load_yaml(config_yaml)
+                else:
+                    cfg = safe_load_yaml(config_yaml or "")
 
-                pipelines.append({
-                    "name": "metrics",
-                    "signal": "metrics",
-                    "receivers": receivers,
-                    "processors": ["memory_limiter", "k8sattributes", "batch"],
-                    "exporters": ["otlp"],
-                })
-
-            # Sizing
-            sizing = {
-                "small": {"cpu_request": "100m", "memory_request": "256Mi", "memory_limit": "512Mi"},
-                "medium": {"cpu_request": "250m", "memory_request": "512Mi", "memory_limit": "1Gi"},
-                "large": {"cpu_request": "500m", "memory_request": "1Gi", "memory_limit": "2Gi"},
-            }
-
-            # Additional recommendations
-            if cluster_size == "large":
-                recommendations.append(
-                    "Use Gateway pattern: DaemonSet collectors forward to a "
-                    "central Gateway Deployment for cross-node processing (tail sampling, spanmetrics)"
+                lint_findings = lint_collector_config(
+                    cfg,
+                    mode=mode,
+                    replicas=replicas,
+                    cr_spec=cr_spec_for_lint,
+                    env_vars=env_vars,
+                    volumes=volumes,
+                    rbac_bound=rbac_bound,
+                    target_version=target_version,
                 )
+                all_findings = lint_findings + extra_findings
 
-            if len(signals) > 1 and cluster_size != "small":
-                recommendations.append(
-                    "Consider separate collectors per signal type for "
-                    "independent scaling and resource isolation"
-                )
+                if checks:
+                    allowed_codes = set()
+                    for cat in checks:
+                        allowed_codes.update(
+                            _CHECK_CATEGORY_MAP.get(cat.lower(), set())
+                        )
+                    if allowed_codes:
+                        all_findings = [
+                            f for f in all_findings if f.code in allowed_codes
+                        ]
 
-            return {
-                "recommendation": {
+                errors = [
+                    f
+                    for f in all_findings
+                    if f.severity == FindingSeverity.ERROR
+                ]
+                warnings = [
+                    f
+                    for f in all_findings
+                    if f.severity == FindingSeverity.WARNING
+                ]
+
+                return {
+                    "collector": (
+                        f"{namespace}/{name}"
+                        if (namespace and name)
+                        else "inline_yaml"
+                    ),
+                    "valid": len(errors) == 0,
+                    "all_valid": len(errors) == 0,
+                    "error_count": len(errors),
+                    "warning_count": len(warnings),
+                    "checked_target_version": (
+                        target_version or self.config.collector_version_default
+                    ),
                     "mode": mode,
-                    "pipelines": pipelines,
-                    "sizing": sizing.get(cluster_size, sizing["medium"]),
-                    "target_allocator_recommended": has_prometheus_targets,
-                    "gateway_recommended": cluster_size == "large" or workload_count > 50,
-                    "notes": recommendations,
-                },
-            }
+                    "findings": [f.model_dump() for f in all_findings],
+                }
+            except (OtelValidationError, OtelOperationError):
+                raise
+            except Exception as e:
+                self.handle_error(
+                    e,
+                    tool_name="otel_validate_collector_config",
+                    namespace=namespace or "default",
+                    resource_name=name,
+                )
+                raise
