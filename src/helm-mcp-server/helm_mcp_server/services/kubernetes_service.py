@@ -1,429 +1,432 @@
-"""Kubernetes operations service."""
+"""Kubernetes operations service with per-session context isolation and real prerequisite discovery."""
+
+from __future__ import annotations
 
 import asyncio
-import subprocess
-import json
-from typing import Any, Optional, List, Dict, cast
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
+
 from helm_mcp_server.config import ServerConfig
 from helm_mcp_server.exceptions import KubernetesOperationError
-from helm_mcp_server.utils.helm_helper import is_helm_installed, check_for_dangerous_patterns
+from helm_mcp_server.utils.helm_helper import compare_k8s_versions
 
 
 class KubernetesService:
-    """Service for Kubernetes operations."""
-    
+    """Service for Kubernetes cluster inspection, context management, and prerequisite discovery."""
+
     def __init__(self, config: ServerConfig):
-        """Initialize with configuration."""
+        """Initialize with server configuration."""
         self.config = config
-        self._api = None
-        self._version_api = None
-        self._current_context = None
-    
-    def _get_api_clients(self):
-        """Lazy-load Kubernetes API clients."""
-        if self._api is None:
+        self._session_contexts: Dict[str, str] = {}
+        self._client_cache: Dict[str, Tuple[Any, Any, Any, Any]] = {}
+
+    @staticmethod
+    def _normalize_session_id(session_id: Optional[str] = None) -> str:
+        """Return normalized session key."""
+        return str(session_id).strip() if session_id else "default"
+
+    def get_active_context(self, session_id: Optional[str] = None) -> Optional[str]:
+        """Return the active Kubernetes context for the given session (or default session fallback)."""
+        key = self._normalize_session_id(session_id)
+        if key in self._session_contexts:
+            return self._session_contexts[key]
+        return self._session_contexts.get("default")
+
+    def _get_api_clients(self, session_id: Optional[str] = None) -> Tuple[Any, Any, Any, Any]:
+        """Lazy-load Kubernetes API clients (CoreV1Api, AppsV1Api, VersionApi, ApisApi) for the active context."""
+        active_context = self.get_active_context(session_id)
+        cache_key = active_context or "__default__"
+
+        if cache_key not in self._client_cache:
             try:
                 from kubernetes import client, config as k8s_config
-                k8s_config.load_incluster_config()
-            except Exception:
+            except Exception as exc:
+                raise KubernetesOperationError(f"Kubernetes Python client is not available: {exc}")
+
+            api_client = None
+            loaded = False
+
+            # If an explicit context was selected, load kubeconfig with that context first
+            if active_context:
                 try:
-                    from kubernetes import client, config as k8s_config
-                    # Use the current context if one was set, otherwise use default
-                    if self._current_context:
-                        k8s_config.load_kube_config(
+                    if hasattr(k8s_config, "new_client_from_config"):
+                        api_client = k8s_config.new_client_from_config(
                             config_file=self.config.kubernetes.kubeconfig,
-                            context=self._current_context
+                            context=active_context,
                         )
                     else:
                         k8s_config.load_kube_config(
-                            config_file=self.config.kubernetes.kubeconfig
+                            config_file=self.config.kubernetes.kubeconfig,
+                            context=active_context,
                         )
-                except Exception as e:
+                    loaded = True
+                except Exception as exc:
                     raise KubernetesOperationError(
-                        f'Failed to load Kubernetes config: {str(e)}'
+                        f"Failed to load Kubernetes context '{active_context}': {exc}. "
+                        "Read resource 'kubernetes://contexts' to inspect valid contexts."
                     )
-            
-            from kubernetes import client
-            self._api = client.CoreV1Api()
-            self._version_api = client.VersionApi()
-        
-        return self._api, self._version_api
-    
-    async def get_cluster_info(self) -> Dict[str, Any]:
-        """Get cluster information."""
-        try:
-            # Run in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            api, version_api = await loop.run_in_executor(None, self._get_api_clients)
-            
-            version = await loop.run_in_executor(None, version_api.get_code)  # type: ignore[union-attr]
-            nodes = await loop.run_in_executor(None, api.list_node)
-            namespaces = await loop.run_in_executor(None, api.list_namespace)
-            
-            info = {
-                'kubernetes_version': version.git_version,  # type: ignore[union-attr]
-                'node_count': len(nodes.items),
-                'nodes': [n.metadata.name for n in nodes.items],
-                'namespace_count': len(namespaces.items),
-                'namespaces': [ns.metadata.name for ns in namespaces.items]
-            }
-            
-            return info
-        
-        except Exception as e:
-            raise KubernetesOperationError(f'Failed to get cluster info: {str(e)}')
-    
-    async def list_namespaces(self) -> list[str]:
-        """List all Kubernetes namespaces.
-        
-        Returns:
-            List of namespace names
-        
-        Raises:
-            KubernetesOperationError: If listing fails
-        """
-        try:
-            # Run in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            api, _ = await loop.run_in_executor(None, self._get_api_clients)
-            namespaces = await loop.run_in_executor(None, api.list_namespace)
-            
-            return [ns.metadata.name for ns in namespaces.items]
-        
-        except Exception as e:
-            raise KubernetesOperationError(f'Failed to list namespaces: {str(e)}')
 
-    async def list_contexts(self) -> Dict[str, Any]:
-        """List all available Kubernetes contexts from kubeconfig.
-        
-        Equivalent to: kubectl config get-contexts
-        
-        Returns:
-            Dictionary containing:
-            - 'contexts': List of context information dicts
-            - 'current_context': Name of the currently active context
-            - 'total_contexts': Total number of available contexts
-        
-        Raises:
-            KubernetesOperationError: If listing contexts fails
-        """
+            if not loaded:
+                try:
+                    k8s_config.load_incluster_config()
+                    loaded = True
+                except Exception:
+                    try:
+                        k8s_config.load_kube_config(
+                            config_file=self.config.kubernetes.kubeconfig,
+                        )
+                        loaded = True
+                    except Exception as exc:
+                        raise KubernetesOperationError(
+                            f"Failed to load Kubernetes configuration: {exc}. "
+                            "Verify KUBECONFIG is valid or read 'kubernetes://contexts'."
+                        )
+
+            core_v1 = client.CoreV1Api(api_client) if api_client is not None else client.CoreV1Api()
+            apps_v1 = client.AppsV1Api(api_client) if api_client is not None else client.AppsV1Api()
+            version_api = client.VersionApi(api_client) if api_client is not None else client.VersionApi()
+            apis_api = client.ApisApi(api_client) if hasattr(client, "ApisApi") else None
+
+            self._client_cache[cache_key] = (core_v1, apps_v1, version_api, apis_api)
+
+        return self._client_cache[cache_key]
+
+    async def get_workload_clients(self, session_id: Optional[str] = None) -> Tuple[Any, Any]:
+        """Return (CoreV1Api, AppsV1Api) bound to the session's active Kubernetes context."""
+        loop = asyncio.get_event_loop()
+        core_v1, apps_v1, _, _ = await loop.run_in_executor(
+            None,
+            self._get_api_clients,
+            session_id,
+        )
+        return core_v1, apps_v1
+
+    async def get_cluster_info(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get Kubernetes cluster version, node summary, namespace summary, and active context."""
         try:
-            # Run in executor to avoid blocking
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, 
-                self._get_kube_contexts,
-                self.config.kubernetes.kubeconfig
+            core_v1, _, version_api, _ = await loop.run_in_executor(
+                None,
+                self._get_api_clients,
+                session_id,
             )
-            return result
-        
-        except Exception as e:
-            raise KubernetesOperationError(f'Failed to list contexts: {str(e)}')
-    
-    def _get_kube_contexts(self, kubeconfig_path: Optional[str] = None) -> Dict[str, Any]:
-        """Internal method to retrieve Kubernetes contexts from kubeconfig.
-        
-        Uses the kubernetes.config.list_kube_config_contexts() API.
-        
-        Args:
-            kubeconfig_path: Optional path to kubeconfig file. If None, uses default.
-        
-        Returns:
-            Dictionary with contexts list and current context info.
-        """
-        try:
-            from kubernetes import config as k8s_config
-            
-            # Load and retrieve contexts
-            result = k8s_config.list_kube_config_contexts(
-                config_file=kubeconfig_path
-            )
-            
-            # Handle case where list_kube_config_contexts returns None
-            if result is None:
-                raise KubernetesOperationError(
-                    'Failed to retrieve Kubernetes contexts from kubeconfig. '
-                    'The kubeconfig file may be invalid or inaccessible.'
-                )
-            
-            contexts, active_context = result
-            
-            current_context_name = None
-            if active_context and isinstance(active_context, dict):
-                current_context_name = active_context.get('name')
-            
-            # Format contexts for response
-            formatted_contexts = []
-            for context in contexts:
-                ctx_dict = cast(Dict[str, Any], context)
-                context_name = ctx_dict.get('name', 'unknown')
-                context_info = ctx_dict.get('context', {})
-                
-                formatted_contexts.append({
-                    'name': context_name,
-                    'cluster': context_info.get('cluster', ''),
-                    'user': context_info.get('user', ''),
-                    'namespace': context_info.get('namespace', 'default'),
-                    'is_current': context_name == current_context_name
-                })
-            
+
+            version = await loop.run_in_executor(None, version_api.get_code)
+            nodes = await loop.run_in_executor(None, core_v1.list_node)
+            namespaces = await loop.run_in_executor(None, core_v1.list_namespace)
+
             return {
-                'contexts': formatted_contexts,
-                'current_context': current_context_name,
-                'total_contexts': len(formatted_contexts)
+                "kubernetes_version": version.git_version,
+                "active_context": self.get_active_context(session_id),
+                "node_count": len(nodes.items),
+                "nodes": [n.metadata.name for n in nodes.items],
+                "namespace_count": len(namespaces.items),
+                "namespaces": [ns.metadata.name for ns in namespaces.items],
             }
-        
-        except Exception as e:
+        except KubernetesOperationError:
+            raise
+        except Exception as exc:
             raise KubernetesOperationError(
-                f'Failed to retrieve Kubernetes contexts: {str(e)}'
+                f"Failed to get cluster info: {exc}. "
+                "Verify cluster reachability or switch context via 'kubernetes_set_context'."
             )
 
-    async def set_context(self, context_name: str) -> Dict[str, Any]:
-        """Set/switch to a specific Kubernetes context.
-        
-        This loads the specified context from kubeconfig for use in the application.
-        Note: This switches the context for the current application session only.
-        To permanently modify the kubeconfig file, use set_context_in_kubeconfig().
-        
-        Equivalent to: kubectl config use-context <context-name>
-        
-        Args:
-            context_name: Name of the context to switch to.
-        
-        Returns:
-            Dictionary containing:
-            - 'success': Boolean indicating if context was switched
-            - 'context_name': Name of the context switched to
-            - 'context_details': Dictionary with cluster, user, namespace info
-            - 'message': Status message
-        
-        Raises:
-            KubernetesOperationError: If context switching fails
-        """
+    async def list_namespaces(self, session_id: Optional[str] = None) -> List[str]:
+        """List all Kubernetes namespace names in the active cluster."""
         try:
-            # Run in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            core_v1, _, _, _ = await loop.run_in_executor(
+                None,
+                self._get_api_clients,
+                session_id,
+            )
+            namespaces = await loop.run_in_executor(None, core_v1.list_namespace)
+            return [ns.metadata.name for ns in namespaces.items]
+        except KubernetesOperationError:
+            raise
+        except Exception as exc:
+            raise KubernetesOperationError(
+                f"Failed to list namespaces: {exc}. "
+                "Verify cluster connectivity via 'kubernetes://cluster-info'."
+            )
+
+    async def list_contexts(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """List all available Kubernetes contexts from kubeconfig."""
+        try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
-                self._switch_kube_context,
-                context_name,
-                self.config.kubernetes.kubeconfig
+                self._get_kube_contexts,
+                self.config.kubernetes.kubeconfig,
+                session_id,
             )
             return result
-        
-        except Exception as e:
-            raise KubernetesOperationError(f'Failed to set context: {str(e)}')
+        except KubernetesOperationError:
+            raise
+        except Exception as exc:
+            raise KubernetesOperationError(f"Failed to list contexts: {exc}")
 
-
-    def _switch_kube_context(
-        self, 
-        context_name: str, 
-        kubeconfig_path: Optional[str] = None
+    def _get_kube_contexts(
+        self,
+        kubeconfig_path: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Internal method to switch to a specific Kubernetes context.
-        
-        Uses kubernetes.config.load_kube_config() with context parameter.
-        
-        Args:
-            context_name: Name of the context to switch to.
-            kubeconfig_path: Optional path to kubeconfig file.
-        
-        Returns:
-            Dictionary with success status and context details.
-        """
+        """Retrieve Kubernetes contexts from kubeconfig."""
         try:
             from kubernetes import config as k8s_config
-            
-            # First, verify the context exists and get its details
-            result = k8s_config.list_kube_config_contexts(
-                config_file=kubeconfig_path
-            )
-            
-            # Handle case where list_kube_config_contexts returns None
+
+            result = k8s_config.list_kube_config_contexts(config_file=kubeconfig_path)
             if result is None:
                 raise KubernetesOperationError(
-                    'Failed to retrieve Kubernetes contexts from kubeconfig. '
-                    'The kubeconfig file may be invalid or inaccessible.'
+                    "Failed to retrieve Kubernetes contexts from kubeconfig: file is empty or inaccessible."
                 )
-            
+
+            contexts, active_context = result
+            kubeconfig_current = active_context.get("name") if isinstance(active_context, dict) else None
+            session_active = self.get_active_context(session_id) or kubeconfig_current
+
+            formatted_contexts = []
+            for context in contexts:
+                ctx_dict = cast(Dict[str, Any], context)
+                context_name = ctx_dict.get("name", "unknown")
+                context_info = ctx_dict.get("context", {})
+                formatted_contexts.append({
+                    "name": context_name,
+                    "cluster": context_info.get("cluster", ""),
+                    "user": context_info.get("user", ""),
+                    "namespace": context_info.get("namespace", "default"),
+                    "is_current": context_name == session_active,
+                })
+
+            return {
+                "contexts": formatted_contexts,
+                "current_context": session_active,
+                "total_contexts": len(formatted_contexts),
+            }
+        except KubernetesOperationError:
+            raise
+        except Exception as exc:
+            raise KubernetesOperationError(f"Failed to retrieve Kubernetes contexts: {exc}")
+
+    async def set_context(
+        self,
+        context_name: str,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Switch the active Kubernetes context for the current session."""
+        try:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None,
+                self._switch_kube_context,
+                context_name,
+                self.config.kubernetes.kubeconfig,
+                session_id,
+            )
+        except KubernetesOperationError:
+            raise
+        except Exception as exc:
+            raise KubernetesOperationError(f"Failed to set context: {exc}")
+
+    def _switch_kube_context(
+        self,
+        context_name: str,
+        kubeconfig_path: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Validate and switch Kubernetes context for the target session."""
+        try:
+            from kubernetes import config as k8s_config
+
+            result = k8s_config.list_kube_config_contexts(config_file=kubeconfig_path)
+            if result is None:
+                raise KubernetesOperationError(
+                    "Failed to retrieve Kubernetes contexts from kubeconfig."
+                )
+
             contexts, _ = result
-            
-            # Find the context we want to switch to
             target_context = None
             for ctx in contexts:
                 ctx_dict = cast(Dict[str, Any], ctx)
-                if ctx_dict.get('name') == context_name:
+                if ctx_dict.get("name") == context_name:
                     target_context = ctx_dict
                     break
-            
+
             if not target_context:
-                available_contexts = [cast(Dict[str, Any], c).get('name', '') for c in contexts]
+                available = [str(cast(Dict[str, Any], c).get("name", "")) for c in contexts]
                 raise KubernetesOperationError(
-                    f'Context "{context_name}" not found. '
-                    f'Available contexts: {", ".join(str(n) for n in available_contexts)}'
+                    f"Context '{context_name}' not found in kubeconfig. "
+                    f"Available contexts: {', '.join(available)}. "
+                    "Read resource 'kubernetes://contexts' to inspect valid context names."
                 )
-            
-            # Load the specified context (returns None, just loads the config)
+
+            # Validate kubeconfig loads cleanly for this context
             k8s_config.load_kube_config(
                 config_file=kubeconfig_path,
-                context=context_name
+                context=context_name,
             )
-            
-            # Store the current context and invalidate cached API clients
-            # so they are recreated with the new context
-            self._current_context = context_name
-            self._api = None
-            self._version_api = None
-            
-            # Get context details from the target context we found earlier
-            context_details = target_context.get('context', {})
-            
+
+            norm_session = self._normalize_session_id(session_id)
+            self._session_contexts[norm_session] = context_name
+            if norm_session != "default":
+                # Also set default fallback if not set yet so background tasks without session ID inherit it
+                self._session_contexts.setdefault("default", context_name)
+
+            # Invalidate cached API client for this context so it is freshly created on next use
+            self._client_cache.pop(context_name, None)
+
+            context_details = target_context.get("context", {})
             return {
-                'success': True,
-                'context_name': context_name,
-                'context_details': {
-                    'cluster': context_details.get('cluster', ''),
-                    'user': context_details.get('user', ''),
-                    'namespace': context_details.get('namespace', 'default')
+                "success": True,
+                "context_name": context_name,
+                "session_id": norm_session,
+                "context_details": {
+                    "cluster": context_details.get("cluster", ""),
+                    "user": context_details.get("user", ""),
+                    "namespace": context_details.get("namespace", "default"),
                 },
-                'message': f'Context switched to "{context_name}" successfully'
+                "message": f"Context switched to '{context_name}' for session '{norm_session}'",
             }
-        
         except KubernetesOperationError:
             raise
-        except Exception as e:
-            raise KubernetesOperationError(
-                f'Failed to switch Kubernetes context: {str(e)}'
-            )
+        except Exception as exc:
+            raise KubernetesOperationError(f"Failed to switch Kubernetes context: {exc}")
 
-    async def get_helm_releases(
+    def _discover_cluster_kinds(
         self,
-        namespace: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """List all Helm releases in cluster.
-        
-        Args:
-            namespace: Optional namespace filter (if None, lists all namespaces)
-        
-        Returns:
-            List of Helm release information
-        
-        Raises:
-            KubernetesOperationError: If listing fails
-        """
-        # Safety check: Check if Helm is installed
-        if not is_helm_installed():
-            raise KubernetesOperationError('Helm binary is not installed or not found in PATH.')
-        
+        core_v1: Any,
+        apps_v1: Any,
+        apis_api: Any,
+    ) -> Set[str]:
+        """Discover API resource kinds supported by the cluster via Kubernetes Discovery APIs."""
+        discovered_kinds: Set[str] = set()
+
+        # 1. Core v1 resources
         try:
-            cmd = ['helm', 'list', '-o', 'json', '--max', '10000']
-            
-            if namespace:
-                cmd.extend(['-n', namespace])
-            else:
-                cmd.append('--all-namespaces')
-            
-            # Safety check: Check for dangerous patterns
-            pattern = check_for_dangerous_patterns(cmd, log_prefix='[get_helm_releases] ')
-            if pattern:
-                raise KubernetesOperationError(
-                    f"Dangerous pattern detected in command arguments: '{pattern}'. "
-                    f"Aborting list for safety."
-                )
-            
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
+            core_res = core_v1.get_api_resources()
+            for res in getattr(core_res, "resources", None) or []:
+                kind = getattr(res, "kind", None)
+                name = getattr(res, "name", None)
+                if isinstance(kind, str) and kind:
+                    discovered_kinds.add(kind)
+                if isinstance(name, str) and name and "/" not in name:
+                    discovered_kinds.add(name)
+        except Exception:
+            pass
+
+        # 2. Apps v1 resources
+        try:
+            apps_res = apps_v1.get_api_resources()
+            for res in getattr(apps_res, "resources", None) or []:
+                kind = getattr(res, "kind", None)
+                if isinstance(kind, str) and kind:
+                    discovered_kinds.add(kind)
+        except Exception:
+            pass
+
+        # 3. APIGroup discovery (CRDs, networking.k8s.io, rbac.authorization.k8s.io, etc.)
+        if apis_api is not None:
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=self.config.kubernetes.timeout
-                )
-            except asyncio.TimeoutError:
-                process.kill()
-                raise KubernetesOperationError(
-                    f'Helm list timeout ({self.config.kubernetes.timeout}s)'
-                )
-            
-            if process.returncode != 0:
-                raise KubernetesOperationError(f'Helm list failed: {stderr.decode().strip()}')
-            
-            releases = json.loads(stdout.decode().strip()) if stdout else []
-            
-            # Convert to list if single release
-            if isinstance(releases, dict):
-                releases = [releases]
-            
-            return releases
-        
-        except Exception as e:
-            raise KubernetesOperationError(f'Failed to get Helm releases: {str(e)}')
-    
+                groups_resp = apis_api.get_api_versions()
+                for group in getattr(groups_resp, "groups", None) or []:
+                    group_name = getattr(group, "name", "")
+                    if group_name:
+                        discovered_kinds.add(group_name)
+                    pref = getattr(group, "preferred_version", None)
+                    group_version = getattr(pref, "group_version", None) if pref else None
+                    if group_version:
+                        discovered_kinds.add(group_version)
+                    for ver in getattr(group, "versions", None) or []:
+                        gv = getattr(ver, "group_version", None)
+                        if gv:
+                            discovered_kinds.add(gv)
+            except Exception:
+                pass
+
+        # 4. CustomResourceDefinitions check if CustomObjectsApi or ApiextensionsV1Api is available
+        try:
+            from kubernetes import client
+
+            if hasattr(client, "ApiextensionsV1Api"):
+                ext_api = client.ApiextensionsV1Api(getattr(core_v1, "api_client", None))
+                crds = ext_api.list_custom_resource_definition()
+                for crd in getattr(crds, "items", None) or []:
+                    spec = getattr(crd, "spec", None)
+                    names = getattr(spec, "names", None) if spec else None
+                    crd_kind = getattr(names, "kind", None) if names else None
+                    crd_name = getattr(getattr(crd, "metadata", None), "name", None)
+                    if isinstance(crd_kind, str) and crd_kind:
+                        discovered_kinds.add(crd_kind)
+                    if isinstance(crd_name, str) and crd_name:
+                        discovered_kinds.add(crd_name)
+        except Exception:
+            pass
+
+        return discovered_kinds
+
     async def check_prerequisites(
         self,
-        required_api_version: Optional[str] = None,
-        required_resources: Optional[List[str]] = None,
+        min_kubernetes_version: Optional[str] = None,
+        required_api_resources: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Check if cluster meets installation prerequisites.
-        
-        Args:
-            required_api_version: Required Kubernetes API version (e.g., 'v1.28.0')
-            required_resources: List of required resource types (e.g., ['Deployment', 'Service'])
-        
-        Returns:
-            Prerequisites check result with status
-        
-        Raises:
-            KubernetesOperationError: If check fails
-        """
+        """Check if the cluster meets minimum Kubernetes version and API resource/CRD requirements."""
         try:
-            # Run in executor to avoid blocking
             loop = asyncio.get_event_loop()
-            api, version_api = await loop.run_in_executor(None, self._get_api_clients)
-            
-            # Get cluster version
-            version = await loop.run_in_executor(None, version_api.get_code)  # type: ignore[union-attr]
-            cluster_version = version.git_version  # type: ignore[union-attr]
-            
-            # Check API version if specified
-            api_version_ok = True
-            if required_api_version:
-                # Simplified version comparison - could be enhanced
-                api_version_ok = cluster_version >= required_api_version.lstrip('v')
-            
-            # Check resource types availability
-            # Note: Full resource checking requires Discovery API which is complex
-            # For now, we'll assume resources are available if cluster is accessible
-            available_resources = []
-            missing_resources = []
-            
-            if required_resources:
-                # Simplified check - assume all standard resources are available
-                # if cluster is accessible (could be enhanced with Discovery API)
-                available_resources = required_resources
-            
-            all_prerequisites_met = api_version_ok and len(missing_resources) == 0
-            
-            return {
-                'status': 'success',
-                'cluster_version': cluster_version,
-                'api_version_check': {
-                    'required': required_api_version,
-                    'current': cluster_version,
-                    'meets_requirement': api_version_ok
-                },
-                'resource_check': {
-                    'required': required_resources or [],
-                    'available': available_resources,
-                    'missing': missing_resources,
-                    'all_available': len(missing_resources) == 0
-                },
-                'all_prerequisites_met': all_prerequisites_met
-            }
-        
-        except Exception as e:
-            raise KubernetesOperationError(f'Prerequisites check failed: {str(e)}')
+            core_v1, apps_v1, version_api, apis_api = await loop.run_in_executor(
+                None,
+                self._get_api_clients,
+                session_id,
+            )
 
+            version = await loop.run_in_executor(None, version_api.get_code)
+            cluster_version = str(version.git_version)
+
+            api_version_ok = True
+            if min_kubernetes_version:
+                api_version_ok = compare_k8s_versions(cluster_version, min_kubernetes_version)
+
+            available_resources: List[str] = []
+            missing_resources: List[str] = []
+
+            if required_api_resources:
+                discovered_kinds = await loop.run_in_executor(
+                    None,
+                    self._discover_cluster_kinds,
+                    core_v1,
+                    apps_v1,
+                    apis_api,
+                )
+                discovered_lower = {k.lower() for k in discovered_kinds}
+
+                for req in required_api_resources:
+                    if req.lower() in discovered_lower:
+                        available_resources.append(req)
+                    else:
+                        missing_resources.append(req)
+
+            all_prerequisites_met = api_version_ok and len(missing_resources) == 0
+
+            return {
+                "status": "success",
+                "cluster_version": cluster_version,
+                "active_context": self.get_active_context(session_id),
+                "api_version_check": {
+                    "required": min_kubernetes_version,
+                    "current": cluster_version,
+                    "meets_requirement": api_version_ok,
+                },
+                "resource_check": {
+                    "required": required_api_resources or [],
+                    "available": available_resources,
+                    "missing": missing_resources,
+                    "all_available": len(missing_resources) == 0,
+                },
+                "all_prerequisites_met": all_prerequisites_met,
+            }
+        except KubernetesOperationError:
+            raise
+        except Exception as exc:
+            raise KubernetesOperationError(
+                f"Prerequisites check failed: {exc}. "
+                "Verify cluster connectivity via 'kubernetes://cluster-info'."
+            )

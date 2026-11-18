@@ -1,55 +1,60 @@
-"""Kubernetes-related resources."""
+"""Kubernetes cluster state and kubeconfig context resources."""
 
-import json
-from typing import List
-from mcp.types import Resource
+from __future__ import annotations
+
+from typing import Any, Dict
+
 from helm_mcp_server.exceptions import HelmResourceError
 from helm_mcp_server.resources.base import BaseResource
 
 
 class KubernetesResources(BaseResource):
-    """Kubernetes cluster resources."""
-    
-    def register(self, mcp_instance) -> None:
-        """Register resources with FastMCP."""
-        
+    """URI-addressed resources for cluster info, namespaces, and kubeconfig contexts."""
+
+    def register(self, mcp_instance: Any) -> None:
+        """Register Kubernetes resources with FastMCP."""
+
         @mcp_instance.resource(
             "kubernetes://cluster-info",
-            mime_type="application/json"
+            mime_type="application/json",
         )
-        async def get_cluster_info() -> dict:
-            """Get Kubernetes cluster information.
-            
-            Returns:
-                Dictionary with cluster information
-            """
+        async def get_cluster_info() -> Dict[str, Any]:
+            """Get Kubernetes cluster version, node summary, namespace summary, and active context."""
             try:
-                cluster_info = await self.k8s_service.get_cluster_info()
-                
-                # Return dict directly - FastMCP will convert to JSON automatically
-                return cluster_info
-            except Exception as e:
-                raise HelmResourceError(f"Failed to get cluster info: {str(e)}")
-        
-        @mcp_instance.resource("kubernetes://namespaces")
-        async def list_namespaces() -> List[Resource]:
-            """List all Kubernetes namespaces.
-            
-            Returns:
-                List of namespace resources
-            """
+                return await self.k8s_service.get_cluster_info()
+            except Exception as exc:
+                raise HelmResourceError(
+                    f"Failed to get Kubernetes cluster info: {exc}. "
+                    "Read 'kubernetes://contexts' or call 'kubernetes_set_context' to select a valid cluster."
+                )
+
+        @mcp_instance.resource(
+            "kubernetes://namespaces",
+            mime_type="application/json",
+        )
+        async def list_namespaces() -> Dict[str, Any]:
+            """List all Kubernetes namespace names in the active cluster."""
             try:
                 namespaces = await self.k8s_service.list_namespaces()
-                
-                return [
-                    Resource(
-                        uri=f"kubernetes://namespaces/{ns}",  # type: ignore[arg-type]
-                        name=f"Namespace: {ns}",
-                        description=f"Kubernetes namespace {ns}",
-                        mimeType="application/json",
-                    )
-                    for ns in namespaces
-                ]
-            except Exception as e:
-                # Return empty list on error
-                return []
+                return {
+                    "namespaces": namespaces,
+                    "count": len(namespaces),
+                }
+            except Exception as exc:
+                raise HelmResourceError(
+                    f"Failed to list Kubernetes namespaces: {exc}. "
+                    "Verify cluster connectivity via 'kubernetes://cluster-info'."
+                )
+
+        @mcp_instance.resource(
+            "kubernetes://contexts",
+            mime_type="application/json",
+        )
+        async def list_contexts() -> Dict[str, Any]:
+            """List all available Kubernetes contexts from kubeconfig and the active session context."""
+            try:
+                return await self.k8s_service.list_contexts()
+            except Exception as exc:
+                raise HelmResourceError(
+                    f"Failed to list Kubernetes contexts from kubeconfig: {exc}."
+                )

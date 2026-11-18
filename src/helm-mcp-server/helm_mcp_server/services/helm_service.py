@@ -1,1616 +1,1118 @@
-"""Helm operations service - business logic layer."""
+"""Helm operations service — execution-layer business logic."""
+
+from __future__ import annotations
 
 import asyncio
-import subprocess
 import json
-import tempfile
 import os
+import tempfile
+import time
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
+
 import yaml
-from typing import Optional, List, Dict, Any
+
 from helm_mcp_server.config import ServerConfig
 from helm_mcp_server.exceptions import HelmOperationError
-from helm_mcp_server.utils.helm_helper import is_helm_installed, check_for_dangerous_patterns
+from helm_mcp_server.utils.helm_helper import (
+    compute_manifest_diff,
+    is_helm_installed,
+    redact_secrets_in_manifests,
+    redact_sensitive_values,
+)
+
+if TYPE_CHECKING:
+    from helm_mcp_server.services.kubernetes_service import KubernetesService
+
+ValuesStrategy = Literal["reuse", "reset", "reset_then_reuse"]
+
+STATUS_FLAG_MAP: Dict[str, str] = {
+    "deployed": "--deployed",
+    "failed": "--failed",
+    "pending": "--pending",
+    "superseded": "--superseded",
+    "uninstalled": "--uninstalled",
+    "uninstalling": "--uninstalling",
+}
 
 
 class HelmService:
-    """Service for Helm operations.
-    
-    Encapsulates all Helm CLI interactions and business logic.
-    Can be used by multiple tools without duplication.
-    """
-    
-    def __init__(self, config: ServerConfig):
-        """Initialize with configuration."""
+    """Service encapsulating Helm CLI execution, release diffing, and rollout monitoring."""
+
+    TERMINAL_CONTAINER_STATES = frozenset({
+        "CrashLoopBackOff",
+        "ImagePullBackOff",
+        "ErrImagePull",
+        "CreateContainerConfigError",
+        "InvalidImageName",
+        "CreateContainerError",
+    })
+
+    def __init__(
+        self,
+        config: ServerConfig,
+        k8s_service: Optional[KubernetesService] = None,
+    ):
+        """Initialize with configuration and optional KubernetesService for context propagation."""
         self.config = config
-    
-    def _get_repository_url(self, repo_name: str) -> Optional[str]:
-        """Get repository URL for common repositories.
-        
-        Args:
-            repo_name: Repository name
-        
-        Returns:
-            Repository URL if known, None otherwise
-        """
-        # Common Helm repository URLs
-        known_repos = {
-            'bitnami': 'https://charts.bitnami.com/bitnami',
-            'argo': 'https://argoproj.github.io/argo-helm',
-            'argoproj': 'https://argoproj.github.io/argo-helm',
-            'prometheus-community': 'https://prometheus-community.github.io/helm-charts',
-            'prometheus': 'https://prometheus-community.github.io/helm-charts',
-            'stable': 'https://charts.helm.sh/stable',  # Deprecated but still common
-            'grafana': 'https://grafana.github.io/helm-charts',
-            'ingress-nginx': 'https://kubernetes.github.io/ingress-nginx',
-            'nginx': 'https://kubernetes.github.io/ingress-nginx',
-            'jetstack': 'https://charts.jetstack.io',  # cert-manager
-            'cert-manager': 'https://charts.jetstack.io',
-        }
-        
-        return known_repos.get(repo_name.lower())
-    
-    async def repository_exists(self, repo_name: str) -> bool:
-        """Check if a Helm repository exists.
-        
-        Args:
-            repo_name: Repository name
-        
-        Returns:
-            True if repository exists, False otherwise
-        """
-        try:
-            cmd = ['helm', 'repo', 'list', '-o', 'json']
-            result = await self._run_helm_command(cmd)
-            repos = json.loads(result) if result else []
-            
-            # Check if repository exists in the list
-            for repo in repos:
-                if repo.get('name', '').lower() == repo_name.lower():
-                    return True
-            
-            return False
-        except Exception:
-            # If we can't list repos, assume it doesn't exist
-            return False
-    
-    async def ensure_repository(self, repo_name: str, repo_url: Optional[str] = None) -> str:
-        """Ensure a Helm repository exists, adding it if necessary.
-        
-        Args:
-            repo_name: Repository name
-            repo_url: Repository URL (if None, will try to get from known repos)
-        
-        Returns:
-            Repository name that was used
-        
-        Raises:
-            HelmOperationError: If repository cannot be added
-        """
-        # Check if repository already exists
-        if await self.repository_exists(repo_name):
-            return repo_name
-        
-        # Get repository URL if not provided
-        if not repo_url:
-            repo_url = self._get_repository_url(repo_name)
-            if not repo_url:
-                raise HelmOperationError(
-                    f"Repository '{repo_name}' not found and no URL provided. "
-                    f"Please provide a repository URL or use one of the known repositories: "
-                    f"bitnami, argo, prometheus-community, grafana, ingress-nginx, jetstack"
-                )
-        
-        # Add the repository
-        return await self._add_repository(repo_url, repo_name)
-    
-    async def search_charts(
-        self, 
-        query: str, 
-        repository: str = 'bitnami',
-        limit: int = 10
-    ) -> List[Dict[str, Any]] | str:
-        """Search for Helm charts.
-        
-        Args:
-            query: Chart name or keyword
-            repository: Helm repository name
-            limit: Maximum results
-        
-        Returns:
-            List of chart metadata, or a message string if no charts found
-        
-        Raises:
-            HelmOperationError: If search fails
-        """
-        try:
-            # Ensure repository exists before searching
-            await self.ensure_repository(repository)
-            
-            # Search without repository prefix to allow Helm's natural search behavior
-            cmd = [
-                'helm', 'search', 'repo',
-                query,
-                '--max-col-width', '80',
-                '-o', 'json'
-            ]
-            
-            result = await self._run_helm_command(cmd)
-            charts = json.loads(result)
-            
-            # Filter by repository if specified
-            if repository:
-                charts = [
-                    chart for chart in charts 
-                    if chart.get('name', '').startswith(f'{repository}/')
-                ]
-            
-            filtered_charts = charts[:limit]
-            
-            # Return message if no charts found
-            if len(filtered_charts) == 0:
-                return f"No charts found matching '{query}' in repository '{repository}'. Try running 'helm repo update' to refresh repository indexes or search without specifying a repository."
-            
-            return filtered_charts
-        
-        except HelmOperationError:
-            # Re-raise HelmOperationError without wrapping
-            raise
-        except json.JSONDecodeError as e:
-            raise HelmOperationError(f'Invalid Helm output: {str(e)}')
-        except Exception as e:
-            raise HelmOperationError(f'Search failed: {str(e)}')
-    
-    async def get_chart_readme(
-        self,
-        chart_name: str,
-        repository: str = 'bitnami'
-    ) -> str:
-        """Get the README for a Helm chart.
-        
-        Args:
-            chart_name: Chart name (can be in 'repo/chart' format or just 'chart')
-            repository: Helm repository name (ignored if chart_name already includes repository)
-        
-        Returns:
-            Chart README as markdown string
-        
-        Raises:
-            HelmOperationError: If readme cannot be retrieved
-        """
-        try:
-            # Ensure repository exists before getting readme
-            await self.ensure_repository(repository)
-            
-            # If chart_name already contains repository (repo/chart format), use it directly
-            # Otherwise, prepend the repository
-            if '/' in chart_name:
-                chart_ref = chart_name  # Already in repo/chart format
-            else:
-                chart_ref = f'{repository}/{chart_name}'
-            
-            cmd = [
-                'helm', 'show', 'readme',
-                chart_ref
-            ]
-            
-            result = await self._run_helm_command(cmd)
-            return result
-        
-        except HelmOperationError as e:
-            # Check if it's a "chart not found" error and provide helpful context
-            error_msg = str(e)
-            if 'not found' in error_msg.lower() or 'no chart name found' in error_msg.lower():
-                suggestions = []
-                if 'try \'helm repo update\'' in error_msg.lower():
-                    suggestions.append("Try running 'helm repo update' to refresh repository indexes")
-                
-                # Determine actual repository used
-                if '/' in chart_name:
-                    actual_repo = chart_name.split('/')[0]
-                    suggestions.append(f"Chart '{chart_name}' may not exist in repository '{actual_repo}'")
-                    suggestions.append(f"Try searching for the chart: helm search repo {chart_name}")
-                else:
-                    suggestions.append(f"Chart '{chart_name}' may not exist in repository '{repository}'")
-                    suggestions.append(f"Try searching for the chart: helm search repo {repository}/{chart_name}")
-                
-                enhanced_msg = f"Chart README not found for '{chart_name}'. {'. '.join(suggestions)}"
-                # Raise without chaining to avoid showing full stack trace
-                raise HelmOperationError(enhanced_msg)
-            # Re-raise other HelmOperationErrors without wrapping
-            raise
-        except Exception as e:
-            raise HelmOperationError(f'Failed to get chart README: {str(e)}')
-    
-    async def get_chart_info(
-        self, 
-        chart_name: str,
-        repository: str = 'bitnami'
-    ) -> Dict[str, Any]:
-        """Get detailed chart information."""
-        try:
-            # Ensure repository exists before getting chart info
-            await self.ensure_repository(repository)
-            
-            # If chart_name already contains repository (repo/chart format), use it directly
-            # Otherwise, prepend the repository
-            if '/' in chart_name:
-                chart_ref = chart_name  # Already in repo/chart format
-            else:
-                chart_ref = f'{repository}/{chart_name}'
-            
-            cmd = [
-                'helm', 'show', 'chart',
-                chart_ref
-            ]
-            
-            result = await self._run_helm_command(cmd)
-            # helm show chart outputs YAML, not JSON
-            info = yaml.safe_load(result)
-            return info
-        
-        except HelmOperationError as e:
-            # Check if it's a "chart not found" error and provide helpful context
-            error_msg = str(e)
-            if 'not found' in error_msg.lower() or 'no chart name found' in error_msg.lower():
-                suggestions = []
-                if 'try \'helm repo update\'' in error_msg.lower():
-                    suggestions.append("Try running 'helm repo update' to refresh repository indexes")
-                
-                # Determine actual repository used
-                if '/' in chart_name:
-                    actual_repo = chart_name.split('/')[0]
-                    suggestions.append(f"Chart '{chart_name}' may not exist in repository '{actual_repo}'")
-                    suggestions.append(f"Try searching for the chart: helm search repo {chart_name}")
-                else:
-                    suggestions.append(f"Chart '{chart_name}' may not exist in repository '{repository}'")
-                    suggestions.append(f"Try searching for the chart: helm search repo {repository}/{chart_name}")
-                
-                enhanced_msg = f"Chart '{chart_name}' not found. {'. '.join(suggestions)}"
-                # Raise without chaining to avoid showing full stack trace
-                raise HelmOperationError(enhanced_msg)
-            # Re-raise other HelmOperationErrors without wrapping
-            raise
-        except Exception as e:
-            raise HelmOperationError(f'Failed to get chart info: {str(e)}')
-            
-    async def get_chart_values(
-        self,
-        chart_name: str,
-        repository: str = 'bitnami',
-        version: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Get chart default values (schema)."""
-        try:
-            cmd = [
-                'helm', 'show', 'values',
-                f'{repository}/{chart_name}'
-            ]
-            
-            if version:
-                cmd.extend(['--version', version])
-            
-            result = await self._run_helm_command(cmd)
-            values = yaml.safe_load(result)
-            return values if values else {}
-        
-        except HelmOperationError as e:
-            # Check if it's a "chart not found" error
-            error_msg = str(e)
-            if 'not found' in error_msg.lower() or 'no chart name found' in error_msg.lower():
-                suggestions = []
-                if 'try \'helm repo update\'' in error_msg.lower():
-                    suggestions.append("Try running 'helm repo update' to refresh repository indexes")
-                suggestions.append(f"Chart '{chart_name}' (version: {version or 'latest'}) may not exist in repository '{repository}'")
-                
-                enhanced_msg = f"Chart '{chart_name}' not found in repository '{repository}'. {'. '.join(suggestions)}"
-                raise HelmOperationError(enhanced_msg)
-            raise
-        except Exception as e:
-            raise HelmOperationError(f'Failed to get chart values: {str(e)}')
-    
+        self.k8s_service = k8s_service
+
+    # ------------------------------------------------------------------
+    # Command construction, validation, and subprocess execution
+    # ------------------------------------------------------------------
+
     def _check_helm_installed(self) -> None:
-        """Check if Helm is installed.
-        
-        Raises:
-            HelmOperationError: If Helm is not installed
-        """
+        """Raise HelmOperationError if helm binary is not found in PATH."""
         if not is_helm_installed():
-            raise HelmOperationError('Helm binary is not installed or not found in PATH.')
-    
-    def _check_dangerous_patterns(self, cmd: List[str], operation: str) -> None:
-        """Check command for dangerous patterns.
-        
-        Args:
-            cmd: Command and arguments to check
-            operation: Operation name for logging (e.g., 'install_chart')
-        
-        Raises:
-            HelmOperationError: If dangerous pattern detected
-        """
-        pattern = check_for_dangerous_patterns(cmd, log_prefix=f"[{operation}] ")
-        if pattern:
-            raise HelmOperationError(
-                f"Dangerous pattern detected in command arguments: '{pattern}'. "
-                f"Aborting {operation} for safety."
-            )
-    
-    def _check_write_access(self, operation: str, allow_dry_run: bool = False, dry_run: bool = False) -> None:
-        """Check if write operations are allowed.
-        
-        Args:
-            operation: Operation name for error message
-            allow_dry_run: Whether dry-run operations are allowed without write access
-            dry_run: Whether this is a dry-run operation
-        
-        Raises:
-            HelmOperationError: If write access is not allowed
-        """
-        if allow_dry_run and dry_run:
-            # Dry-run operations don't need write access
-            return
-        
-        if not self.config.allow_write:
-            raise HelmOperationError(
-                f"Helm {operation} is not allowed without write access. "
-                f"Set MCP_ALLOW_WRITE=true or use dry_run=True."
-            )
-    
-    def _normalize_chart_name(self, chart_name: str) -> str:
-        """Normalize chart name to repo/chart format.
-        
-        Args:
-            chart_name: Chart name (may be in format 'chart' or 'repo/chart')
-        
-        Returns:
-            Normalized chart name in 'repo/chart' format
-        
-        Raises:
-            HelmOperationError: If chart name cannot be normalized
-        """
-        # If already in repo/chart format, return as-is
-        if '/' in chart_name:
-            return chart_name
-        
-        # Common chart name patterns: try to infer repository
-        # Map common chart names to their repository/chart format
-        common_charts = {
-            'argo-cd': 'argo/argo-cd',
-            'argocd': 'argo/argo-cd',
-            'postgresql': 'bitnami/postgresql',
-            'postgres': 'bitnami/postgresql',
-            'mysql': 'bitnami/mysql',
-            'redis': 'bitnami/redis',
-            'nginx': 'bitnami/nginx',
-            'mongodb': 'bitnami/mongodb',
-        }
-        
-        # Check if we have a mapping
-        normalized = common_charts.get(chart_name.lower())
-        if normalized:
-            return normalized
-        
-        # If no mapping found, raise error with helpful message
-        raise HelmOperationError(
-            f"Chart name '{chart_name}' must be in format 'repo/chart' (e.g., 'argo/argo-cd', 'bitnami/postgresql'). "
-            f"Common formats: 'argo/argo-cd', 'bitnami/postgresql', etc."
-        )
-    
-    def _add_kubeconfig_flags(
+            raise HelmOperationError("Helm binary is not installed or not found in PATH.")
+
+    def _check_write_access(
         self,
-        cmd: List[str],
-        kubeconfig_path: Optional[str] = None,
-        context_name: Optional[str] = None,
+        operation: str,
+        *,
+        allow_dry_run: bool = False,
+        dry_run: bool = False,
     ) -> None:
-        """Add kubeconfig flags to command.
-        
-        Args:
-            cmd: Command list to modify
-            kubeconfig_path: Path to kubeconfig file
-            context_name: Kubernetes context name
-        """
-        if kubeconfig_path:
-            cmd.extend(['--kubeconfig', kubeconfig_path])
-        if context_name:
-            cmd.extend(['--kube-context', context_name])
-    
-    async def _add_repository(
+        """Verify mutating operations are permitted by server configuration."""
+        if allow_dry_run and dry_run:
+            return
+        if not self.config.is_mutate_enabled:
+            raise HelmOperationError(
+                f"Helm '{operation}' is disabled because the server is in read-only mode. "
+                "Set MCP_ALLOW_WRITE=true (and ensure MCP_TOOLSETS includes 'mutate' or 'all') "
+                "or use helm_plan_release for a read-only preview."
+            )
+
+    @staticmethod
+    def validate_chart_ref(chart_ref: str) -> str:
+        """Validate that chart_ref explicitly specifies a repository prefix, OCI URI, URL, or path."""
+        cleaned = (chart_ref or "").strip()
+        if not cleaned:
+            raise HelmOperationError("Parameter 'chart_ref' cannot be empty.")
+
+        if (
+            "/" in cleaned
+            or cleaned.startswith("oci://")
+            or cleaned.startswith("http://")
+            or cleaned.startswith("https://")
+            or cleaned.startswith(".")
+        ):
+            return cleaned
+
+        raise HelmOperationError(
+            f"Chart reference '{cleaned}' must include an explicit repository prefix "
+            f"(e.g., '<repo>/{cleaned}') or OCI URI ('oci://...'). "
+            f"Call helm_search_charts(query='{cleaned}') or read resource 'helm://repositories' "
+            "to find the repository prefix."
+        )
+
+    def _build_cmd(
         self,
-        repo_url: str,
-        repo_name: Optional[str] = None,
-    ) -> str:
-        """Add a Helm repository.
-        
-        Args:
-            repo_url: Repository URL
-            repo_name: Repository name (if None, extracted from URL or chart name)
-        
-        Returns:
-            Repository name used
-        
-        Raises:
-            HelmOperationError: If repository addition fails
-        """
-        if not repo_name:
-            # Extract repo name from URL or use a default
-            repo_name = repo_url.split('/')[-1].replace('.git', '').replace('https://', '').replace('http://', '')
-            if not repo_name or repo_name == repo_url:
-                repo_name = 'customrepo'
-        
-        try:
-            # Add repository
-            add_cmd = ['helm', 'repo', 'add', repo_name, repo_url]
-            self._check_dangerous_patterns(add_cmd, 'add_repository')
-            await self._run_helm_command(add_cmd)
-            
-            # Update repositories
-            update_cmd = ['helm', 'repo', 'update']
-            await self._run_helm_command(update_cmd)
-            
-            return repo_name
-        except Exception as e:
-            raise HelmOperationError(f'Failed to add/update repository: {str(e)}')
-    
-    def _add_values_files_to_cmd(
-        self,
-        cmd: List[str],
-        values: Optional[Dict[str, Any]] = None,
-        values_files: Optional[List[str]] = None,
-        values_file_content: Optional[str] = None,
-        temp_files: Optional[List[str]] = None,
+        args: List[str],
+        *,
+        include_cluster_flags: bool = True,
+        session_id: Optional[str] = None,
     ) -> List[str]:
-        """Add values files to command and return list of temp files created.
-        
-        Args:
-            cmd: Command list to modify
-            values: Values dictionary (will be written to temp file)
-            values_files: List of values file paths/URLs
-            values_file_content: Raw YAML content (will be written to temp file)
-            temp_files: List to append temp file paths to
-        
-        Returns:
-            List of temp files created (for cleanup)
-        """
-        if temp_files is None:
-            temp_files = []
-        
-        # Handle raw YAML content as a temp file
-        if values_file_content:
-            with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.yaml') as f:
-                f.write(values_file_content)
-                temp_files.append(f.name)
-                cmd.extend(['-f', f.name])
-        
-        # Handle values dict as a temp YAML file
-        if values:
-            with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.yaml') as f:
-                yaml.dump(values, f)
-                temp_files.append(f.name)
-                cmd.extend(['-f', f.name])
-        
-        # Add any values files (paths or URLs)
-        if values_files:
-            for vf in values_files:
-                cmd.extend(['-f', vf])
-        
-        return temp_files
-    
+        """Construct a Helm CLI command list, injecting kubeconfig and session kube-context."""
+        cmd = ["helm", *args]
+        if include_cluster_flags:
+            if self.config.kubernetes.kubeconfig:
+                cmd.extend(["--kubeconfig", self.config.kubernetes.kubeconfig])
+            if self.k8s_service is not None:
+                active_ctx = self.k8s_service.get_active_context(session_id)
+                if active_ctx:
+                    cmd.extend(["--kube-context", active_ctx])
+        return cmd
+
+    @staticmethod
+    def _write_temp_values_file(values: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Write a values dictionary to a temporary YAML file and return its path."""
+        if not values:
+            return None
+        with tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".yaml", encoding="utf-8") as f:
+            yaml.safe_dump(values, f, sort_keys=False)
+            return f.name
+
+    @staticmethod
+    def _cleanup_temp_file(path: Optional[str]) -> None:
+        """Remove a temporary file if it exists."""
+        if path and os.path.exists(path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
     async def _run_helm_command(
         self,
         cmd: List[str],
         env: Optional[Dict[str, str]] = None,
     ) -> str:
-        """Run Helm command with timeout.
-        
-        Args:
-            cmd: Command and arguments
-            env: Optional environment variables to set
-        
-        Returns:
-            Command output
-        
-        Raises:
-            HelmOperationError: If command fails
-        """
-        # Check if Helm is installed before running any command
+        """Execute a Helm CLI command asynchronously with timeout enforcement."""
         self._check_helm_installed()
-        
         try:
-            # Prepare environment
             process_env = os.environ.copy()
             if env:
                 process_env.update(env)
-            
+
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=process_env
+                env=process_env,
             )
-            
+
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
-                    timeout=self.config.helm.timeout
+                    timeout=self.config.helm.timeout,
                 )
             except asyncio.TimeoutError:
                 process.kill()
                 raise HelmOperationError(
-                    f'Helm command timeout ({self.config.helm.timeout}s)'
+                    f"Helm command timed out after {self.config.helm.timeout}s: {' '.join(cmd[:3])}"
                 )
-            
+
             if process.returncode != 0:
-                error_msg = stderr.decode().strip()
-                raise HelmOperationError(error_msg)
-            
-            return stdout.decode().strip()
-        
+                error_msg = stderr.decode("utf-8", errors="replace").strip()
+                raise HelmOperationError(error_msg or f"Helm exited with code {process.returncode}")
+
+            return stdout.decode("utf-8", errors="replace").strip()
         except HelmOperationError:
-            # Re-raise HelmOperationError without wrapping
             raise
-        except Exception as e:
-            raise HelmOperationError(f'Command execution failed: {str(e)}')
-    
-    async def install_chart(
-        self,
-        chart_name: str,
-        release_name: str,
-        namespace: str = 'default',
-        values: Optional[Dict[str, Any]] = None,
-        dry_run: bool = False,
-        skip_crds: bool = False,
-        extra_args: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """Install a Helm chart.
-        
-        Args:
-            chart_name: Chart name (e.g., 'bitnami/postgresql')
-            release_name: Release name
-            namespace: Kubernetes namespace
-            values: Chart values dictionary (will be written to temp file)
-            dry_run: Perform dry-run without installing
-            skip_crds: Skip CRD installation (useful when CRDs already exist)
-            extra_args: Extra CLI flags to pass to helm install (e.g., --set-string)
-        
-        Returns:
-            Installation result with status and details
-        
-        Raises:
-            HelmOperationError: If installation fails
-        """
-        # Safety check 1: Check if write operations are allowed (dry-run is allowed)
-        self._check_write_access('install', allow_dry_run=True, dry_run=dry_run)
-        
-        temp_files = []
+        except Exception as exc:
+            raise HelmOperationError(f"Helm command execution failed: {exc}")
+
+    # ------------------------------------------------------------------
+    # Repository Management & Discovery
+    # ------------------------------------------------------------------
+
+    async def list_repositories(self) -> List[Dict[str, str]]:
+        """List all configured Helm chart repositories."""
         try:
-            # Normalize chart name to repo/chart format
-            normalized_chart_name = self._normalize_chart_name(chart_name)
-            cmd = ['helm', 'install', release_name, normalized_chart_name, '-n', namespace, '-o', 'json']
-            
-            if dry_run:
-                cmd.append('--dry-run')
-            
-            if skip_crds:
-                cmd.append('--skip-crds')
-            
-            # Add values files
-            if values:
-                temp_files = self._add_values_files_to_cmd(
-                    cmd,
-                    values=values,
-                    values_files=None,
-                    values_file_content=None,
-                    temp_files=temp_files
-                )
-            
-            # Add extra CLI args
-            if extra_args:
-                cmd.extend(extra_args)
-            
-            # Safety check 2: Check for dangerous patterns in command
-            self._check_dangerous_patterns(cmd, f'install_chart[{release_name}]')
-            
+            cmd = self._build_cmd(["repo", "list", "-o", "json"], include_cluster_flags=False)
             result = await self._run_helm_command(cmd)
-            full_output = json.loads(result) if result else {}
-            
-            # Extract essential information only to avoid context pollution
-            # Similar to get_release_status, filter out large fields like manifest
-            info = full_output.get('info', {})
-            chart = full_output.get('chart', {})
-            chart_metadata = chart.get('metadata', {}) if chart else {}
-            
-            # Create resource summary from manifest (if available)
-            manifest = full_output.get('manifest', '')
-            resource_summary = {}
-            total_resources = 0
-            if manifest:
-                # Count resources by kind from manifest YAML
-                try:
-                    resources = yaml.safe_load_all(manifest)
-                    for resource in resources:
-                        if resource and isinstance(resource, dict):
-                            kind = resource.get('kind', 'Unknown')
-                            resource_summary[kind] = resource_summary.get(kind, 0) + 1
-                            total_resources += 1
-                except Exception:
-                    # If parsing fails, just count approximate resources by "kind:" occurrences
-                    total_resources = manifest.count('kind:')
-            
-            # Create hook summary
-            hooks = full_output.get('hooks', [])
-            hook_summary = {}
-            if hooks:
-                for hook in hooks:
-                    hook_kind = hook.get('kind', 'Unknown')
-                    hook_summary[hook_kind] = hook_summary.get(hook_kind, 0) + 1
-            
-            # Extract notes (limit length to avoid huge outputs)
-            notes = info.get('notes', '')
-            if notes and len(notes) > 500:
-                notes = notes[:500] + '... (truncated)'
-            
-            # Extract template count (without including full template data)
-            templates = chart.get('templates', []) if chart else []
-            template_count = len(templates)
-            # Keep only name field from templates to reduce size
-            template_summary = [{'name': t.get('name', 'unknown')} for t in templates[:10]]  # First 10 templates
-            
-            # Extract dependencies info (limited)
-            dependencies = chart.get('lock', {}).get('dependencies', []) if chart.get('lock') else []
-            
-            # Build filtered response with only essential fields
-            # Maintain nested structure for compatibility with existing tools
-            filtered_output = {
-                'name': full_output.get('name'),
-                'namespace': full_output.get('namespace'),
-                'revision': full_output.get('revision'),
-                'app_version': chart_metadata.get('appVersion') or full_output.get('app_version'),
-                'first_deployed': full_output.get('first_deployed'),
-                'last_deployed': full_output.get('last_deployed'),
-                # Maintain nested 'info' structure for compatibility
-                'info': {
-                    'status': info.get('status', 'unknown'),
-                    'description': info.get('description', ''),
-                    'notes': notes if notes else None,
-                },
-                # Maintain nested 'chart' structure but filter out large fields
-                'chart': {
-                    'metadata': {
-                        'name': chart_metadata.get('name'),
-                        'version': chart_metadata.get('version'),
-                        'appVersion': chart_metadata.get('appVersion') or full_output.get('app_version'),
-                        'description': chart_metadata.get('description', ''),
-                    },
-                    # Include template names (limited) but not full template data
-                    'templates': template_summary + (['...'] if template_count > 10 else []),
-                    # Include limited dependencies info
-                    'lock': {
-                        'dependencies': [
-                            {'name': d.get('name'), 'version': d.get('version'), 'repository': d.get('repository')}
-                            for d in dependencies[:5]
-                        ] + (['...'] if len(dependencies) > 5 else [])
-                    } if dependencies else None,
-                } if chart else None,
-                # Add summary fields for easy access
-                'resource_summary': resource_summary,
-                'total_resources': total_resources,
-                'hook_summary': hook_summary if hook_summary else None,
-                'total_hooks': len(hooks) if hooks else 0,
-                'template_count': template_count,
-                'dependency_count': len(dependencies),
-                # Explicitly exclude large fields
-                # 'manifest' - excluded (use resource_summary instead)
-                # 'hooks' - excluded (use hook_summary instead)
-            }
-            
-            return {
-                'status': 'success',
-                'release_name': release_name,
-                'namespace': namespace,
-                'dry_run': dry_run,
-                'output': filtered_output
-            }
-        
-        except Exception as e:
-            raise HelmOperationError(f'Chart installation failed: {str(e)}')
-        finally:
-            # Clean up temp files
-            for tf in temp_files:
-                try:
-                    if os.path.exists(tf):
-                        os.unlink(tf)
-                except Exception:
-                    pass
-    
-    async def upgrade_release(
+            repos = json.loads(result) if result else []
+            return [
+                {"name": str(r.get("name", "")), "url": str(r.get("url", ""))}
+                for r in (repos or [])
+                if isinstance(r, dict)
+            ]
+        except HelmOperationError as exc:
+            if "no repositories to show" in str(exc).lower():
+                return []
+            raise
+
+    async def repository_exists(self, repo_name: str) -> bool:
+        """Return True if a repository with repo_name is already configured."""
+        try:
+            repos = await self.list_repositories()
+            return any(r.get("name", "").lower() == repo_name.lower() for r in repos)
+        except Exception:
+            return False
+
+    async def ensure_repository(
         self,
-        release_name: str,
-        chart_name: str,
-        namespace: str = 'default',
-        values: Optional[Dict[str, Any]] = None,
-        extra_args: Optional[List[str]] = None,
+        repo_name: str,
+        repo_url: str,
     ) -> Dict[str, Any]:
-        """Upgrade a Helm release.
-        
-        Args:
-            release_name: Release name to upgrade
-            chart_name: Chart name (can include version)
-            namespace: Kubernetes namespace
-            values: Chart values dictionary (will be written to temp file)
-            extra_args: Extra CLI flags to pass to helm upgrade (e.g., --version, --set-string)
-        
-        Returns:
-            Upgrade result with status and details
-        
-        Raises:
-            HelmOperationError: If upgrade fails
-        """
-        # Safety check 1: Check if write operations are allowed
-        self._check_write_access('upgrade')
-        
-        temp_files = []
-        try:
-            # Normalize chart name to repo/chart format
-            normalized_chart_name = self._normalize_chart_name(chart_name)
-            cmd = ['helm', 'upgrade', release_name, normalized_chart_name, '-n', namespace, '-o', 'json']
-            
-            # Add values files
-            if values:
-                temp_files = self._add_values_files_to_cmd(
-                    cmd,
-                    values=values,
-                    values_files=None,
-                    values_file_content=None,
-                    temp_files=temp_files
-                )
-            
-            # Add extra CLI args
-            if extra_args:
-                cmd.extend(extra_args)
-            
-            # Safety check 2: Check for dangerous patterns in command
-            self._check_dangerous_patterns(cmd, f'upgrade_release[{release_name}]')
-            
-            result = await self._run_helm_command(cmd)
-            full_output = json.loads(result) if result else {}
-            
-            # Extract essential information only to avoid context pollution
-            # Similar to install_chart, filter out large fields like manifest
-            info = full_output.get('info', {})
-            chart = full_output.get('chart', {})
-            chart_metadata = chart.get('metadata', {}) if chart else {}
-            
-            # Create resource summary from manifest (if available)
-            manifest = full_output.get('manifest', '')
-            resource_summary = {}
-            total_resources = 0
-            if manifest:
-                # Count resources by kind from manifest YAML
-                try:
-                    resources = yaml.safe_load_all(manifest)
-                    for resource in resources:
-                        if resource and isinstance(resource, dict):
-                            kind = resource.get('kind', 'Unknown')
-                            resource_summary[kind] = resource_summary.get(kind, 0) + 1
-                            total_resources += 1
-                except Exception:
-                    # If parsing fails, just count approximate resources by "kind:" occurrences
-                    total_resources = manifest.count('kind:')
-            
-            # Create hook summary
-            hooks = full_output.get('hooks', [])
-            hook_summary = {}
-            if hooks:
-                for hook in hooks:
-                    hook_kind = hook.get('kind', 'Unknown')
-                    hook_summary[hook_kind] = hook_summary.get(hook_kind, 0) + 1
-            
-            # Extract notes (limit length to avoid huge outputs)
-            notes = info.get('notes', '')
-            if notes and len(notes) > 500:
-                notes = notes[:500] + '... (truncated)'
-            
-            # Extract template count (without including full template data)
-            templates = chart.get('templates', []) if chart else []
-            template_count = len(templates)
-            # Keep only name field from templates to reduce size
-            template_summary = [{'name': t.get('name', 'unknown')} for t in templates[:10]]  # First 10 templates
-            
-            # Extract dependencies info (limited)
-            dependencies = chart.get('lock', {}).get('dependencies', []) if chart.get('lock') else []
-            
-            # Build filtered response with only essential fields
-            # Maintain nested structure for compatibility with existing tools
-            filtered_output = {
-                'name': full_output.get('name'),
-                'namespace': full_output.get('namespace'),
-                'revision': full_output.get('revision'),
-                'app_version': chart_metadata.get('appVersion') or full_output.get('app_version'),
-                'first_deployed': full_output.get('first_deployed'),
-                'last_deployed': full_output.get('last_deployed'),
-                # Maintain nested 'info' structure for compatibility
-                'info': {
-                    'status': info.get('status', 'unknown'),
-                    'description': info.get('description', ''),
-                    'notes': notes if notes else None,
-                },
-                # Maintain nested 'chart' structure but filter out large fields
-                'chart': {
-                    'metadata': {
-                        'name': chart_metadata.get('name'),
-                        'version': chart_metadata.get('version'),
-                        'appVersion': chart_metadata.get('appVersion') or full_output.get('app_version'),
-                        'description': chart_metadata.get('description', ''),
-                    },
-                    # Include template names (limited) but not full template data
-                    'templates': template_summary + (['...'] if template_count > 10 else []),
-                    # Include limited dependencies info
-                    'lock': {
-                        'dependencies': [
-                            {'name': d.get('name'), 'version': d.get('version'), 'repository': d.get('repository')}
-                            for d in dependencies[:5]
-                        ] + (['...'] if len(dependencies) > 5 else [])
-                    } if dependencies else None,
-                } if chart else None,
-                # Add summary fields for easy access
-                'resource_summary': resource_summary,
-                'total_resources': total_resources,
-                'hook_summary': hook_summary if hook_summary else None,
-                'total_hooks': len(hooks) if hooks else 0,
-                'template_count': template_count,
-                'dependency_count': len(dependencies),
-                # Explicitly exclude large fields
-                # 'manifest' - excluded (use resource_summary instead)
-                # 'hooks' - excluded (use hook_summary instead)
-            }
-            
+        """Ensure a Helm chart repository is configured and updated."""
+        self._check_write_access("ensure_repository")
+
+        cleaned_name = (repo_name or "").strip()
+        cleaned_url = (repo_url or "").strip()
+        if not cleaned_name:
+            raise HelmOperationError("Parameter 'repo_name' cannot be empty.")
+
+        if await self.repository_exists(cleaned_name):
             return {
-                'status': 'success',
-                'release_name': release_name,
-                'namespace': namespace,
-                'output': filtered_output
+                "repository": cleaned_name,
+                "added": False,
+                "message": f"Repository '{cleaned_name}' is already configured.",
             }
-        
-        except Exception as e:
-            raise HelmOperationError(f'Release upgrade failed: {str(e)}')
-        finally:
-            # Clean up temp files
-            for tf in temp_files:
-                try:
-                    if os.path.exists(tf):
-                        os.unlink(tf)
-                except Exception:
-                    pass
-    
-    async def rollback_release(
-        self,
-        release_name: str,
-        namespace: str = 'default',
-        revision: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Rollback a Helm release to a previous revision.
-        
-        Args:
-            release_name: Release name to rollback
-            namespace: Kubernetes namespace
-            revision: Specific revision number (if None, rolls back to previous)
-        
-        Returns:
-            Rollback result with status and details
-        
-        Raises:
-            HelmOperationError: If rollback fails
-        """
-        # Safety check 1: Check if write operations are allowed
-        self._check_write_access('rollback')
-        
-        try:
-            cmd = ['helm', 'rollback', release_name, '-n', namespace]
-            
-            if revision:
-                cmd.append(str(revision))
-            
-            # Safety check 2: Check for dangerous patterns in command
-            self._check_dangerous_patterns(cmd, f'rollback_release[{release_name}]')
-            
-            result = await self._run_helm_command(cmd)
-            # helm rollback outputs plain text, not JSON
-            output = result.strip() if result else ''
-            
-            return {
-                'status': 'success',
-                'release_name': release_name,
-                'namespace': namespace,
-                'revision': revision,
-                'message': output
-            }
-        
-        except Exception as e:
-            raise HelmOperationError(f'Release rollback failed: {str(e)}')
-    
-    async def uninstall_release(
-        self,
-        release_name: str,
-        namespace: str = 'default',
-    ) -> Dict[str, Any]:
-        """Uninstall a Helm release.
-        
-        Args:
-            release_name: Release name to uninstall
-            namespace: Kubernetes namespace
-        
-        Returns:
-            Uninstall result with status
-        
-        Raises:
-            HelmOperationError: If uninstall fails
-        """
-        # Safety check 1: Check if write operations are allowed
-        self._check_write_access('uninstall')
-        
-        try:
-            cmd = ['helm', 'uninstall', release_name, '-n', namespace]
-            
-            # Safety check 2: Check for dangerous patterns in command
-            self._check_dangerous_patterns(cmd, f'uninstall_release[{release_name}]')
-            
-            result = await self._run_helm_command(cmd)
-            # helm uninstall outputs plain text, not JSON
-            output = result.strip() if result else ''
-            
-            return {
-                'status': 'success',
-                'release_name': release_name,
-                'namespace': namespace,
-                'message': output
-            }
-        
-        except Exception as e:
-            raise HelmOperationError(f'Release uninstall failed: {str(e)}')
-    
-    async def render_manifests(
-        self,
-        chart_name: str,
-        values: Optional[Dict[str, Any]] = None,
-        values_files: Optional[List[str]] = None,
-        values_file_content: Optional[str] = None,
-        version: Optional[str] = None,
-        namespace: str = 'default',
-        kubeconfig_path: Optional[str] = None,
-        context_name: Optional[str] = None,
-        eks_cluster_name: Optional[str] = None,
-    ) -> str:
-        """Render Kubernetes manifests from Helm chart and values.
-        
-        Args:
-            chart_name: Chart name (e.g., 'bitnami/postgresql')
-            values: Chart values dictionary (will be written to temp file)
-            values_files: List of values YAML files (paths or URLs) to use with -f
-            values_file_content: Raw YAML content to use as a values file
-            version: Specific chart version
-            namespace: Kubernetes namespace
-            kubeconfig_path: Path to kubeconfig file for multi-cluster support
-            context_name: Kubeconfig context name for multi-cluster support
-            eks_cluster_name: AWS EKS cluster name for multi-cluster support
-        
-        Returns:
-            Rendered Kubernetes manifests as YAML string
-        
-        Raises:
-            HelmOperationError: If rendering fails
-        """
-        temp_files = []
-        try:
-            # Normalize chart name to repo/chart format
-            normalized_chart_name = self._normalize_chart_name(chart_name)
-            cmd = ['helm', 'template', normalized_chart_name, '-n', namespace]
-            
-            if version:
-                cmd.extend(['--version', version])
-            
-            # Add values files
-            temp_files = self._add_values_files_to_cmd(
-                cmd,
-                values=values,
-                values_files=values_files,
-                values_file_content=values_file_content,
-                temp_files=temp_files
+
+        if not cleaned_url or not (cleaned_url.startswith("https://") or cleaned_url.startswith("http://")):
+            raise HelmOperationError(
+                f"Repository '{cleaned_name}' is not configured and requires a valid HTTP/HTTPS 'repo_url'. "
+                "Read 'helm://repositories' to see currently configured repositories."
             )
-            
-            # Add multi-cluster support flags
-            self._add_kubeconfig_flags(cmd, kubeconfig_path, context_name)
-            
-            # Handle EKS cluster (set environment variable)
-            env = None
-            if eks_cluster_name:
-                env = {'AWS_EKS_CLUSTER_NAME': eks_cluster_name}
-            
-            # Safety check: Check for dangerous patterns (read-only operation, no write check needed)
-            self._check_dangerous_patterns(cmd, 'render_manifests')
-            
-            result = await self._run_helm_command(cmd, env=env)
-            return result
-        
-        except Exception as e:
-            raise HelmOperationError(f'Manifest rendering failed: {str(e)}')
-        finally:
-            # Clean up temp files
-            for tf in temp_files:
-                try:
-                    if os.path.exists(tf):
-                        os.unlink(tf)
-                except Exception:
-                    pass
-    
-    async def check_dependencies(
+
+        try:
+            add_cmd = self._build_cmd(
+                ["repo", "add", cleaned_name, cleaned_url],
+                include_cluster_flags=False,
+            )
+            await self._run_helm_command(add_cmd)
+
+            update_cmd = self._build_cmd(
+                ["repo", "update", cleaned_name],
+                include_cluster_flags=False,
+            )
+            await self._run_helm_command(update_cmd)
+
+            return {
+                "repository": cleaned_name,
+                "repo_url": cleaned_url,
+                "added": True,
+                "message": f"Repository '{cleaned_name}' ({cleaned_url}) added and indexed.",
+            }
+        except Exception as exc:
+            raise HelmOperationError(f"Failed to add repository '{cleaned_name}': {exc}")
+
+    async def search_charts(
+        self,
+        query: str,
+        repository: Optional[str] = None,
+        versions: bool = False,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Search configured Helm chart repositories."""
+        search_target = f"{repository}/{query}" if repository and "/" not in query else query
+        args = ["search", "repo", search_target, "-o", "json"]
+        if versions:
+            args.append("--versions")
+
+        cmd = self._build_cmd(args, include_cluster_flags=False)
+        try:
+            raw = await self._run_helm_command(cmd)
+            charts = json.loads(raw) if raw else []
+            if not isinstance(charts, list):
+                charts = []
+
+            if repository:
+                prefix = f"{repository.strip()}/"
+                charts = [c for c in charts if isinstance(c, dict) and str(c.get("name", "")).startswith(prefix)]
+
+            clamped_limit = max(1, min(limit, 50))
+            return [
+                {
+                    "name": c.get("name", ""),
+                    "version": c.get("version", ""),
+                    "app_version": c.get("app_version", ""),
+                    "description": c.get("description", ""),
+                }
+                for c in charts[:clamped_limit]
+                if isinstance(c, dict)
+            ]
+        except json.JSONDecodeError as exc:
+            raise HelmOperationError(f"Invalid JSON output from helm search: {exc}")
+        except HelmOperationError as exc:
+            raise HelmOperationError(
+                f"Chart search failed for '{query}': {exc}. "
+                "Read resource 'helm://repositories' to verify configured repositories or call 'helm_ensure_repository'."
+            )
+
+    @staticmethod
+    def _build_repo_chart_ref(repository: str, chart_name: str) -> str:
+        """Combine repository and chart_name into repo/chart format."""
+        if "/" in chart_name:
+            return chart_name
+        return f"{repository.strip()}/{chart_name.strip()}"
+
+    async def get_chart_info(
         self,
         chart_name: str,
-        repository: str = 'bitnami',
+        repository: str,
+        version: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Check if chart dependencies are available.
-        
-        Args:
-            chart_name: Chart name (can be in 'repo/chart' format or just 'chart')
-            repository: Helm repository name (ignored if chart_name already includes repository)
-        
-        Returns:
-            Dependency check result with status
-        
-        Raises:
-            HelmOperationError: If check fails
-        """
+        """Get Chart.yaml metadata and dependency list for a specific chart."""
+        chart_ref = self._build_repo_chart_ref(repository, chart_name)
+        args = ["show", "chart", chart_ref]
+        if version:
+            args.extend(["--version", version])
+
         try:
-            # Extract repository from chart_name if it's in repo/chart format
-            # Otherwise use the provided repository parameter
-            if '/' in chart_name:
-                # Chart name already includes repository, extract it
-                repo, chart = chart_name.split('/', 1)
-                actual_repo = repo
-            else:
-                actual_repo = repository
-            
-            # Get chart info to check dependencies
-            # get_chart_info will handle the repo/chart format correctly
-            chart_info = await self.get_chart_info(chart_name, repository)
-            
-            dependencies = chart_info.get('dependencies', [])
-            
-            return {
-                'status': 'success',
-                'chart_name': chart_name,
-                'repository': actual_repo,
-                'dependencies': dependencies,
-                'dependency_count': len(dependencies),
-                'all_available': True  # Simplified - could check actual availability
-            }
-        
-        except Exception as e:
-            raise HelmOperationError(f'Dependency check failed: {str(e)}')
-    
-    async def get_installation_plan(
+            raw = await self._run_helm_command(self._build_cmd(args, include_cluster_flags=False))
+            info = yaml.safe_load(raw)
+            return info if isinstance(info, dict) else {}
+        except Exception as exc:
+            raise HelmOperationError(
+                f"Chart '{chart_ref}' not found: {exc}. "
+                f"Call helm_search_charts(query='{chart_name}') or read 'helm://repositories'."
+            )
+
+    async def get_chart_values(
         self,
         chart_name: str,
-        values: Optional[Dict[str, Any]] = None,
-        namespace: str = 'default',
+        repository: str,
+        version: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Generate a detailed installation plan with resource estimates.
-        
-        Args:
-            chart_name: Chart name
-            values: Chart values dictionary
-            namespace: Kubernetes namespace
-        
-        Returns:
-            Installation plan with resource estimates
-        
-        Raises:
-            HelmOperationError: If plan generation fails
-        """
+        """Get default values.yaml dictionary for a specific chart."""
+        chart_ref = self._build_repo_chart_ref(repository, chart_name)
+        args = ["show", "values", chart_ref]
+        if version:
+            args.extend(["--version", version])
+
         try:
-            # Normalize chart name to repo/chart format
-            normalized_chart_name = self._normalize_chart_name(chart_name)
-            # Render manifests to analyze resources
-            manifests = await self.render_manifests(normalized_chart_name, values, namespace=namespace)
-            
-            # Parse manifests to extract resource information
-            # This is a simplified version - could be enhanced with actual K8s resource parsing
-            manifest_lines = manifests.split('\n')
-            resource_count = sum(1 for line in manifest_lines if line.strip().startswith('kind:'))
-            
-            return {
-                'status': 'success',
-                'chart_name': chart_name,
-                'namespace': namespace,
-                'estimated_resources': resource_count,
-                'manifests_preview': manifests[:500] if len(manifests) > 500 else manifests,
-                'manifest_length': len(manifests)
-            }
-        
-        except Exception as e:
-            raise HelmOperationError(f'Installation plan generation failed: {str(e)}')
-    
+            raw = await self._run_helm_command(self._build_cmd(args, include_cluster_flags=False))
+            values = yaml.safe_load(raw)
+            return values if isinstance(values, dict) else {}
+        except Exception as exc:
+            raise HelmOperationError(
+                f"Default values for chart '{chart_ref}' not found: {exc}. "
+                f"Call helm_search_charts(query='{chart_name}') to verify chart name and version."
+            )
+
+    async def get_chart_readme(
+        self,
+        chart_name: str,
+        repository: str,
+        version: Optional[str] = None,
+    ) -> str:
+        """Get README markdown for a specific chart."""
+        chart_ref = self._build_repo_chart_ref(repository, chart_name)
+        args = ["show", "readme", chart_ref]
+        if version:
+            args.extend(["--version", version])
+
+        try:
+            return await self._run_helm_command(self._build_cmd(args, include_cluster_flags=False))
+        except Exception as exc:
+            raise HelmOperationError(
+                f"README for chart '{chart_ref}' not found: {exc}. "
+                f"Read 'helm://charts/{repository}/{chart_name}' for chart metadata instead."
+            )
+
+    # ------------------------------------------------------------------
+    # Release Inspection & Resource Backing Methods
+    # ------------------------------------------------------------------
+
     async def release_exists(
         self,
         release_name: str,
-        namespace: str = 'default',
+        namespace: str = "default",
+        session_id: Optional[str] = None,
     ) -> bool:
-        """Check if a Helm release exists.
-        
-        Args:
-            release_name: Release name
-            namespace: Kubernetes namespace
-        
-        Returns:
-            True if release exists, False otherwise
-        """
+        """Return True if release_name exists in namespace."""
         try:
-            cmd = [
-                'helm', 'status', release_name,
-                '-n', namespace,
-                '-o', 'json'
-            ]
-            
+            cmd = self._build_cmd(
+                ["status", release_name, "-n", namespace, "-o", "json"],
+                session_id=session_id,
+            )
             await self._run_helm_command(cmd)
             return True
-        
         except Exception:
-            # Release doesn't exist or command failed
             return False
-    
-    async def list_releases_in_namespace(
+
+    async def list_releases(
         self,
-        namespace: str = 'default',
-    ) -> List[Dict[str, Any]]:
-        """List all Helm releases in a namespace.
-        
-        Args:
-            namespace: Kubernetes namespace
-        
-        Returns:
-            List of release information dictionaries
-        """
+        namespace: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List Helm releases with optional namespace/status filtering and pagination."""
+        clamped_limit = max(1, min(limit, 250))
+        clamped_offset = max(0, offset)
+
+        args = ["list", "-o", "json", "--max", str(clamped_limit), "--offset", str(clamped_offset)]
+        if namespace:
+            args.extend(["-n", namespace])
+        else:
+            args.append("--all-namespaces")
+
+        if status:
+            flag = STATUS_FLAG_MAP.get(status.strip().lower())
+            if not flag:
+                valid = ", ".join(sorted(STATUS_FLAG_MAP.keys()))
+                raise HelmOperationError(
+                    f"Invalid status filter '{status}'. Valid options: {valid}."
+                )
+            args.append(flag)
+
         try:
-            cmd = ['helm', 'list', '-n', namespace, '-o', 'json', '--max', '10000']
-            result = await self._run_helm_command(cmd)
-            releases = json.loads(result) if result else []
-            return releases
-        except Exception:
-            # If listing fails, return empty list
-            return []
-    
+            raw = await self._run_helm_command(self._build_cmd(args, session_id=session_id))
+            parsed = json.loads(raw) if raw else []
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+
+            releases = [
+                {
+                    "name": r.get("name", ""),
+                    "namespace": r.get("namespace", namespace or "default"),
+                    "revision": int(r.get("revision", 0)) if str(r.get("revision", "")).isdigit() else r.get("revision"),
+                    "updated": r.get("updated", ""),
+                    "status": r.get("status", "unknown"),
+                    "chart": r.get("chart", ""),
+                    "app_version": r.get("app_version", ""),
+                }
+                for r in (parsed or [])
+                if isinstance(r, dict)
+            ]
+
+            return {
+                "releases": releases,
+                "count": len(releases),
+                "limit": clamped_limit,
+                "offset": clamped_offset,
+                "namespace": namespace or "all",
+            }
+        except HelmOperationError as exc:
+            raise HelmOperationError(
+                f"Failed to list Helm releases: {exc}. "
+                "Verify cluster connectivity via 'kubernetes://cluster-info' or switch context via 'kubernetes_set_context'."
+            )
+
+    @staticmethod
+    def _summarize_manifest_resources(manifest: str) -> Tuple[Dict[str, int], int]:
+        """Count Kubernetes resources by kind from a YAML manifest string."""
+        counts: Dict[str, int] = {}
+        total = 0
+        if not manifest or not manifest.strip():
+            return counts, 0
+        try:
+            for doc in yaml.safe_load_all(manifest):
+                if isinstance(doc, dict) and doc.get("kind"):
+                    kind = str(doc["kind"])
+                    counts[kind] = counts.get(kind, 0) + 1
+                    total += 1
+        except yaml.YAMLError:
+            total = manifest.count("kind:")
+        return counts, total
+
     async def get_release_status(
         self,
         release_name: str,
-        namespace: str = 'default',
+        namespace: str = "default",
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Get current status of a Helm release.
-        
-        Returns only essential information to avoid context pollution.
-        Excludes large fields like manifest and full resource details.
-        
-        Args:
-            release_name: Release name
-            namespace: Kubernetes namespace
-        
-        Returns:
-            Release status information with essential fields only
-        
-        Raises:
-            HelmOperationError: If status retrieval fails
-        """
+        """Return a concise status summary for a single Helm release (1 subprocess call)."""
+        cmd = self._build_cmd(
+            ["status", release_name, "-n", namespace, "-o", "json"],
+            session_id=session_id,
+        )
         try:
-            cmd = [
-                'helm', 'status', release_name,
-                '-n', namespace,
-                '-o', 'json'
+            raw = await self._run_helm_command(cmd)
+            data = json.loads(raw) if raw else {}
+        except Exception as exc:
+            raise HelmOperationError(
+                f"Release '{release_name}' not found in namespace '{namespace}': {exc}. "
+                f"Call helm_list_releases(namespace='{namespace}') to see valid release names."
+            )
+
+        info = data.get("info", {}) if isinstance(data.get("info"), dict) else {}
+        manifest = str(data.get("manifest") or "")
+        resource_counts, total_resources = self._summarize_manifest_resources(manifest)
+
+        # If manifest wasn't included in status payload, count from info.resources if present
+        if total_resources == 0 and isinstance(info.get("resources"), dict):
+            for key, items in info["resources"].items():
+                if isinstance(items, list):
+                    kind = key.split("/")[-1] if "/" in key else key
+                    resource_counts[kind] = resource_counts.get(kind, 0) + len(items)
+                    total_resources += len(items)
+
+        notes = str(info.get("notes") or "")
+        if len(notes) > 500:
+            notes = notes[:500] + "... (truncated)"
+
+        return {
+            "release_name": data.get("name", release_name),
+            "namespace": data.get("namespace", namespace),
+            "revision": data.get("version"),
+            "status": info.get("status", "unknown"),
+            "description": info.get("description", ""),
+            "first_deployed": info.get("first_deployed"),
+            "last_deployed": info.get("last_deployed"),
+            "total_resources": total_resources,
+            "resource_counts": resource_counts,
+            "notes": notes or None,
+            "resource_uris": {
+                "history": f"helm://releases/{namespace}/{release_name}/history",
+                "values": f"helm://releases/{namespace}/{release_name}/values",
+                "manifest": f"helm://releases/{namespace}/{release_name}/manifest",
+            },
+        }
+
+    async def get_release_history(
+        self,
+        release_name: str,
+        namespace: str = "default",
+        max_revisions: int = 25,
+        session_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return revision history for a Helm release."""
+        cmd = self._build_cmd(
+            ["history", release_name, "-n", namespace, "-o", "json", "--max", str(max(1, min(max_revisions, 100)))],
+            session_id=session_id,
+        )
+        try:
+            raw = await self._run_helm_command(cmd)
+            parsed = json.loads(raw) if raw else []
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            return [
+                {
+                    "revision": r.get("revision"),
+                    "updated": r.get("updated"),
+                    "status": r.get("status"),
+                    "chart": r.get("chart"),
+                    "app_version": r.get("app_version"),
+                    "description": r.get("description", ""),
+                }
+                for r in (parsed or [])
+                if isinstance(r, dict)
             ]
-            
-            result = await self._run_helm_command(cmd)
-            full_status = json.loads(result) if result else {}
-            
-            # Extract essential information only
-            info = full_status.get('info', {})
-            
-            # Resources are in info.resources as a dict: {"v1/ClusterRole": [resources...], ...}
-            resources_dict = info.get('resources', {})
-            resource_summary = {}
-            resource_details = {}  # Store resource names grouped by kind
-            max_resources_per_kind = 20  # Limit to avoid token bloat
-            
-            # Extract chart info from resource labels (they contain helm.sh/chart)
-            chart_name = None
-            chart_version = None
-            app_version = None
-            
-            # Process resources - they're grouped by API version/kind
-            total_resources = 0
-            for resource_key, resource_list in resources_dict.items():
-                if not isinstance(resource_list, list):
-                    continue
-                
-                # Extract kind from key (e.g., "v1/ClusterRole" -> "ClusterRole")
-                kind = resource_key.split('/')[-1] if '/' in resource_key else resource_key
-                
-                for resource in resource_list:
-                    total_resources += 1
-                    if not isinstance(resource, dict):
-                        continue
-                    
-                    metadata = resource.get('metadata', {})
-                    name = metadata.get('name', 'unknown')
-                    resource_namespace = metadata.get('namespace', '')
-                    labels = metadata.get('labels', {})
-                    
-                    # Extract chart info from first resource's labels
-                    if not chart_name and labels:
-                        chart_label = labels.get('helm.sh/chart', '')
-                        if chart_label:
-                            # Chart label format: "chart-name-version" (e.g., "argo-cd-9.2.4")
-                            parts = chart_label.rsplit('-', 1)
-                            if len(parts) == 2:
-                                chart_name = parts[0]
-                                chart_version = parts[1]
-                        app_version = labels.get('app.kubernetes.io/version') or app_version
-                    
-                    # Count by kind
-                    resource_summary[kind] = resource_summary.get(kind, 0) + 1
-                    
-                    # Store resource names (limited per kind)
-                    if kind not in resource_details:
-                        resource_details[kind] = []
-                    
-                    if len(resource_details[kind]) < max_resources_per_kind:
-                        resource_info = {'name': name}
-                        if resource_namespace and resource_namespace != full_status.get('namespace'):
-                            resource_info['namespace'] = resource_namespace
-                        resource_details[kind].append(resource_info)
-            
-            # Add truncation indicator if resources were limited
-            for kind, count in resource_summary.items():
-                if count > max_resources_per_kind and kind in resource_details:
-                    resource_details[kind].append(f'... and {count - max_resources_per_kind} more')
-            
-            # Create hook summary with names
-            hooks = full_status.get('hooks', [])
-            hook_summary = {}
-            hook_details = {}  # Store hook names grouped by kind
-            max_hooks_per_kind = 10  # Limit hooks per kind
-            
-            if hooks:
-                for hook in hooks:
-                    hook_kind = hook.get('kind', 'Unknown')
-                    hook_name = hook.get('name', 'unknown')
-                    
-                    # Count by kind
-                    hook_summary[hook_kind] = hook_summary.get(hook_kind, 0) + 1
-                    
-                    # Store hook names (limited per kind)
-                    if hook_kind not in hook_details:
-                        hook_details[hook_kind] = []
-                    
-                    if len(hook_details[hook_kind]) < max_hooks_per_kind:
-                        hook_details[hook_kind].append({'name': hook_name})
-            
-            # Add truncation indicator if hooks were limited
-            for hook_kind, count in hook_summary.items():
-                if count > max_hooks_per_kind and hook_kind in hook_details:
-                    hook_details[hook_kind].append(f'... and {count - max_hooks_per_kind} more')
-            
-            # If chart info not found in resources, try to get it from helm list
-            if not chart_name:
-                try:
-                    list_cmd = ['helm', 'list', '-n', namespace, '-o', 'json', '--max', '1', '--filter', release_name]
-                    list_result = await self._run_helm_command(list_cmd)
-                    list_data = json.loads(list_result) if list_result else []
-                    releases = list_data if isinstance(list_data, list) else [list_data]
-                    if releases and len(releases) > 0:
-                        release_info = releases[0]
-                        chart_full = release_info.get('chart', '')
-                        if chart_full:
-                            # Chart format: "chart-name-version" (e.g., "argo-cd-9.2.4")
-                            parts = chart_full.rsplit('-', 1)
-                            if len(parts) == 2:
-                                chart_name = parts[0]
-                                chart_version = parts[1]
-                        app_version = release_info.get('app_version') or app_version
-                except Exception:
-                    # If helm list fails, continue without chart info
-                    pass
-            
-            # Get revision history
-            revision_history = []
-            try:
-                history_cmd = ['helm', 'history', release_name, '-n', namespace, '-o', 'json', '--max', '50']
-                history_result = await self._run_helm_command(history_cmd)
-                history_data = json.loads(history_result) if history_result else []
-                revisions = history_data if isinstance(history_data, list) else [history_data]
-                
-                # Format revision history (limit to essential info)
-                for rev in revisions:
-                    revision_history.append({
-                        'revision': rev.get('revision'),
-                        'status': rev.get('status'),
-                        'updated': rev.get('updated'),
-                        'description': rev.get('description', ''),
-                        'chart': rev.get('chart'),
-                        'app_version': rev.get('app_version'),
-                    })
-            except Exception:
-                # If history fails, continue without revision history
-                pass
-            
-            # Extract notes (limit length to avoid huge outputs)
-            notes = info.get('notes', '')
-            if notes and len(notes) > 500:
-                notes = notes[:500] + '... (truncated)'
-            
-            # Fetch user values (what was overridden/chosen)
-            user_values = {}
-            try:
-                values_cmd = ['helm', 'get', 'values', release_name, '-n', namespace, '-o', 'json']
-                values_result = await self._run_helm_command(values_cmd)
-                if values_result:
-                    # Sometimes helm returns null or empty string, fallback to empty dict
-                    user_values = json.loads(values_result) or {}
-            except Exception:
-                pass
+        except Exception as exc:
+            raise HelmOperationError(
+                f"Failed to get history for release '{release_name}' in namespace '{namespace}': {exc}. "
+                f"Call helm_list_releases(namespace='{namespace}') to verify release existence."
+            )
 
-            # Attempt to deduce the exact chart URL
-            chart_url = None
-            if chart_name:
-                try:
-                    repo_cmd = ['helm', 'repo', 'list', '-o', 'json']
-                    repo_result = await self._run_helm_command(repo_cmd)
-                    repos = json.loads(repo_result) if repo_result else []
-                    
-                    search_cmd = ['helm', 'search', 'repo', chart_name, '-o', 'json']
-                    search_result = await self._run_helm_command(search_cmd)
-                    charts = json.loads(search_result) if search_result else []
-                    
-                    for c in charts:
-                        c_name = c.get('name', '')
-                        c_version = c.get('version', '')
-                        if c_name.endswith(f"/{chart_name}"):
-                            repo_name = c_name.split('/')[0]
-                            for r in repos:
-                                if r.get('name') == repo_name:
-                                    if not chart_version or c_version == chart_version:
-                                        chart_url = r.get('url')
-                                        break
-                                    elif not chart_url:
-                                        chart_url = r.get('url')
-                            if chart_url and c_version == chart_version:
-                                break
-                except Exception:
-                    pass
+    async def get_release_values(
+        self,
+        release_name: str,
+        namespace: str = "default",
+        all_values: bool = False,
+        revision: Optional[int] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return redacted user-supplied (or computed) values for a deployed Helm release."""
+        args = ["get", "values", release_name, "-n", namespace, "-o", "json"]
+        if all_values:
+            args.append("--all")
+        if revision is not None:
+            args.extend(["--revision", str(revision)])
 
-            # Build filtered response with only essential fields
-            filtered_status = {
-                'name': full_status.get('name'),
-                'namespace': full_status.get('namespace'),
-                'revision': full_status.get('version'),  # 'version' is the revision number
-                'status': info.get('status', 'unknown'),
-                'chart': chart_name,
-                'chart_version': chart_version,
-                'chart_url': chart_url,
-                'app_version': app_version,
-                'description': info.get('description', ''),
-                'first_deployed': info.get('first_deployed'),
-                'last_deployed': info.get('last_deployed'),
-                'user_values': user_values,
-                'resource_summary': resource_summary,
-                'resources': resource_details if resource_details else None,
-                'total_resources': total_resources,
-                'hook_summary': hook_summary if hook_summary else None,
-                'hooks': hook_details if hook_details else None,
-                'total_hooks': len(hooks) if hooks else 0,
-                'notes': notes if notes else None,
-                'revision_history': revision_history if revision_history else None,
-                'total_revisions': len(revision_history) if revision_history else 0,
+        try:
+            raw = await self._run_helm_command(self._build_cmd(args, session_id=session_id))
+            parsed = json.loads(raw) if raw else {}
+            if not isinstance(parsed, dict):
+                parsed = {}
+            return redact_sensitive_values(parsed)
+        except Exception as exc:
+            raise HelmOperationError(
+                f"Failed to get values for release '{release_name}' in namespace '{namespace}': {exc}. "
+                f"Call helm_list_releases(namespace='{namespace}') to verify release existence."
+            )
+
+    async def get_release_manifest(
+        self,
+        release_name: str,
+        namespace: str = "default",
+        revision: Optional[int] = None,
+        session_id: Optional[str] = None,
+    ) -> str:
+        """Return secret-redacted Kubernetes YAML manifest for a deployed Helm release."""
+        args = ["get", "manifest", release_name, "-n", namespace]
+        if revision is not None:
+            args.extend(["--revision", str(revision)])
+
+        try:
+            raw = await self._run_helm_command(self._build_cmd(args, session_id=session_id))
+            return redact_secrets_in_manifests(raw)
+        except Exception as exc:
+            raise HelmOperationError(
+                f"Failed to get manifest for release '{release_name}' in namespace '{namespace}': {exc}. "
+                f"Call helm_list_releases(namespace='{namespace}') to verify release existence."
+            )
+
+    # ------------------------------------------------------------------
+    # Manifest Rendering & Release Planning (N -> 1)
+    # ------------------------------------------------------------------
+
+    async def _render_raw_manifests(
+        self,
+        chart_ref: str,
+        release_name: str = "release-preview",
+        namespace: str = "default",
+        values: Optional[Dict[str, Any]] = None,
+        version: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> str:
+        """Render raw Kubernetes YAML manifests via helm template."""
+        validated_ref = self.validate_chart_ref(chart_ref)
+        temp_file = self._write_temp_values_file(values)
+        try:
+            args = ["template", release_name, validated_ref, "-n", namespace]
+            if version:
+                args.extend(["--version", version])
+            if temp_file:
+                args.extend(["-f", temp_file])
+
+            return await self._run_helm_command(self._build_cmd(args, session_id=session_id))
+        finally:
+            self._cleanup_temp_file(temp_file)
+
+    async def render_manifests(
+        self,
+        chart_ref: str,
+        namespace: str = "default",
+        values: Optional[Dict[str, Any]] = None,
+        version: Optional[str] = None,
+        include_full: bool = False,
+        preview_lines: int = 100,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Render Kubernetes manifests from a Helm chart with automatic Secret redaction."""
+        try:
+            raw_manifests = await self._render_raw_manifests(
+                chart_ref=chart_ref,
+                namespace=namespace,
+                values=values,
+                version=version,
+                session_id=session_id,
+            )
+            sanitized = redact_secrets_in_manifests(raw_manifests)
+            lines = sanitized.split("\n")
+            total_lines = len(lines)
+
+            resource_counts, total_resources = self._summarize_manifest_resources(sanitized)
+            clamped_preview = max(10, min(preview_lines, 500))
+            preview = "\n".join(lines[:clamped_preview])
+            if total_lines > clamped_preview:
+                preview += f"\n... ({total_lines - clamped_preview} more lines; set include_full=True to retrieve all)"
+
+            response: Dict[str, Any] = {
+                "summary": {
+                    "chart_ref": chart_ref,
+                    "namespace": namespace,
+                    "version": version,
+                    "total_resources": total_resources,
+                    "resource_types": resource_counts,
+                    "total_lines": total_lines,
+                    "secrets_redacted": True,
+                },
+                "preview": preview,
             }
-            
+            if include_full:
+                response["full_manifests"] = sanitized
+            return response
+        except HelmOperationError:
+            raise
+        except Exception as exc:
+            raise HelmOperationError(f"Manifest rendering failed for '{chart_ref}': {exc}")
+
+    async def plan_release(
+        self,
+        chart_ref: str,
+        release_name: str,
+        namespace: str = "default",
+        values: Optional[Dict[str, Any]] = None,
+        version: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """N-to-1 release planner: computes install preview (for new release) or live diff (for existing release)."""
+        validated_ref = self.validate_chart_ref(chart_ref)
+        exists = await self.release_exists(release_name, namespace, session_id=session_id)
+        mode: Literal["install", "upgrade"] = "upgrade" if exists else "install"
+
+        # 1. Render proposed manifests
+        proposed_raw = await self._render_raw_manifests(
+            chart_ref=validated_ref,
+            release_name=release_name,
+            namespace=namespace,
+            values=values,
+            version=version,
+            session_id=session_id,
+        )
+        proposed_sanitized = redact_secrets_in_manifests(proposed_raw)
+        resource_counts, total_resources = self._summarize_manifest_resources(proposed_sanitized)
+
+        # 2. Fetch chart metadata & dependencies if chart_ref is repo/chart
+        chart_meta: Dict[str, Any] = {}
+        if "/" in validated_ref and not validated_ref.startswith(("oci://", "http://", "https://", ".")):
+            repo_part, chart_part = validated_ref.split("/", 1)
+            try:
+                chart_meta = await self.get_chart_info(chart_part, repo_part, version=version)
+            except Exception:
+                chart_meta = {}
+
+        dependencies = [
+            {
+                "name": d.get("name"),
+                "version": d.get("version"),
+                "repository": d.get("repository"),
+            }
+            for d in (chart_meta.get("dependencies") or [])
+            if isinstance(d, dict)
+        ]
+
+        plan: Dict[str, Any] = {
+            "mode": mode,
+            "release_name": release_name,
+            "namespace": namespace,
+            "chart_ref": validated_ref,
+            "chart_version": chart_meta.get("version") or version,
+            "app_version": chart_meta.get("appVersion"),
+            "kube_version_constraint": chart_meta.get("kubeVersion"),
+            "total_resources": total_resources,
+            "resource_counts": resource_counts,
+            "crd_count": resource_counts.get("CustomResourceDefinition", 0),
+            "dependency_count": len(dependencies),
+            "dependencies": dependencies,
+        }
+
+        if mode == "upgrade":
+            current_sanitized = await self.get_release_manifest(
+                release_name=release_name,
+                namespace=namespace,
+                session_id=session_id,
+            )
+            plan["diff"] = compute_manifest_diff(
+                current_manifest=current_sanitized,
+                proposed_manifest=proposed_sanitized,
+                default_namespace=namespace,
+            )
+        else:
+            # For new installs, compute diff against empty state so added_resources is populated
+            plan["diff"] = compute_manifest_diff(
+                current_manifest="",
+                proposed_manifest=proposed_sanitized,
+                default_namespace=namespace,
+            )
+
+        return plan
+
+    # ------------------------------------------------------------------
+    # Mutating Release Lifecycle Operations
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_mutation_summary(
+        full_output: Dict[str, Any],
+        release_name: str,
+        namespace: str,
+    ) -> Dict[str, Any]:
+        """Extract concise 6-field summary from helm install/upgrade JSON output."""
+        info = full_output.get("info", {}) if isinstance(full_output.get("info"), dict) else {}
+        chart = full_output.get("chart", {}) if isinstance(full_output.get("chart"), dict) else {}
+        meta = chart.get("metadata", {}) if isinstance(chart.get("metadata"), dict) else {}
+        manifest = str(full_output.get("manifest") or "")
+        resource_counts, total_resources = HelmService._summarize_manifest_resources(manifest)
+
+        notes = str(info.get("notes") or "")
+        if len(notes) > 500:
+            notes = notes[:500] + "... (truncated)"
+
+        return {
+            "status": info.get("status", "deployed"),
+            "release_name": full_output.get("name", release_name),
+            "namespace": full_output.get("namespace", namespace),
+            "revision": full_output.get("version"),
+            "chart": meta.get("name"),
+            "chart_version": meta.get("version"),
+            "app_version": meta.get("appVersion") or full_output.get("app_version"),
+            "total_resources": total_resources,
+            "resource_counts": resource_counts,
+            "notes": notes or None,
+        }
+
+    async def install_chart(
+        self,
+        chart_ref: str,
+        release_name: str,
+        namespace: str = "default",
+        values: Optional[Dict[str, Any]] = None,
+        version: Optional[str] = None,
+        create_namespace: bool = False,
+        skip_crds: bool = False,
+        wait_timeout: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Install a new Helm release into a Kubernetes namespace."""
+        self._check_write_access("install_chart")
+        validated_ref = self.validate_chart_ref(chart_ref)
+
+        if await self.release_exists(release_name, namespace, session_id=session_id):
+            raise HelmOperationError(
+                f"Release '{release_name}' already exists in namespace '{namespace}'. "
+                f"Call helm_upgrade_release(release_name='{release_name}', chart_ref='{validated_ref}', namespace='{namespace}') "
+                "to update it, or helm_uninstall_release to remove it first."
+            )
+
+        temp_file = self._write_temp_values_file(values)
+        try:
+            args = ["install", release_name, validated_ref, "-n", namespace, "-o", "json"]
+            if version:
+                args.extend(["--version", version])
+            if create_namespace:
+                args.append("--create-namespace")
+            if skip_crds:
+                args.append("--skip-crds")
+            if wait_timeout:
+                args.extend(["--wait", "--timeout", wait_timeout])
+            if temp_file:
+                args.extend(["-f", temp_file])
+
+            raw = await self._run_helm_command(self._build_cmd(args, session_id=session_id))
+            parsed = json.loads(raw) if raw else {}
+            return self._extract_mutation_summary(parsed, release_name, namespace)
+        except HelmOperationError as exc:
+            err_str = str(exc)
+            if "invalid ownership metadata" in err_str.lower() or "customresourcedefinition" in err_str.lower():
+                raise HelmOperationError(
+                    f"CRD ownership conflict while installing '{release_name}' in namespace '{namespace}': {err_str}. "
+                    "Retry helm_install_chart with skip_crds=True if compatible CRDs are already installed, "
+                    "or call helm_list_releases() to inspect the release that owns the CRDs."
+                )
+            raise HelmOperationError(f"Installation of '{release_name}' failed: {err_str}")
+        finally:
+            self._cleanup_temp_file(temp_file)
+
+    async def upgrade_release(
+        self,
+        release_name: str,
+        chart_ref: str,
+        namespace: str = "default",
+        values: Optional[Dict[str, Any]] = None,
+        version: Optional[str] = None,
+        values_strategy: ValuesStrategy = "reuse",
+        wait_timeout: Optional[str] = None,
+        atomic: bool = False,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Upgrade an existing Helm release."""
+        self._check_write_access("upgrade_release")
+        validated_ref = self.validate_chart_ref(chart_ref)
+
+        strategy_flag_map = {
+            "reuse": "--reuse-values",
+            "reset": "--reset-values",
+            "reset_then_reuse": "--reset-then-reuse-values",
+        }
+        if values_strategy not in strategy_flag_map:
+            raise HelmOperationError(
+                f"Invalid values_strategy '{values_strategy}'. Must be one of: reuse, reset, reset_then_reuse."
+            )
+
+        temp_file = self._write_temp_values_file(values)
+        try:
+            args = [
+                "upgrade",
+                release_name,
+                validated_ref,
+                "-n",
+                namespace,
+                strategy_flag_map[values_strategy],
+                "-o",
+                "json",
+            ]
+            if version:
+                args.extend(["--version", version])
+            if atomic:
+                args.append("--atomic")
+            if wait_timeout:
+                args.extend(["--wait", "--timeout", wait_timeout])
+            if temp_file:
+                args.extend(["-f", temp_file])
+
+            raw = await self._run_helm_command(self._build_cmd(args, session_id=session_id))
+            parsed = json.loads(raw) if raw else {}
+            return self._extract_mutation_summary(parsed, release_name, namespace)
+        except HelmOperationError as exc:
+            err_str = str(exc)
+            if "has no deployed releases" in err_str.lower() or "not found" in err_str.lower():
+                raise HelmOperationError(
+                    f"Cannot upgrade '{release_name}' in namespace '{namespace}': {err_str}. "
+                    f"Call helm_list_releases(namespace='{namespace}') to verify existing releases or use helm_install_chart."
+                )
+            raise HelmOperationError(f"Upgrade of '{release_name}' failed: {err_str}")
+        finally:
+            self._cleanup_temp_file(temp_file)
+
+    async def rollback_release(
+        self,
+        release_name: str,
+        namespace: str = "default",
+        revision: Optional[int] = None,
+        wait_timeout: Optional[str] = None,
+        dry_run: bool = False,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Rollback a Helm release to a previous revision (or preview with dry_run=True)."""
+        self._check_write_access("rollback_release", allow_dry_run=True, dry_run=dry_run)
+
+        args = ["rollback", release_name]
+        if revision is not None:
+            args.append(str(revision))
+        args.extend(["-n", namespace])
+        if dry_run:
+            args.append("--dry-run")
+        if wait_timeout:
+            args.extend(["--wait", "--timeout", wait_timeout])
+
+        try:
+            output = await self._run_helm_command(self._build_cmd(args, session_id=session_id))
             return {
-                'status': 'success',
-                'release_name': release_name,
-                'namespace': namespace,
-                'release_info': filtered_status
+                "status": "dry_run_success" if dry_run else "rolled_back",
+                "release_name": release_name,
+                "namespace": namespace,
+                "target_revision": revision,
+                "dry_run": dry_run,
+                "message": output or ("Rollback dry-run succeeded" if dry_run else "Rollback succeeded"),
             }
-        
-        except Exception as e:
-            raise HelmOperationError(f'Failed to get release status: {str(e)}')
-    
-    # Terminal container waiting states that indicate the deployment will NOT recover on its own
-    TERMINAL_CONTAINER_STATES = frozenset({
-        'CrashLoopBackOff',
-        'ImagePullBackOff',
-        'ErrImagePull',
-        'CreateContainerConfigError',
-        'InvalidImageName',
-        'CreateContainerError',
-    })
+        except HelmOperationError as exc:
+            raise HelmOperationError(
+                f"Rollback of '{release_name}' in namespace '{namespace}' failed: {exc}. "
+                f"Read resource 'helm://releases/{namespace}/{release_name}/history' to inspect valid revision numbers."
+            )
+
+    async def uninstall_release(
+        self,
+        release_name: str,
+        namespace: str = "default",
+        keep_history: bool = False,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Uninstall a Helm release and delete its managed Kubernetes resources."""
+        self._check_write_access("uninstall_release")
+
+        args = ["uninstall", release_name, "-n", namespace]
+        if keep_history:
+            args.append("--keep-history")
+
+        try:
+            output = await self._run_helm_command(self._build_cmd(args, session_id=session_id))
+            return {
+                "status": "uninstalled",
+                "release_name": release_name,
+                "namespace": namespace,
+                "keep_history": keep_history,
+                "message": output or f"Release '{release_name}' uninstalled from namespace '{namespace}'.",
+            }
+        except HelmOperationError as exc:
+            raise HelmOperationError(
+                f"Uninstall of '{release_name}' in namespace '{namespace}' failed: {exc}. "
+                f"Call helm_list_releases(namespace='{namespace}') to verify existing releases."
+            )
+
+    # ------------------------------------------------------------------
+    # Multi-Layer Deployment Health Monitor (N -> 1)
+    # ------------------------------------------------------------------
 
     async def monitor_deployment_health(
         self,
         release_name: str,
-        namespace: str = 'default',
+        namespace: str = "default",
         max_wait_seconds: int = 60,
         check_interval: int = 5,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Monitor deployment health with production-grade checks.
-        
-        Uses a multi-layer approach mirroring real Kubernetes operations:
-        1. Helm release status gate — catches hook/manifest failures immediately.
-        2. Deployment/StatefulSet rollout status — checks .status.conditions and
-           replica counts, the same way kubectl rollout status works.
-        3. Pod container diagnostics — detects terminal states (CrashLoopBackOff,
-           ImagePullBackOff, etc.) for early failure exit.
-        
-        Always returns a structured result with an issues array so the calling
-        agent can reason about what went wrong and take corrective action.
-        
-        Args:
-            release_name: Release name to monitor
-            namespace: Kubernetes namespace
-            max_wait_seconds: Maximum time to wait for deployment to be ready
-            check_interval: Interval between checks in seconds
-        
-        Returns:
-            Structured monitoring result:
-            {
-                'status': 'ready' | 'failed' | 'timeout',
-                'release_name': str,
-                'namespace': str,
-                'duration_seconds': int,
-                'helm_status': str,
-                'deployments': [...],
-                'pod_summary': {...},
-                'issues': [...]
-            }
-        
-        Raises:
-            HelmOperationError: If monitoring itself fails (not deployment failure)
-        """
+        """Monitor deployment readiness across Helm status, Deployments/StatefulSets, and Pod containers."""
+        clamped_wait = max(1, min(max_wait_seconds, 300))
+        clamped_interval = max(1, min(check_interval, 30))
+
         try:
-            import time
-            from kubernetes import client, config as k8s_config
-            
-            # --- Initialise K8s API clients ---
-            def load_k8s_clients():
-                try:
-                    k8s_config.load_incluster_config()
-                except Exception:
-                    k8s_config.load_kube_config()
-                return client.CoreV1Api(), client.AppsV1Api()
-            
-            loop = asyncio.get_event_loop()
-            v1, apps_v1 = await loop.run_in_executor(None, load_k8s_clients)
-            
             start_time = time.time()
-            
-            # ================================================================
-            # Layer 1: Helm Release Status Gate
-            # ================================================================
-            helm_status = await self._get_helm_release_status_quick(release_name, namespace)
-            if helm_status in ('failed', 'pending-rollback', 'uninstalling'):
+
+            # Layer 1: Helm Release Status Gate (context-aware via _build_cmd)
+            helm_status = await self._get_helm_release_status_quick(
+                release_name,
+                namespace,
+                session_id=session_id,
+            )
+            if helm_status in ("failed", "pending-rollback", "uninstalling"):
                 return self._build_monitor_result(
-                    status='failed',
+                    status="failed",
                     release_name=release_name,
                     namespace=namespace,
                     duration=int(time.time() - start_time),
                     helm_status=helm_status,
                     issues=[{
-                        'severity': 'error',
-                        'resource': f'release/{release_name}',
-                        'reason': f'HelmRelease{helm_status.replace("-", " ").title().replace(" ", "")}',
-                        'message': f'Helm release is in "{helm_status}" state. '
-                                   f'Check helm history {release_name} -n {namespace} for details.'
-                    }]
+                        "severity": "error",
+                        "resource": f"release/{release_name}",
+                        "reason": f"HelmRelease{helm_status.replace('-', ' ').title().replace(' ', '')}",
+                        "message": (
+                            f"Helm release is in '{helm_status}' state. "
+                            f"Read 'helm://releases/{namespace}/{release_name}/history' for failure details."
+                        ),
+                    }],
                 )
-            
-            # ================================================================
-            # Polling Loop — Layers 2 & 3
-            # ================================================================
+
+            # Obtain context-aware Kubernetes clients from KubernetesService
+            loop = asyncio.get_event_loop()
+            if self.k8s_service is not None:
+                v1, apps_v1 = await self.k8s_service.get_workload_clients(session_id=session_id)
+            else:
+                from kubernetes import client, config as k8s_config
+
+                def _load_default_clients():
+                    try:
+                        k8s_config.load_incluster_config()
+                    except Exception:
+                        k8s_config.load_kube_config(config_file=self.config.kubernetes.kubeconfig)
+                    return client.CoreV1Api(), client.AppsV1Api()
+
+                v1, apps_v1 = await loop.run_in_executor(None, _load_default_clients)
+
             label_selectors = [
-                f'app.kubernetes.io/instance={release_name}',
-                f'release={release_name}',
-                f'app.kubernetes.io/managed-by=Helm,app.kubernetes.io/name={release_name}',
+                f"app.kubernetes.io/instance={release_name}",
+                f"release={release_name}",
+                f"app.kubernetes.io/managed-by=Helm,app.kubernetes.io/name={release_name}",
             ]
-            
-            
-            # Initialize with defaults — overwritten each iteration but ensures
-            # the variables are always bound for the post-loop timeout path.
+
             deployment_snapshots: List[Dict[str, Any]] = []
-            pod_summary: Dict[str, int] = {'total': 0, 'running': 0, 'pending': 0, 'failed': 0, 'succeeded': 0}
+            pod_summary: Dict[str, int] = {
+                "total": 0,
+                "running": 0,
+                "pending": 0,
+                "failed": 0,
+                "succeeded": 0,
+            }
             issues: List[Dict[str, str]] = []
-            
-            while time.time() - start_time < max_wait_seconds:
+
+            while True:
                 issues = []
                 deployment_snapshots = []
-                pod_summary = {'total': 0, 'running': 0, 'pending': 0, 'failed': 0, 'succeeded': 0}
-                
-                # ============================================================
-                # Layer 2: Deployment & StatefulSet Rollout Status
-                # ============================================================
+                pod_summary = {"total": 0, "running": 0, "pending": 0, "failed": 0, "succeeded": 0}
+
                 workloads_found = False
                 all_workloads_ready = True
-                
+
                 for selector in label_selectors:
-                    # Query Deployments
                     deployments = await loop.run_in_executor(
                         None,
                         lambda sel=selector: apps_v1.list_namespaced_deployment(
                             namespace, label_selector=sel
-                        )
+                        ),
                     )
-                    
-                    # Query StatefulSets
                     statefulsets = await loop.run_in_executor(
                         None,
                         lambda sel=selector: apps_v1.list_namespaced_stateful_set(
                             namespace, label_selector=sel
-                        )
+                        ),
                     )
-                    
+
                     if deployments.items or statefulsets.items:
                         workloads_found = True
-                        
-                        # Process Deployments
                         for dep in deployments.items:
                             snapshot, dep_issues, dep_ready = self._evaluate_deployment(dep)
                             deployment_snapshots.append(snapshot)
                             issues.extend(dep_issues)
                             if not dep_ready:
                                 all_workloads_ready = False
-                        
-                        # Process StatefulSets
+
                         for sts in statefulsets.items:
                             snapshot, sts_issues, sts_ready = self._evaluate_statefulset(sts)
                             deployment_snapshots.append(snapshot)
                             issues.extend(sts_issues)
                             if not sts_ready:
                                 all_workloads_ready = False
-                        
-                        break  # Found workloads with this selector, stop trying others
-                
-                # ============================================================
-                # Layer 3: Pod Container Diagnostics
-                # ============================================================
+                        break
+
                 pods = None
                 for selector in label_selectors:
                     pods = await loop.run_in_executor(
                         None,
                         lambda sel=selector: v1.list_namespaced_pod(
                             namespace, label_selector=sel
-                        )
+                        ),
                     )
                     if pods.items:
                         break
-                
+
                 if pods and pods.items:
                     for pod in pods.items:
-                        phase = (pod.status.phase or 'Unknown').lower()
-                        pod_summary['total'] += 1
-                        if phase == 'running':
-                            pod_summary['running'] += 1
-                        elif phase == 'pending':
-                            pod_summary['pending'] += 1
-                        elif phase == 'failed':
-                            pod_summary['failed'] += 1
-                        elif phase == 'succeeded':
-                            pod_summary['succeeded'] += 1
-                        
-                        # Check container statuses for terminal failures
-                        pod_issues = self._check_pod_containers(pod)
-                        issues.extend(pod_issues)
-                
-                # ============================================================
-                # Decision: ready / failed / continue waiting
-                # ============================================================
-                terminal_issues = [i for i in issues if i['severity'] == 'error']
-                
+                        phase = (pod.status.phase or "Unknown").lower()
+                        pod_summary["total"] += 1
+                        if phase in pod_summary:
+                            pod_summary[phase] += 1
+                        issues.extend(self._check_pod_containers(pod))
+
+                terminal_issues = [i for i in issues if i["severity"] == "error"]
                 if terminal_issues:
-                    # Terminal failure detected — exit early, don't waste time
                     return self._build_monitor_result(
-                        status='failed',
+                        status="failed",
                         release_name=release_name,
                         namespace=namespace,
                         duration=int(time.time() - start_time),
@@ -1619,11 +1121,10 @@ class HelmService:
                         pod_summary=pod_summary,
                         issues=issues,
                     )
-                
-                if workloads_found and all_workloads_ready and pod_summary['total'] > 0:
-                    # All workloads report ready replica counts matching desired
+
+                if workloads_found and all_workloads_ready and pod_summary["total"] > 0:
                     return self._build_monitor_result(
-                        status='ready',
+                        status="ready",
                         release_name=release_name,
                         namespace=namespace,
                         duration=int(time.time() - start_time),
@@ -1632,16 +1133,11 @@ class HelmService:
                         pod_summary=pod_summary,
                         issues=issues,
                     )
-                
-                # If no workloads found yet (pods may not have labels, or CRDs),
-                # fall back to pure pod readiness check
+
                 if not workloads_found and pods and pods.items:
-                    all_pods_ready = all(
-                        self._is_pod_ready(pod) for pod in pods.items
-                    )
-                    if all_pods_ready and pod_summary['total'] > 0:
+                    if all(self._is_pod_ready(pod) for pod in pods.items) and pod_summary["total"] > 0:
                         return self._build_monitor_result(
-                            status='ready',
+                            status="ready",
                             release_name=release_name,
                             namespace=namespace,
                             duration=int(time.time() - start_time),
@@ -1650,14 +1146,14 @@ class HelmService:
                             pod_summary=pod_summary,
                             issues=issues,
                         )
-                
-                await asyncio.sleep(check_interval)
-            
-            # ================================================================
-            # Timeout — return structured result (NOT an exception)
-            # ================================================================
+
+                if time.time() - start_time >= clamped_wait:
+                    break
+
+                await asyncio.sleep(clamped_interval)
+
             return self._build_monitor_result(
-                status='timeout',
+                status="timeout",
                 release_name=release_name,
                 namespace=namespace,
                 duration=int(time.time() - start_time),
@@ -1665,37 +1161,35 @@ class HelmService:
                 deployments=deployment_snapshots,
                 pod_summary=pod_summary,
                 issues=issues if issues else [{
-                    'severity': 'warning',
-                    'resource': f'release/{release_name}',
-                    'reason': 'Timeout',
-                    'message': f'Deployment did not become ready within {max_wait_seconds}s'
+                    "severity": "warning",
+                    "resource": f"release/{release_name}",
+                    "reason": "Timeout",
+                    "message": f"Deployment did not become ready within {clamped_wait}s",
                 }],
             )
-        
         except HelmOperationError:
             raise
-        except Exception as e:
-            raise HelmOperationError(f'Deployment monitoring failed: {str(e)}')
-    
-    # ------------------------------------------------------------------
-    # Private helpers for monitor_deployment_health
-    # ------------------------------------------------------------------
-    
+        except Exception as exc:
+            raise HelmOperationError(f"Deployment monitoring failed for '{release_name}': {exc}")
+
     async def _get_helm_release_status_quick(
-        self, release_name: str, namespace: str
+        self,
+        release_name: str,
+        namespace: str,
+        session_id: Optional[str] = None,
     ) -> str:
-        """Get the Helm release status string (deployed, failed, etc.)."""
+        """Fetch only the Helm release status string."""
         try:
-            cmd = [
-                'helm', 'status', release_name,
-                '-n', namespace, '-o', 'json'
-            ]
-            result = await self._run_helm_command(cmd)
-            data = json.loads(result) if result else {}
-            return data.get('info', {}).get('status', 'unknown')
+            cmd = self._build_cmd(
+                ["status", release_name, "-n", namespace, "-o", "json"],
+                session_id=session_id,
+            )
+            raw = await self._run_helm_command(cmd)
+            data = json.loads(raw) if raw else {}
+            return str(data.get("info", {}).get("status", "unknown"))
         except Exception:
-            return 'unknown'
-    
+            return "unknown"
+
     @staticmethod
     def _build_monitor_result(
         *,
@@ -1708,217 +1202,180 @@ class HelmService:
         pod_summary: Optional[Dict[str, int]] = None,
         issues: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
-        """Build a consistent monitoring result dict."""
         return {
-            'status': status,
-            'release_name': release_name,
-            'namespace': namespace,
-            'duration_seconds': duration,
-            'helm_status': helm_status,
-            'deployments': deployments or [],
-            'pod_summary': pod_summary or {},
-            'issues': issues or [],
+            "status": status,
+            "release_name": release_name,
+            "namespace": namespace,
+            "duration_seconds": duration,
+            "helm_status": helm_status,
+            "deployments": deployments or [],
+            "pod_summary": pod_summary or {},
+            "issues": issues or [],
         }
-    
+
     @staticmethod
-    def _evaluate_deployment(dep) -> tuple:
-        """Evaluate a Deployment's rollout status.
-        
-        Returns:
-            (snapshot_dict, issues_list, is_ready_bool)
-        """
-        spec_replicas = dep.spec.replicas or 1
+    def _evaluate_deployment(dep: Any) -> tuple:
+        spec_replicas = dep.spec.replicas if dep.spec.replicas is not None else 1
         status = dep.status
         updated = status.updated_replicas or 0
         ready = status.ready_replicas or 0
         available = status.available_replicas or 0
         unavailable = status.unavailable_replicas or 0
-        
-        # Check conditions
+
         conditions = []
         issues = []
         rollout_complete = False
-        
-        for cond in (status.conditions or []):
+
+        for cond in status.conditions or []:
             conditions.append({
-                'type': cond.type,
-                'status': cond.status,
-                'reason': cond.reason or '',
-                'message': cond.message or '',
+                "type": cond.type,
+                "status": cond.status,
+                "reason": cond.reason or "",
+                "message": cond.message or "",
             })
-            
-            # ProgressDeadlineExceeded = terminal failure
-            if (cond.type == 'Progressing' and
-                    cond.status == 'False' and
-                    cond.reason == 'ProgressDeadlineExceeded'):
+            if (
+                cond.type == "Progressing"
+                and cond.status == "False"
+                and cond.reason == "ProgressDeadlineExceeded"
+            ):
                 issues.append({
-                    'severity': 'error',
-                    'resource': f'deployment/{dep.metadata.name}',
-                    'reason': 'ProgressDeadlineExceeded',
-                    'message': cond.message or 'Deployment exceeded its progress deadline',
+                    "severity": "error",
+                    "resource": f"deployment/{dep.metadata.name}",
+                    "reason": "ProgressDeadlineExceeded",
+                    "message": cond.message or "Deployment exceeded its progress deadline",
                 })
-            
-            # NewReplicaSetAvailable = rollout done
-            if (cond.type == 'Progressing' and
-                    cond.status == 'True' and
-                    cond.reason == 'NewReplicaSetAvailable'):
+            if (
+                cond.type == "Progressing"
+                and cond.status == "True"
+                and cond.reason == "NewReplicaSetAvailable"
+            ):
                 rollout_complete = True
-        
-        # Numeric readiness: all replicas updated, ready, and available
+
         numerically_ready = (
-            updated >= spec_replicas and
-            ready >= spec_replicas and
-            available >= spec_replicas and
-            unavailable == 0
+            updated >= spec_replicas
+            and ready >= spec_replicas
+            and available >= spec_replicas
+            and unavailable == 0
         )
-        
         is_ready = (rollout_complete or numerically_ready) and not issues
-        
+
         snapshot = {
-            'name': dep.metadata.name,
-            'kind': 'Deployment',
-            'replicas': spec_replicas,
-            'ready_replicas': ready,
-            'updated_replicas': updated,
-            'available_replicas': available,
-            'unavailable_replicas': unavailable,
-            'rollout_complete': is_ready,
-            'conditions': conditions,
+            "name": dep.metadata.name,
+            "kind": "Deployment",
+            "replicas": spec_replicas,
+            "ready_replicas": ready,
+            "updated_replicas": updated,
+            "available_replicas": available,
+            "unavailable_replicas": unavailable,
+            "rollout_complete": is_ready,
+            "conditions": conditions,
         }
-        
         return snapshot, issues, is_ready
-    
+
     @staticmethod
-    def _evaluate_statefulset(sts) -> tuple:
-        """Evaluate a StatefulSet's rollout status.
-        
-        Returns:
-            (snapshot_dict, issues_list, is_ready_bool)
-        """
-        spec_replicas = sts.spec.replicas or 1
+    def _evaluate_statefulset(sts: Any) -> tuple:
+        spec_replicas = sts.spec.replicas if sts.spec.replicas is not None else 1
         status = sts.status
         ready = status.ready_replicas or 0
         updated = status.updated_replicas or 0
         current = status.current_replicas or 0
-        
-        issues = []
+
+        issues: List[Dict[str, str]] = []
         conditions = []
-        
-        for cond in (status.conditions or []):
+        for cond in status.conditions or []:
             conditions.append({
-                'type': cond.type,
-                'status': cond.status,
-                'reason': cond.reason or '',
-                'message': cond.message or '',
+                "type": cond.type,
+                "status": cond.status,
+                "reason": cond.reason or "",
+                "message": cond.message or "",
             })
-        
-        # StatefulSet is ready when all replicas are updated and ready
-        is_ready = (
-            updated >= spec_replicas and
-            ready >= spec_replicas and
-            current >= spec_replicas
-        )
-        
-        # Check for partition-based rolling update
+
+        is_ready = updated >= spec_replicas and ready >= spec_replicas and current >= spec_replicas
+
         update_strategy = sts.spec.update_strategy
-        if update_strategy and update_strategy.type == 'RollingUpdate':
+        if update_strategy and update_strategy.type == "RollingUpdate":
             partition = (
                 update_strategy.rolling_update.partition
-                if update_strategy.rolling_update else 0
+                if update_strategy.rolling_update
+                else 0
             ) or 0
             if partition > 0:
-                # With partition, only replicas >= partition are updated
                 expected_updated = spec_replicas - partition
                 is_ready = updated >= expected_updated and ready >= spec_replicas
-        
+
         snapshot = {
-            'name': sts.metadata.name,
-            'kind': 'StatefulSet',
-            'replicas': spec_replicas,
-            'ready_replicas': ready,
-            'updated_replicas': updated,
-            'current_replicas': current,
-            'rollout_complete': is_ready,
-            'conditions': conditions,
+            "name": sts.metadata.name,
+            "kind": "StatefulSet",
+            "replicas": spec_replicas,
+            "ready_replicas": ready,
+            "updated_replicas": updated,
+            "current_replicas": current,
+            "rollout_complete": is_ready,
+            "conditions": conditions,
         }
-        
         return snapshot, issues, is_ready
-    
-    def _check_pod_containers(self, pod) -> List[Dict[str, str]]:
-        """Check all containers in a pod for terminal failure states.
-        
-        Returns list of issue dicts (empty if pod is healthy).
-        """
+
+    def _check_pod_containers(self, pod: Any) -> List[Dict[str, str]]:
         issues = []
         pod_name = pod.metadata.name
-        
+
         all_statuses = list(pod.status.container_statuses or [])
         all_statuses.extend(pod.status.init_container_statuses or [])
-        
+
         for cs in all_statuses:
-            # Check waiting state
             if cs.state and cs.state.waiting:
-                reason = cs.state.waiting.reason or ''
+                reason = cs.state.waiting.reason or ""
                 if reason in self.TERMINAL_CONTAINER_STATES:
                     issues.append({
-                        'severity': 'error',
-                        'resource': f'pod/{pod_name}/container/{cs.name}',
-                        'reason': reason,
-                        'message': cs.state.waiting.message or f'Container "{cs.name}" is in {reason} state',
+                        "severity": "error",
+                        "resource": f"pod/{pod_name}/container/{cs.name}",
+                        "reason": reason,
+                        "message": cs.state.waiting.message or f"Container '{cs.name}' is in {reason} state",
                     })
-            
-            # Check terminated with OOMKilled + high restart count
+
             if cs.state and cs.state.terminated:
-                term_reason = cs.state.terminated.reason or ''
-                if term_reason == 'OOMKilled' and (cs.restart_count or 0) >= 3:
+                term_reason = cs.state.terminated.reason or ""
+                if term_reason == "OOMKilled" and (cs.restart_count or 0) >= 3:
                     issues.append({
-                        'severity': 'error',
-                        'resource': f'pod/{pod_name}/container/{cs.name}',
-                        'reason': 'OOMKilledRecurring',
-                        'message': (
-                            f'Container "{cs.name}" has been OOMKilled '
-                            f'{cs.restart_count} times. Increase memory limits.'
+                        "severity": "error",
+                        "resource": f"pod/{pod_name}/container/{cs.name}",
+                        "reason": "OOMKilledRecurring",
+                        "message": (
+                            f"Container '{cs.name}' has been OOMKilled {cs.restart_count} times. "
+                            "Increase resources.limits.memory."
                         ),
                     })
-            
-            # High restart count even without terminal state = warning
+
             if (cs.restart_count or 0) >= 5 and not issues:
-                last_reason = ''
+                last_reason = ""
                 if cs.last_state and cs.last_state.terminated:
-                    last_reason = cs.last_state.terminated.reason or 'Unknown'
+                    last_reason = cs.last_state.terminated.reason or "Unknown"
                 issues.append({
-                    'severity': 'warning',
-                    'resource': f'pod/{pod_name}/container/{cs.name}',
-                    'reason': 'HighRestartCount',
-                    'message': (
-                        f'Container "{cs.name}" has restarted {cs.restart_count} times. '
-                        f'Last termination reason: {last_reason or "unknown"}'
+                    "severity": "warning",
+                    "resource": f"pod/{pod_name}/container/{cs.name}",
+                    "reason": "HighRestartCount",
+                    "message": (
+                        f"Container '{cs.name}' has restarted {cs.restart_count} times. "
+                        f"Last termination reason: {last_reason or 'unknown'}"
                     ),
                 })
-        
-        # Check pod-level conditions for scheduling failures
-        for cond in (pod.status.conditions or []):
-            if cond.type == 'PodScheduled' and cond.status == 'False':
+
+        for cond in pod.status.conditions or []:
+            if cond.type == "PodScheduled" and cond.status == "False":
                 issues.append({
-                    'severity': 'error',
-                    'resource': f'pod/{pod_name}',
-                    'reason': cond.reason or 'SchedulingFailed',
-                    'message': cond.message or 'Pod could not be scheduled',
+                    "severity": "error",
+                    "resource": f"pod/{pod_name}",
+                    "reason": cond.reason or "SchedulingFailed",
+                    "message": cond.message or "Pod could not be scheduled",
                 })
-        
+
         return issues
-    
+
     @staticmethod
-    def _is_pod_ready(pod) -> bool:
-        """Check if a single pod is fully ready (Running + Ready condition True)."""
-        if pod.status.phase != 'Running':
+    def _is_pod_ready(pod: Any) -> bool:
+        if pod.status.phase != "Running":
             return False
         conditions = pod.status.conditions or []
         if not conditions:
-            return False  # No conditions = not ready (fixes the all()-on-empty bug)
-        return any(
-            c.type == 'Ready' and c.status == 'True'
-            for c in conditions
-        )
-
-
+            return False
+        return any(c.type == "Ready" and c.status == "True" for c in conditions)

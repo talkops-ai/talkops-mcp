@@ -1,0 +1,3 @@
+{
+  "readme": "# Bitnami PostgreSQL Helm Chart\n\n## TL;DR\n\n```bash\nhelm install my-release bitnami/postgresql\n```\n\n## Parameters\n\n| Name | Description | Value |\n|---|---|---|\n| `auth.existingSecret` | Name of existing secret | `\"\"` |\n| `primary.persistence.size` | PVC Size | `8Gi` |\n"
+}

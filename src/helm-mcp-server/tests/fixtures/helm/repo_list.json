@@ -1,0 +1,10 @@
+[
+  {
+    "name": "bitnami",
+    "url": "https://charts.bitnami.com/bitnami"
+  },
+  {
+    "name": "argo",
+    "url": "https://argoproj.github.io/argo-helm"
+  }
+]

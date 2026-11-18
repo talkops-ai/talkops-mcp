@@ -1,0 +1,21 @@
+{
+  "name": "my-postgres",
+  "namespace": "prod",
+  "version": 1,
+  "info": {
+    "first_deployed": "2026-11-03T12:00:00Z",
+    "last_deployed": "2026-11-03T12:00:00Z",
+    "status": "deployed",
+    "description": "Install complete",
+    "notes": "PostgreSQL deployed in prod namespace."
+  },
+  "chart": {
+    "metadata": {
+      "name": "postgresql",
+      "version": "15.5.0",
+      "appVersion": "16.3.0",
+      "description": "PostgreSQL chart"
+    }
+  },
+  "manifest": "---\napiVersion: v1\nkind: Service\nmetadata:\n  name: my-postgres\n  namespace: prod\n---\napiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: my-postgres\n  namespace: prod\nspec:\n  replicas: 1\n"
+}

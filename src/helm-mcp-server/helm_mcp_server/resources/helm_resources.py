@@ -1,82 +1,85 @@
-"""Helm-related resources."""
+"""Helm release inspection resources: revision history, redacted values, and redacted manifests."""
 
-import json
-from typing import List, Optional
-from mcp.types import Resource
-from helm_mcp_server.exceptions import HelmResourceError, HelmResourceNotFoundError
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from helm_mcp_server.exceptions import HelmResourceNotFoundError
 from helm_mcp_server.resources.base import BaseResource
 
 
 class HelmResources(BaseResource):
-    """Helm release resources."""
-    
-    def register(self, mcp_instance) -> None:
-        """Register resources with FastMCP."""
-        
-        @mcp_instance.resource("helm://releases")
-        async def list_helm_releases() -> List[Resource]:
-            """List all Helm releases in cluster.
-            
-            Returns dynamic resources for each release.
-            """
-            # NOTE: Do not silently swallow errors here.
-            # If anything goes wrong, raise a HelmResourceError so agent
-            # can see a proper failure instead of an empty list.
-            try:
-                releases = await self.k8s_service.get_helm_releases()
-            except Exception as e:
-                raise HelmResourceError(f"Failed to list Helm releases: {e}")
+    """URI-addressed resources for deployed Helm release history, values, and manifests."""
 
-            return [
-                Resource(
-                    uri=f"helm://releases/{rel['name']}",  # type: ignore[arg-type]
-                    name=f"Release: {rel['name']}",
-                    description=f"Helm release {rel['name']} in namespace {rel.get('namespace', 'default')}",
-                    mimeType="application/json",
-                )
-                for rel in releases
-            ]
-        
+    def register(self, mcp_instance: Any) -> None:
+        """Register Helm release resources with FastMCP."""
+
         @mcp_instance.resource(
-            "helm://releases/{release_name}",
-            mime_type="application/json"
+            "helm://releases/{namespace}/{release_name}/history",
+            mime_type="application/json",
         )
-        async def get_release_details(release_name: str) -> dict:
-            """Get detailed information about a specific Helm release.
-            
-            Args:
-                release_name: Name of the Helm release
-            
-            Returns:
-                Dictionary with release details
-            
-            Raises:
-                HelmResourceNotFoundError: If release not found
-            """
+        async def get_release_history(namespace: str, release_name: str) -> Dict[str, Any]:
+            """Get revision history for a deployed Helm release in a namespace."""
             try:
-                # First, find the release across all namespaces
-                all_releases = await self.k8s_service.get_helm_releases()
-                
-                # Find the release by name
-                release = None
-                for rel in all_releases:
-                    if rel.get('name') == release_name:
-                        release = rel
-                        break
-                
-                if not release:
-                    raise HelmResourceNotFoundError(f"Release not found: {release_name}")
-                
-                # Get detailed status from Helm service
-                namespace = release.get('namespace', 'default')
-                release_info = await self.helm_service.get_release_status(
+                revisions = await self.helm_service.get_release_history(
                     release_name=release_name,
-                    namespace=namespace
+                    namespace=namespace,
                 )
-                
-                # Return dict directly - FastMCP will convert to JSON automatically
-                return release_info
+                return {
+                    "release_name": release_name,
+                    "namespace": namespace,
+                    "revisions": revisions,
+                    "count": len(revisions),
+                }
+            except Exception as exc:
+                raise HelmResourceNotFoundError(
+                    f"History not found for release '{release_name}' in namespace '{namespace}': {exc}. "
+                    f"Call helm_list_releases(namespace='{namespace}') to find valid release names."
+                )
+
+        @mcp_instance.resource(
+            "helm://releases/{namespace}/{release_name}/values",
+            mime_type="application/json",
+        )
+        async def get_release_values(namespace: str, release_name: str) -> Dict[str, Any]:
+            """Get secret-redacted user override values for a deployed Helm release."""
+            try:
+                values = await self.helm_service.get_release_values(
+                    release_name=release_name,
+                    namespace=namespace,
+                )
+                return {
+                    "release_name": release_name,
+                    "namespace": namespace,
+                    "values": values,
+                    "secrets_redacted": True,
+                }
+            except Exception as exc:
+                raise HelmResourceNotFoundError(
+                    f"Values not found for release '{release_name}' in namespace '{namespace}': {exc}. "
+                    f"Call helm_list_releases(namespace='{namespace}') to find valid release names."
+                )
+
+        @mcp_instance.resource(
+            "helm://releases/{namespace}/{release_name}/manifest",
+            mime_type="text/yaml",
+        )
+        async def get_release_manifest(namespace: str, release_name: str) -> str:
+            """Get secret-redacted Kubernetes YAML manifest for a deployed Helm release."""
+            try:
+                manifest = await self.helm_service.get_release_manifest(
+                    release_name=release_name,
+                    namespace=namespace,
+                )
+                if not manifest or not manifest.strip():
+                    raise HelmResourceNotFoundError(
+                        f"Manifest is empty for release '{release_name}' in namespace '{namespace}'."
+                    )
+                return manifest
             except HelmResourceNotFoundError:
                 raise
-            except Exception as e:
-                raise HelmResourceNotFoundError(f"Release not found: {release_name}")
+            except Exception as exc:
+                raise HelmResourceNotFoundError(
+                    f"Manifest not found for release '{release_name}' in namespace '{namespace}': {exc}. "
+                    f"Call helm_list_releases(namespace='{namespace}') to find valid release names."
+                )
