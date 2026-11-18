@@ -1,1 +1,0 @@
-"""Promtool validation tools."""

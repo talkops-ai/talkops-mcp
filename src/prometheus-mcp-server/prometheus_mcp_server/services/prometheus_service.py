@@ -116,10 +116,12 @@ class PrometheusService:
     # ---- Request Helper ----
 
     def _headers(self, backend: BackendConfig) -> Dict[str, str]:
-        """Build request headers with auth."""
+        """Build request headers with auth and optional multi-tenant X-Scope-OrgID."""
         headers: Dict[str, str] = {"Accept": "application/json"}
         if backend.auth_header:
             headers["Authorization"] = backend.auth_header
+        if getattr(backend, "tenant_id", None):
+            headers["X-Scope-OrgID"] = str(backend.tenant_id)
         return headers
 
     async def _request(
@@ -517,21 +519,43 @@ class PrometheusService:
         )
 
     async def get_config(self, backend_id: str) -> RuntimeConfig:
-        """Get sanitized runtime configuration."""
+        """Get deeply redacted runtime configuration and TSDB status."""
+        import yaml
+        from prometheus_mcp_server.utils.redaction import (
+            redact_sensitive_data,
+            redact_string_secrets,
+        )
+
+        global_config: Dict[str, str] = {}
         try:
             resp = await self._request("GET", backend_id, "/api/v1/status/config")
             data = self._parse_json(resp, "config")
             self._validate_prom_response(data, "config")
             raw_yaml = data.get("data", {}).get("yaml", "")
 
-            # Parse key config values from the YAML string
-            global_config: Dict[str, str] = {}
-            scrape_match = re.search(r'scrape_interval:\s*(\S+)', raw_yaml)
-            if scrape_match:
-                global_config["scrape_interval"] = scrape_match.group(1)
-            eval_match = re.search(r'evaluation_interval:\s*(\S+)', raw_yaml)
-            if eval_match:
-                global_config["evaluation_interval"] = eval_match.group(1)
+            try:
+                parsed_cfg = yaml.safe_load(raw_yaml) if raw_yaml else {}
+                if isinstance(parsed_cfg, dict):
+                    redacted_cfg = redact_sensitive_data(parsed_cfg)
+                    raw_global = redacted_cfg.get("global", {})
+                    if isinstance(raw_global, dict):
+                        for k, v in raw_global.items():
+                            global_config[str(k)] = str(v)
+            except Exception:
+                pass
+
+            if "scrape_interval" not in global_config:
+                scrape_match = re.search(r"scrape_interval:\s*(\S+)", raw_yaml)
+                if scrape_match:
+                    global_config["scrape_interval"] = redact_string_secrets(
+                        scrape_match.group(1)
+                    )
+            if "evaluation_interval" not in global_config:
+                eval_match = re.search(r"evaluation_interval:\s*(\S+)", raw_yaml)
+                if eval_match:
+                    global_config["evaluation_interval"] = redact_string_secrets(
+                        eval_match.group(1)
+                    )
 
         except Exception:
             global_config = {}
@@ -606,53 +630,147 @@ class PrometheusService:
         return downsampled
 
     async def enforce_counter_rule(
-        self, backend_id: str, query: str, allow_raw: bool
+        self, backend_id: str, query: str, allow_raw: bool = False
     ) -> None:
         """Enforce semantic counter rule: counters must use rate()/increase().
 
         Raises ValueError if a counter is queried raw without opt-in.
-        Uses metadata-aware checking to detect counter metrics even inside
-        aggregation functions like sum(), avg(), topk().
+        Uses token-aware metadata checking to detect counter metrics without
+        false positives on substring metric names.
         """
         if allow_raw:
             return
 
-        q = query.strip()
-        # Safe wrapper functions that properly handle counters
-        safe_wrappers = {"rate", "increase", "irate", "resets", "changes"}
-
-        # Check if the query is wrapped in a safe function at the top level
-        for wrapper in safe_wrappers:
-            if q.startswith(f"{wrapper}("):
-                return
+        from prometheus_mcp_server.utils.promql_helpers import enforce_counter_rule_sync
 
         try:
             metadata = await self.get_metadata(backend_id)
-            # Find all counter metric names that appear in the query
-            for metric_name, meta_entries in metadata.items():
-                if not isinstance(meta_entries, list) or not meta_entries:
-                    continue
-                if meta_entries[0].get("type") != "counter":
-                    continue
-                # Check if this counter metric name appears in the query
-                if metric_name not in q:
-                    continue
-                # Check if it's wrapped in a safe function anywhere in the query
-                is_safe = False
-                for wrapper in safe_wrappers:
-                    if f"{wrapper}({metric_name}" in q or f"{wrapper}( {metric_name}" in q:
-                        is_safe = True
-                        break
-                if not is_safe:
-                    raise ValueError(
-                        f"Counter metric '{metric_name}' must be wrapped in rate()/increase(). "
-                        f"Example: rate({metric_name}[5m]). "
-                        f"Set allow_raw_counters=true to override."
-                    )
+            err = enforce_counter_rule_sync(metadata, query, allow_raw=allow_raw)
+            if err:
+                raise ValueError(err)
         except ValueError:
             raise
         except Exception:
             pass
+
+    # ---- Exemplars, Series, Flags, TSDB, and Alerts APIs ----
+
+    async def query_exemplars(
+        self,
+        backend_id: str,
+        query: str,
+        start: float,
+        end: float,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Query Prometheus /api/v1/query_exemplars for trace exemplars."""
+        params: Dict[str, Any] = {
+            "query": query,
+            "start": start,
+            "end": end,
+        }
+        resp = await self._request("GET", backend_id, "/api/v1/query_exemplars", params=params)
+        data = self._parse_json(resp, "query_exemplars")
+        self._validate_prom_response(data, "query_exemplars")
+        raw_series = data.get("data", [])
+
+        flattened: List[Dict[str, Any]] = []
+        for series_entry in raw_series:
+            series_labels = series_entry.get("seriesLabels", {})
+            for ex in series_entry.get("exemplars", []):
+                ex_labels = ex.get("labels", {})
+                trace_id = (
+                    ex_labels.get("traceID")
+                    or ex_labels.get("trace_id")
+                    or ex_labels.get("TraceID")
+                )
+                span_id = (
+                    ex_labels.get("spanID")
+                    or ex_labels.get("span_id")
+                    or ex_labels.get("SpanID")
+                )
+                try:
+                    val = float(ex.get("value", 0.0))
+                except (TypeError, ValueError):
+                    val = 0.0
+                flattened.append(
+                    {
+                        "trace_id": trace_id,
+                        "span_id": span_id,
+                        "value": val,
+                        "timestamp": ex.get("timestamp"),
+                        "exemplar_labels": ex_labels,
+                        "series_labels": series_labels,
+                    }
+                )
+
+        # Sort highest value (e.g. slowest latency) first
+        flattened.sort(key=lambda item: item.get("value", 0.0), reverse=True)
+        return flattened[: max(1, limit)]
+
+    async def get_series(
+        self,
+        backend_id: str,
+        match_selector: str,
+        start: Optional[float] = None,
+        end: Optional[float] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, str]]:
+        """Discover series label sets matching `match_selector` via /api/v1/series."""
+        params: Dict[str, Any] = {"match[]": match_selector}
+        if start is not None:
+            params["start"] = start
+        if end is not None:
+            params["end"] = end
+        resp = await self._request("GET", backend_id, "/api/v1/series", params=params)
+        data = self._parse_json(resp, "series")
+        self._validate_prom_response(data, "series")
+        series_list: List[Dict[str, str]] = data.get("data", [])
+        return series_list[: max(1, limit)]
+
+    async def get_alerts(self, backend_id: str) -> List[Dict[str, Any]]:
+        """Query Prometheus's native /api/v1/alerts for active/pending rule evaluations."""
+        resp = await self._request("GET", backend_id, "/api/v1/alerts")
+        data = self._parse_json(resp, "alerts")
+        self._validate_prom_response(data, "alerts")
+        return data.get("data", {}).get("alerts", [])
+
+    async def get_flags(self, backend_id: str) -> Dict[str, str]:
+        """Get Prometheus launch flags from /api/v1/status/flags."""
+        try:
+            resp = await self._request("GET", backend_id, "/api/v1/status/flags")
+            data = self._parse_json(resp, "flags")
+            if data.get("status") == "success":
+                return data.get("data", {})
+        except Exception:
+            pass
+        return {}
+
+    async def get_tsdb_status(self, backend_id: str) -> Dict[str, Any]:
+        """Get full TSDB status payload from /api/v1/status/tsdb."""
+        resp = await self._request("GET", backend_id, "/api/v1/status/tsdb")
+        data = self._parse_json(resp, "tsdb status")
+        self._validate_prom_response(data, "tsdb status")
+        return data.get("data", {})
+
+    async def get_wal_replay(self, backend_id: str) -> Dict[str, Any]:
+        """Get WAL replay status from /api/v1/status/walreplay."""
+        try:
+            resp = await self._request("GET", backend_id, "/api/v1/status/walreplay")
+            data = self._parse_json(resp, "walreplay")
+            if data.get("status") == "success":
+                return data.get("data", {})
+        except Exception:
+            pass
+        return {}
+
+    async def reload_config(self, backend_id: str) -> bool:
+        """Trigger Prometheus lifecycle configuration reload via POST /-/reload."""
+        try:
+            resp = await self._request("POST", backend_id, "/-/reload")
+            return resp.status_code in (200, 202, 204)
+        except Exception:
+            return False
 
     # ---- Rules Management APIs ----
 
@@ -674,6 +792,53 @@ class PrometheusService:
                     continue
                 return group
         return None
+
+    async def upsert_ruler_group(
+        self, backend_id: str, namespace: str, group_yaml: str
+    ) -> Dict[str, Any]:
+        """Create or update a rule group via Mimir/Cortex/Thanos HTTP Ruler API.
+
+        POST /api/v1/rules/{namespace} with Content-Type: application/yaml.
+        """
+        backend = self._get_backend(backend_id)
+        base = backend.ruler_url.rstrip("/") if backend.ruler_url else ""
+        path = f"{base}/api/v1/rules/{namespace}" if base else f"/api/v1/rules/{namespace}"
+        resp = await self._request(
+            "POST",
+            backend_id,
+            path,
+            content=group_yaml.encode("utf-8"),
+            headers={"Content-Type": "application/yaml"},
+        )
+        return {
+            "status": "applied",
+            "status_code": resp.status_code,
+            "namespace": namespace,
+            "endpoint": path,
+        }
+
+    async def delete_ruler_group(
+        self, backend_id: str, namespace: str, group_name: str
+    ) -> Dict[str, Any]:
+        """Delete a rule group via Mimir/Cortex/Thanos HTTP Ruler API.
+
+        DELETE /api/v1/rules/{namespace}/{group_name}.
+        """
+        backend = self._get_backend(backend_id)
+        base = backend.ruler_url.rstrip("/") if backend.ruler_url else ""
+        path = (
+            f"{base}/api/v1/rules/{namespace}/{group_name}"
+            if base
+            else f"/api/v1/rules/{namespace}/{group_name}"
+        )
+        resp = await self._request("DELETE", backend_id, path)
+        return {
+            "status": "deleted",
+            "status_code": resp.status_code,
+            "namespace": namespace,
+            "group_name": group_name,
+            "endpoint": path,
+        }
 
     async def get_alerts_for_state(
         self, backend_id: str, alert_name: str,

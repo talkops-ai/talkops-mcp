@@ -81,21 +81,56 @@ def build_exporter_manifests(
 
     # Map env vars to args based on config_model
     args: List[str] = []
-    env_vars: List[Dict[str, str]] = []
+    env_vars: List[Dict[str, Any]] = []
     env_input = cfg.get("env", {})
+    secret_env_input = cfg.get("secret_env", {})
+
+    def _to_secret_env_entry(env_key: str, ref_spec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if "valueFrom" in ref_spec and isinstance(ref_spec["valueFrom"], dict):
+            return {"name": env_key, "valueFrom": ref_spec["valueFrom"]}
+        if "secretKeyRef" in ref_spec and isinstance(ref_spec["secretKeyRef"], dict):
+            return {"name": env_key, "valueFrom": {"secretKeyRef": ref_spec["secretKeyRef"]}}
+        sec_name = ref_spec.get("name") or ref_spec.get("secretName") or ref_spec.get("secret_name")
+        sec_key = ref_spec.get("key") or ref_spec.get("secretKey") or ref_spec.get("secret_key")
+        if sec_name and sec_key:
+            entry: Dict[str, Any] = {
+                "name": env_key,
+                "valueFrom": {"secretKeyRef": {"name": str(sec_name), "key": str(sec_key)}},
+            }
+            if "optional" in ref_spec:
+                entry["valueFrom"]["secretKeyRef"]["optional"] = bool(ref_spec["optional"])
+            return entry
+        return None
+
     if isinstance(env_input, list):
-        env_vars = env_input
+        env_vars = list(env_input)
     elif isinstance(env_input, dict):
-        # Map env dict to args if maps_to_flag exists, otherwise to env vars
+        # Map env dict to args if maps_to_flag exists, otherwise to env vars (supporting secretKeyRef dicts)
         for key, val in env_input.items():
+            if isinstance(val, dict):
+                sec_entry = _to_secret_env_entry(key, val)
+                if sec_entry is not None:
+                    env_vars.append(sec_entry)
+                    continue
             mapped_to_arg = False
             for field in exp.config_model.required + exp.config_model.optional:
-                if field.name == key and field.maps_to_flag:
+                if field.name == key and field.maps_to_flag and not isinstance(val, dict):
                     args.append(f"{field.maps_to_flag}={val}")
                     mapped_to_arg = True
                     break
             if not mapped_to_arg:
                 env_vars.append({"name": key, "value": str(val)})
+
+    if isinstance(secret_env_input, dict):
+        for s_key, s_val in secret_env_input.items():
+            if isinstance(s_val, dict):
+                sec_entry = _to_secret_env_entry(s_key, s_val)
+                if sec_entry is not None:
+                    env_vars = [e for e in env_vars if e.get("name") != s_key]
+                    env_vars.append(sec_entry)
+
+    if exporter_type == "blackbox_exporter" and not any(a.startswith("--config.file") for a in args):
+        args.append("--config.file=/config/config.yml")
 
     container: Dict[str, Any] = {
         "name": k8s_container_name,
@@ -121,11 +156,14 @@ def build_exporter_manifests(
         cm_name = f"{name}-config"
         # Generate a placeholder config if none provided
         config_data = cfg.get("config_data", exp.default_config_data or "# Auto-generated placeholder config\n")
+        cm_data: Dict[str, str] = {"config.yml": config_data}
+        if exporter_type == "blackbox_exporter":
+            cm_data["blackbox.yml"] = config_data
         manifests.append({
             "apiVersion": "v1",
             "kind": "ConfigMap",
             "metadata": {"name": cm_name, "labels": labels, "namespace": namespace},
-            "data": {"config.yml": config_data}
+            "data": cm_data
         })
         volumes.append({
             "name": "config-volume",

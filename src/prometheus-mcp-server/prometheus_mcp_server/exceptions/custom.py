@@ -17,6 +17,7 @@ class PrometheusOperationError(ToolError):
 
     Inherits from ToolError for tool-related Prometheus API failures.
     """
+
     pass
 
 
@@ -25,6 +26,7 @@ class PrometheusResourceError(ResourceError):
 
     Inherits from ResourceError for resource-related failures.
     """
+
     pass
 
 
@@ -33,6 +35,7 @@ class PrometheusResourceNotFoundError(NotFoundError):
 
     Inherits from NotFoundError for 404 scenarios (e.g., unknown backend).
     """
+
     pass
 
 
@@ -41,6 +44,7 @@ class PrometheusValidationError(ValidationError):
 
     Inherits from ValidationError for input validation failures.
     """
+
     pass
 
 
@@ -49,6 +53,7 @@ class PrometheusConnectionError(ToolError):
 
     Raised when a backend is unreachable, times out, or returns unexpected responses.
     """
+
     pass
 
 
@@ -57,4 +62,17 @@ class PrometheusQueryError(ToolError):
 
     Raised for counter rule violations, query timeouts, or invalid PromQL.
     """
+
+    pass
+
+
+class WriteAccessDeniedError(ToolError):
+    """Raised when a mutating tool is invoked while the server is in read-only mode."""
+
+    pass
+
+
+class ConfirmationRequiredError(ToolError):
+    """Raised when a mutating/destructive operation requires explicit confirmation."""
+
     pass
