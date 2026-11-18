@@ -35,7 +35,7 @@ Let your AI assistant search and understand your logs in Grafana Loki: discover 
 
 **You'll need:**
 
-- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
 - A Loki URL
 - Optional: Kubernetes access to manage Loki Operator resources
 
@@ -67,6 +67,31 @@ claude mcp add loki -e LOKI_URL=http://localhost:3100 -- uvx --from talkops-loki
 
 `uvx` downloads [`talkops-loki-mcp-server`](https://pypi.org/project/talkops-loki-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-loki-mcp-server` and use `loki-mcp-server` as the command.
 
+**Prefer Docker?** Pull [`talkopsai/loki-mcp-server`](https://hub.docker.com/r/talkopsai/loki-mcp-server) from Docker Hub—no Python setup needed:
+
+```json
+{
+  "mcpServers": {
+    "loki": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "MCP_TRANSPORT=stdio",
+        "-e",
+        "LOKI_URL",
+        "talkopsai/loki-mcp-server:latest"
+      ],
+      "env": {
+        "LOKI_URL": "http://host.docker.internal:3100"
+      }
+    }
+  }
+}
+```
+
 **2. Restart your client and try asking:**
 
 - *"What errors is the `checkout` service logging in the last 30 minutes?"*
@@ -75,11 +100,11 @@ claude mcp add loki -e LOKI_URL=http://localhost:3100 -- uvx --from talkops-loki
 
 ## Allowing changes
 
-Out of the box the server is read-only. To let your assistant make changes (changing Ruler rule groups, deleting logs, and applying Loki Operator resources), add `"--allow-write"` to `args` (or set `MCP_ALLOW_WRITE=true`). Even then, changes are previewed first and destructive actions ask for confirmation.
+Out of the box the server is read-only. To let your assistant make changes (changing Ruler rule groups, deleting logs, and applying Loki Operator resources), add `"--allow-write"` to `args` (or pass `-e MCP_ALLOW_WRITE=true` to `docker run`). Even then, changes are previewed first and destructive actions ask for confirmation.
 
 ## Configuration
 
-Set these as environment variables (the `env` block in your client config) or pass the matching flag.
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
 
 | Variable | Flag | Default | What it does |
 | :--- | :--- | :--- | :--- |
@@ -90,25 +115,31 @@ Set these as environment variables (the `env` block in your client config) or pa
 | `MCP_TOOLSETS` | `--toolsets` | `all` | Limit tools: `discovery`, `query`, `analysis`, `diagnostics`, `rules`, `governance`, `operator`, `readonly` |
 | `K8S_ENABLED` | `--k8s-enabled` | `false` | Turn on Loki Operator (Kubernetes) features |
 | `MCP_TRANSPORT` | `--transport` | `stdio` | `stdio` or `http` |
-| `MCP_PORT` | `--port` | `8769` | Port when using HTTP |
+| `MCP_PORT` | `--port` | `8769` (`8770` in Docker) | Port when using HTTP |
 
 Run `uvx --from talkops-loki-mcp-server loki-mcp-server --help` to see every option.
 
 ### Running over HTTP
 
-To share one server between several clients or run it remotely, start it in HTTP mode:
+To share one server between several clients or run it remotely, start it in HTTP mode with Docker or `uvx`:
 
 ```bash
-MCP_TRANSPORT=http MCP_PORT=8769 uvx --from talkops-loki-mcp-server loki-mcp-server
+# With Docker (starts in HTTP mode by default)
+docker run --rm -p 8770:8770 \
+  -e LOKI_URL=http://host.docker.internal:3100 \
+  talkopsai/loki-mcp-server:latest
+
+# Or with uvx
+MCP_TRANSPORT=http MCP_PORT=8770 uvx --from talkops-loki-mcp-server loki-mcp-server
 ```
 
-Then point your client at `http://localhost:8769/mcp`:
+Then point your client at `http://localhost:8770/mcp`:
 
 ```json
 {
   "mcpServers": {
     "loki": {
-      "url": "http://localhost:8769/mcp"
+      "url": "http://localhost:8770/mcp"
     }
   }
 }

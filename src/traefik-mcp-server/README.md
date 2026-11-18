@@ -31,7 +31,7 @@ Let your AI assistant manage Traefik v3 on Kubernetes: routes, weighted canary t
 
 **You'll need:**
 
-- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
 - Access to a Kubernetes cluster running Traefik v3 (through a kubeconfig file)
 - Optional: a Prometheus URL for traffic metrics
 
@@ -62,10 +62,35 @@ Using Claude Code? Run this instead:
 claude mcp add traefik -e KUBECONFIG=/path/to/your/kubeconfig -e TRAEFIK_NAMESPACE=traefik -- uvx --from talkops-traefik-mcp-server traefik-mcp-server
 ```
 
+`uvx` downloads [`talkops-traefik-mcp-server`](https://pypi.org/project/talkops-traefik-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-traefik-mcp-server` and use `traefik-mcp-server` as the command.
+
+**Prefer Docker?** Pull [`talkopsai/traefik-mcp-server`](https://hub.docker.com/r/talkopsai/traefik-mcp-server) from Docker Hub—no Python setup needed:
+
+```json
+{
+  "mcpServers": {
+    "traefik": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-v",
+        "/path/to/your/kubeconfig:/app/.kube/config:ro",
+        "-e",
+        "TRAEFIK_NAMESPACE",
+        "talkopsai/traefik-mcp-server:latest"
+      ],
+      "env": {
+        "TRAEFIK_NAMESPACE": "traefik"
+      }
+    }
+  }
+}
+```
+
 > [!NOTE]
 > Traefik runs over `stdio` only.
-
-`uvx` downloads [`talkops-traefik-mcp-server`](https://pypi.org/project/talkops-traefik-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-traefik-mcp-server` and use `traefik-mcp-server` as the command.
 
 **2. Restart your client and try asking:**
 
@@ -75,11 +100,11 @@ claude mcp add traefik -e KUBECONFIG=/path/to/your/kubeconfig -e TRAEFIK_NAMESPA
 
 ## Allowing changes
 
-Out of the box the server is read-only. To let your assistant make changes (creating and changing routes, weighted services, middlewares, TLS settings, and deleting Traefik resources), add `"--allow-write"` to `args` (or set `MCP_ALLOW_WRITE=true`). Even then, changes are previewed first and destructive actions ask for confirmation.
+Out of the box the server is read-only. To let your assistant make changes (creating and changing routes, weighted services, middlewares, TLS settings, and deleting Traefik resources), add `"--allow-write"` to `args` (or pass `-e MCP_ALLOW_WRITE=true` to `docker run`). Even then, changes are previewed first and destructive actions ask for confirmation.
 
 ## Configuration
 
-Set these as environment variables (the `env` block in your client config) or pass the matching flag.
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
 
 | Variable | Flag | Default | What it does |
 | :--- | :--- | :--- | :--- |

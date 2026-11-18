@@ -31,7 +31,7 @@ Let your AI assistant work with Prometheus: write and run PromQL, check service 
 
 **You'll need:**
 
-- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
 - A Prometheus-compatible URL
 - Optional: Kubernetes access for scrape configs and exporters
 
@@ -64,6 +64,32 @@ claude mcp add prometheus -e PROMETHEUS_BASE_URL=http://localhost:9090 -- uvx --
 
 `uvx` downloads [`talkops-prometheus-mcp-server`](https://pypi.org/project/talkops-prometheus-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-prometheus-mcp-server` and use `prometheus-mcp-server` as the command.
 
+**Prefer Docker?** Pull [`talkopsai/prometheus-mcp-server`](https://hub.docker.com/r/talkopsai/prometheus-mcp-server) from Docker Hub—no Python setup needed:
+
+```json
+{
+  "mcpServers": {
+    "prometheus": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "MCP_TRANSPORT=stdio",
+        "-e",
+        "PROMETHEUS_BASE_URL",
+        "talkopsai/prometheus-mcp-server:latest",
+        "--read-only"
+      ],
+      "env": {
+        "PROMETHEUS_BASE_URL": "http://host.docker.internal:9090"
+      }
+    }
+  }
+}
+```
+
 **2. Restart your client and try asking:**
 
 - *"What's the error rate and p99 latency for the `checkout` service over the last hour?"*
@@ -76,7 +102,7 @@ Unlike the other TalkOps servers, Prometheus starts **with write tools enabled**
 
 ## Configuration
 
-Set these as environment variables (the `env` block in your client config) or pass the matching flag.
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
 
 | Variable | Flag | Default | What it does |
 | :--- | :--- | :--- | :--- |
@@ -94,9 +120,16 @@ Run `uvx --from talkops-prometheus-mcp-server prometheus-mcp-server --help` to s
 
 ### Running over HTTP
 
-To share one server between several clients or run it remotely, start it in HTTP mode:
+To share one server between several clients or run it remotely, start it in HTTP mode with Docker or `uvx`:
 
 ```bash
+# With Docker (starts in HTTP mode by default)
+docker run --rm -p 8767:8767 \
+  -e PROMETHEUS_BASE_URL=http://host.docker.internal:9090 \
+  -e MCP_READ_ONLY=true \
+  talkopsai/prometheus-mcp-server:latest
+
+# Or with uvx
 MCP_TRANSPORT=http MCP_PORT=8767 uvx --from talkops-prometheus-mcp-server prometheus-mcp-server
 ```
 

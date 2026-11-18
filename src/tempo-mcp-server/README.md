@@ -31,7 +31,7 @@ Let your AI assistant explore distributed traces in Grafana Tempo: search with T
 
 **You'll need:**
 
-- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
 - A Tempo URL
 - Optional: Prometheus (for service graphs) and Kubernetes access (for the Tempo Operator)
 
@@ -63,6 +63,31 @@ claude mcp add tempo -e TEMPO_URL=http://localhost:3200 -- uvx --from talkops-te
 
 `uvx` downloads [`talkops-tempo-mcp-server`](https://pypi.org/project/talkops-tempo-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-tempo-mcp-server` and use `tempo-mcp-server` as the command.
 
+**Prefer Docker?** Pull [`talkopsai/tempo-mcp-server`](https://hub.docker.com/r/talkopsai/tempo-mcp-server) from Docker Hub—no Python setup needed:
+
+```json
+{
+  "mcpServers": {
+    "tempo": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "MCP_TRANSPORT=stdio",
+        "-e",
+        "TEMPO_BASE_URL",
+        "talkopsai/tempo-mcp-server:latest"
+      ],
+      "env": {
+        "TEMPO_BASE_URL": "http://host.docker.internal:3200"
+      }
+    }
+  }
+}
+```
+
 **2. Restart your client and try asking:**
 
 - *"Show me the slowest traces for `checkout` in the last hour."*
@@ -71,11 +96,11 @@ claude mcp add tempo -e TEMPO_URL=http://localhost:3200 -- uvx --from talkops-te
 
 ## Allowing changes
 
-Out of the box the server is read-only. To let your assistant make changes (changing per-tenant overrides and applying Tempo Operator resources), add `"--allow-write"` to `args` (or set `MCP_ALLOW_WRITE=true`). Even then, changes are previewed first and destructive actions ask for confirmation.
+Out of the box the server is read-only. To let your assistant make changes (changing per-tenant overrides and applying Tempo Operator resources), add `"--allow-write"` to `args` (or pass `-e MCP_ALLOW_WRITE=true` to `docker run`). Even then, changes are previewed first and destructive actions ask for confirmation.
 
 ## Configuration
 
-Set these as environment variables (the `env` block in your client config) or pass the matching flag.
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
 
 | Variable | Flag | Default | What it does |
 | :--- | :--- | :--- | :--- |
@@ -93,9 +118,15 @@ Run `uvx --from talkops-tempo-mcp-server tempo-mcp-server --help` to see every o
 
 ### Running over HTTP
 
-To share one server between several clients or run it remotely, start it in HTTP mode:
+To share one server between several clients or run it remotely, start it in HTTP mode with Docker or `uvx`:
 
 ```bash
+# With Docker (starts in HTTP mode by default)
+docker run --rm -p 8768:8768 \
+  -e TEMPO_BASE_URL=http://host.docker.internal:3200 \
+  talkopsai/tempo-mcp-server:latest
+
+# Or with uvx
 MCP_TRANSPORT=http MCP_PORT=8768 uvx --from talkops-tempo-mcp-server tempo-mcp-server
 ```
 

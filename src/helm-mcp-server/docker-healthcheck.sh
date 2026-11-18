@@ -1,12 +1,6 @@
 #!/bin/sh
-
-if [ "$(lsof +c 0 -p 1 | grep -e "^helm-mcp-server.*\\s1\\s.*\\sunix\\s.*socket$" | wc -l)" -ne "0" ]; then
-  echo -n "$(lsof +c 0 -p 1 | grep -e "^helm-mcp-server.*\\s1\\s.*\\sunix\\s.*socket$" | wc -l) helm-mcp-server streams found";
-  exit 0;
-else
-  echo -n "Zero helm-mcp-server streams found";
-  exit 1;
-fi;
-
-echo -n "Never should reach here";
-exit 99;
+if [ "${MCP_TRANSPORT:-http}" = "http" ]; then
+    curl -s -o /dev/null --max-time 5 "http://127.0.0.1:${MCP_PORT:-8765}${MCP_PATH:-/mcp}" && exit 0
+    exit 1
+fi
+kill -0 1 2>/dev/null

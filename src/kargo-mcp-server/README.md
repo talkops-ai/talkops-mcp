@@ -31,7 +31,7 @@ Let your AI assistant manage Kargo promotion pipelines: see what's deployed wher
 
 **You'll need:**
 
-- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
 - A Kargo API URL and credentials (admin password or a bearer token)
 
 **1. Add the server to your MCP client.** For Claude Desktop, Cursor, Windsurf, and most other clients, add this to your MCP config file:
@@ -64,6 +64,37 @@ claude mcp add kargo -e KARGO_BASE_URL=https://kargo.example.com -e KARGO_AUTH_M
 
 `uvx` downloads [`talkops-kargo-mcp-server`](https://pypi.org/project/talkops-kargo-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-kargo-mcp-server` and use `kargo-mcp-server` as the command.
 
+**Prefer Docker?** Pull [`talkopsai/kargo-mcp-server`](https://hub.docker.com/r/talkopsai/kargo-mcp-server) from Docker Hub—no Python setup needed:
+
+```json
+{
+  "mcpServers": {
+    "kargo": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "MCP_TRANSPORT=stdio",
+        "-e",
+        "KARGO_BASE_URL",
+        "-e",
+        "KARGO_AUTH_MODE",
+        "-e",
+        "KARGO_STATIC_BEARER_TOKEN",
+        "talkopsai/kargo-mcp-server:latest"
+      ],
+      "env": {
+        "KARGO_BASE_URL": "https://kargo.example.com",
+        "KARGO_AUTH_MODE": "static",
+        "KARGO_STATIC_BEARER_TOKEN": "<your-kargo-token>"
+      }
+    }
+  }
+}
+```
+
 **2. Restart your client and try asking:**
 
 - *"Show me the pipeline for the `guestbook` project. What's running in each stage?"*
@@ -72,11 +103,11 @@ claude mcp add kargo -e KARGO_BASE_URL=https://kargo.example.com -e KARGO_AUTH_M
 
 ## Allowing changes
 
-Out of the box the server is read-only. To let your assistant make changes (creating and changing projects, warehouses, stages, promotions, credentials, and roles), add `"--allow-write"` to `args` (or set `MCP_ALLOW_WRITE=true`). Even then, changes are previewed first and destructive actions ask for confirmation.
+Out of the box the server is read-only. To let your assistant make changes (creating and changing projects, warehouses, stages, promotions, credentials, and roles), add `"--allow-write"` to `args` (or pass `-e MCP_ALLOW_WRITE=true` to `docker run`). Even then, changes are previewed first and destructive actions ask for confirmation.
 
 ## Configuration
 
-Set these as environment variables (the `env` block in your client config) or pass the matching flag.
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
 
 | Variable | Flag | Default | What it does |
 | :--- | :--- | :--- | :--- |
@@ -95,9 +126,17 @@ Run `uvx --from talkops-kargo-mcp-server kargo-mcp-server --help` to see every o
 
 ### Running over HTTP
 
-To share one server between several clients or run it remotely, start it in HTTP mode:
+To share one server between several clients or run it remotely, start it in HTTP mode with Docker or `uvx`:
 
 ```bash
+# With Docker (starts in HTTP mode by default)
+docker run --rm -p 8766:8766 \
+  -e KARGO_BASE_URL=https://kargo.example.com \
+  -e KARGO_AUTH_MODE=static \
+  -e KARGO_STATIC_BEARER_TOKEN=<your-kargo-token> \
+  talkopsai/kargo-mcp-server:latest
+
+# Or with uvx
 MCP_TRANSPORT=http MCP_PORT=8766 uvx --from talkops-kargo-mcp-server kargo-mcp-server
 ```
 

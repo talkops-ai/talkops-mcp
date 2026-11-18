@@ -31,7 +31,7 @@ Let your AI assistant run progressive delivery with Argo Rollouts: move Deployme
 
 **You'll need:**
 
-- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
 - Access to a Kubernetes cluster with Argo Rollouts installed
 - Optional: a Prometheus URL for metric comparisons and analysis
 
@@ -64,6 +64,33 @@ claude mcp add argo-rollout -e KUBECONFIG=/path/to/your/kubeconfig -e PROMETHEUS
 
 `uvx` downloads [`talkops-argo-rollout-mcp-server`](https://pypi.org/project/talkops-argo-rollout-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-argo-rollout-mcp-server` and use `argo-rollout-mcp-server` as the command.
 
+**Prefer Docker?** Pull [`talkopsai/argo-rollout-mcp-server`](https://hub.docker.com/r/talkopsai/argo-rollout-mcp-server) from Docker Hub—no Python setup needed:
+
+```json
+{
+  "mcpServers": {
+    "argo-rollout": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "MCP_TRANSPORT=stdio",
+        "-v",
+        "/path/to/your/kubeconfig:/app/.kube/config:ro",
+        "-e",
+        "PROMETHEUS_URL",
+        "talkopsai/argo-rollout-mcp-server:latest"
+      ],
+      "env": {
+        "PROMETHEUS_URL": "http://prometheus.monitoring:9090"
+      }
+    }
+  }
+}
+```
+
 **2. Restart your client and try asking:**
 
 - *"Is the `checkout` Deployment ready to migrate to an Argo Rollout?"*
@@ -72,11 +99,11 @@ claude mcp add argo-rollout -e KUBECONFIG=/path/to/your/kubeconfig -e PROMETHEUS
 
 ## Allowing changes
 
-Out of the box the server is read-only. To let your assistant make changes (creating, converting, promoting, aborting, and deleting rollouts, analysis templates, and experiments), add `"--allow-write"` to `args` (or set `MCP_ALLOW_WRITE=true`). Even then, changes are previewed first and destructive actions ask for confirmation.
+Out of the box the server is read-only. To let your assistant make changes (creating, converting, promoting, aborting, and deleting rollouts, analysis templates, and experiments), add `"--allow-write"` to `args` (or pass `-e MCP_ALLOW_WRITE=true` to `docker run`). Even then, changes are previewed first and destructive actions ask for confirmation.
 
 ## Configuration
 
-Set these as environment variables (the `env` block in your client config) or pass the matching flag.
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
 
 | Variable | Flag | Default | What it does |
 | :--- | :--- | :--- | :--- |
@@ -92,9 +119,16 @@ Run `uvx --from talkops-argo-rollout-mcp-server argo-rollout-mcp-server --help` 
 
 ### Running over HTTP
 
-To share one server between several clients or run it remotely, start it in HTTP mode:
+To share one server between several clients or run it remotely, start it in HTTP mode with Docker or `uvx`:
 
 ```bash
+# With Docker (starts in HTTP mode by default)
+docker run --rm -p 8768:8768 \
+  -v ~/.kube/config:/app/.kube/config:ro \
+  -e PROMETHEUS_URL=http://prometheus.monitoring:9090 \
+  talkopsai/argo-rollout-mcp-server:latest
+
+# Or with uvx
 MCP_TRANSPORT=http MCP_PORT=8768 uvx --from talkops-argo-rollout-mcp-server argo-rollout-mcp-server
 ```
 

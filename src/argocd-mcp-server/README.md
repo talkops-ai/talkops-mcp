@@ -31,7 +31,7 @@ Let your AI assistant manage your ArgoCD applications: check health, preview and
 
 **You'll need:**
 
-- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
 - An ArgoCD server URL and an API token (`argocd account generate-token`)
 
 **1. Add the server to your MCP client.** For Claude Desktop, Cursor, Windsurf, and most other clients, add this to your MCP config file:
@@ -63,10 +63,38 @@ Using Claude Code? Run this instead:
 claude mcp add argocd -e ARGOCD_SERVER_URL=https://argocd.example.com -e ARGOCD_AUTH_TOKEN=<your-argocd-token> -- uvx --from talkops-argocd-mcp-server argocd-mcp-server --transport stdio
 ```
 
-> [!NOTE]
-> ArgoCD defaults to HTTP mode, so the examples pass `--transport stdio` for desktop clients.
-
 `uvx` downloads [`talkops-argocd-mcp-server`](https://pypi.org/project/talkops-argocd-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-argocd-mcp-server` and use `argocd-mcp-server` as the command.
+
+**Prefer Docker?** Pull [`talkopsai/argocd-mcp-server`](https://hub.docker.com/r/talkopsai/argocd-mcp-server) from Docker Hub—no Python setup needed:
+
+```json
+{
+  "mcpServers": {
+    "argocd": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "MCP_TRANSPORT=stdio",
+        "-e",
+        "ARGOCD_SERVER_URL",
+        "-e",
+        "ARGOCD_AUTH_TOKEN",
+        "talkopsai/argocd-mcp-server:latest"
+      ],
+      "env": {
+        "ARGOCD_SERVER_URL": "https://argocd.example.com",
+        "ARGOCD_AUTH_TOKEN": "<your-argocd-token>"
+      }
+    }
+  }
+}
+```
+
+> [!NOTE]
+> ArgoCD defaults to HTTP mode, so desktop (`stdio`) configs pass `--transport stdio` or `MCP_TRANSPORT=stdio`.
 
 **2. Restart your client and try asking:**
 
@@ -76,11 +104,11 @@ claude mcp add argocd -e ARGOCD_SERVER_URL=https://argocd.example.com -e ARGOCD_
 
 ## Allowing changes
 
-Out of the box the server is read-only. To let your assistant make changes (creating, updating, syncing, rolling back, and deleting apps, repositories, and projects), add `"MCP_ALLOW_WRITE": "true"` to the `env` block. Even then, syncs and rollbacks run as a dry run first, and destructive actions ask for confirmation.
+Out of the box the server is read-only. To let your assistant make changes (creating, updating, syncing, rolling back, and deleting apps, repositories, and projects), add `"MCP_ALLOW_WRITE": "true"` to `env` (or pass `-e MCP_ALLOW_WRITE=true` to `docker run`). Even then, syncs and rollbacks run as a dry run first, and destructive actions ask for confirmation.
 
 ## Configuration
 
-Set these as environment variables (the `env` block in your client config) or pass the matching flag.
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
 
 | Variable | Flag | Default | What it does |
 | :--- | :--- | :--- | :--- |
@@ -98,9 +126,16 @@ Run `uvx --from talkops-argocd-mcp-server argocd-mcp-server --help` to see every
 
 ### Running over HTTP
 
-To share one server between several clients or run it remotely, start it in HTTP mode:
+To share one server between several clients or run it remotely, start it in HTTP mode with Docker or `uvx`:
 
 ```bash
+# With Docker (starts in HTTP mode by default)
+docker run --rm -p 8770:8770 \
+  -e ARGOCD_SERVER_URL=https://argocd.example.com \
+  -e ARGOCD_AUTH_TOKEN=<your-argocd-token> \
+  talkopsai/argocd-mcp-server:latest
+
+# Or with uvx
 MCP_TRANSPORT=http MCP_PORT=8770 uvx --from talkops-argocd-mcp-server argocd-mcp-server
 ```
 

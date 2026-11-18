@@ -31,7 +31,7 @@ Let your AI assistant help with alerts: see what's firing, find out why an alert
 
 **You'll need:**
 
-- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
 - An Alertmanager URL
 
 **1. Add the server to your MCP client.** For Claude Desktop, Cursor, Windsurf, and most other clients, add this to your MCP config file:
@@ -62,6 +62,31 @@ claude mcp add alertmanager -e ALERTMANAGER_BASE_URL=http://localhost:9093 -- uv
 
 `uvx` downloads [`talkops-alertmanager-mcp-server`](https://pypi.org/project/talkops-alertmanager-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-alertmanager-mcp-server` and use `alertmanager-mcp-server` as the command.
 
+**Prefer Docker?** Pull [`talkopsai/alertmanager-mcp-server`](https://hub.docker.com/r/talkopsai/alertmanager-mcp-server) from Docker Hub—no Python setup needed:
+
+```json
+{
+  "mcpServers": {
+    "alertmanager": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "MCP_TRANSPORT=stdio",
+        "-e",
+        "ALERTMANAGER_BASE_URL",
+        "talkopsai/alertmanager-mcp-server:latest"
+      ],
+      "env": {
+        "ALERTMANAGER_BASE_URL": "http://host.docker.internal:9093"
+      }
+    }
+  }
+}
+```
+
 **2. Restart your client and try asking:**
 
 - *"Summarize what's firing for the `payments` team right now."*
@@ -70,11 +95,11 @@ claude mcp add alertmanager -e ALERTMANAGER_BASE_URL=http://localhost:9093 -- uv
 
 ## Allowing changes
 
-Out of the box the server is read-only. To let your assistant make changes (creating, updating, and expiring silences, and sending test alerts), add `"--allow-write"` to `args` (or set `MCP_ALLOW_WRITE=true`). Even then, changes are previewed first and destructive actions ask for confirmation.
+Out of the box the server is read-only. To let your assistant make changes (creating, updating, and expiring silences, and sending test alerts), add `"--allow-write"` to `args` (or pass `-e MCP_ALLOW_WRITE=true` to `docker run`). Even then, changes are previewed first and destructive actions ask for confirmation.
 
 ## Configuration
 
-Set these as environment variables (the `env` block in your client config) or pass the matching flag.
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
 
 | Variable | Flag | Default | What it does |
 | :--- | :--- | :--- | :--- |
@@ -92,9 +117,15 @@ Run `uvx --from talkops-alertmanager-mcp-server alertmanager-mcp-server --help` 
 
 ### Running over HTTP
 
-To share one server between several clients or run it remotely, start it in HTTP mode:
+To share one server between several clients or run it remotely, start it in HTTP mode with Docker or `uvx`:
 
 ```bash
+# With Docker (starts in HTTP mode by default)
+docker run --rm -p 8769:8769 \
+  -e ALERTMANAGER_BASE_URL=http://host.docker.internal:9093 \
+  talkopsai/alertmanager-mcp-server:latest
+
+# Or with uvx
 MCP_TRANSPORT=http MCP_PORT=8769 uvx --from talkops-alertmanager-mcp-server alertmanager-mcp-server
 ```
 

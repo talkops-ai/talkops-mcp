@@ -11,11 +11,11 @@ services:
     environment:
       # MCP Server Configuration
       - MCP_SERVER_NAME=argocd-mcp-server
-      - MCP_SERVER_VERSION=0.1.0
+      - MCP_SERVER_VERSION=0.4.1
       - MCP_TRANSPORT=http
       - MCP_HOST=0.0.0.0
-      - MCP_PORT=8765
-      - MCP_PATH=/sse
+      - MCP_PORT=8770
+      - MCP_PATH=/mcp
       - MCP_ALLOW_WRITE=false  # Set to 'true' to enable write operations
       - MCP_HTTP_TIMEOUT=300
       - MCP_HTTP_KEEPALIVE_TIMEOUT=5
@@ -36,7 +36,7 @@ services:
     
     # Port mapping
     ports:
-      - "8765:8765"
+      - "8770:8770"
     
     # Volume mounts (OPTIONAL)
     volumes:

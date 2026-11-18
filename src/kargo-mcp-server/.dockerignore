@@ -1,85 +1,49 @@
-# Git
-.git
-.gitignore
-
-# Python
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.Python
-env
-pip-log.txt
-pip-delete-this-directory.txt
-.tox
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git
-.mypy_cache
-.pytest_cache
-.hypothesis
-
-# Virtual environments
-.env
-.venv
-env/
+# Virtual environments & caches
+.venv/
 venv/
 ENV/
-env.bak/
-venv.bak/
-
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Documentation
-docs/
-
-# Tests
-tests/
-test_*
-*_test.py
-
-# Development files
-.pre-commit-config.yaml
-.ruff.toml
-.mypy.ini
-pyproject.toml.bak
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 
 # Build artifacts
 build/
 dist/
 *.egg-info/
+*.egg
 
-# Reference files
-reference/
+# Git, IDE, OS
+.git/
+.gitignore
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
 
-# Docker
-Dockerfile*
-docker-compose*.yml
-.dockerignore
-
-# Logs
+# Local secrets & logs
+.env
+.env.*
+!.env.example
 *.log
 logs/
 
-# Temporary files
-tmp/
-temp/
+# Non-runtime top-level project directories (leading slash keeps skills/*/references intact)
+/tests/
+/docs/
+/reference/
+/references/
+/tasks/

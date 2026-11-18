@@ -35,9 +35,9 @@ Let your AI assistant find, install, upgrade, and roll back Helm charts on your 
 
 **You'll need:**
 
-- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), **or** [Docker](https://docs.docker.com/get-docker/)
 - Access to a Kubernetes cluster through a kubeconfig file
-- The `helm` CLI installed and on your `PATH`
+- The `helm` CLI on your `PATH` when using `uvx` (already bundled inside the Docker image)
 
 **1. Add the server to your MCP client.** For Claude Desktop, Cursor, Windsurf, and most other clients, add this to your MCP config file:
 
@@ -67,6 +67,28 @@ claude mcp add helm -e KUBECONFIG=/path/to/your/kubeconfig -- uvx --from talkops
 
 `uvx` downloads [`talkops-helm-mcp-server`](https://pypi.org/project/talkops-helm-mcp-server/) from PyPI and runs it, so there's nothing else to install. Prefer a normal install? Run `pip install talkops-helm-mcp-server` and use `helm-mcp-server` as the command.
 
+**Prefer Docker?** Pull [`talkopsai/helm-mcp-server`](https://hub.docker.com/r/talkopsai/helm-mcp-server) from Docker Hub—no Python setup needed:
+
+```json
+{
+  "mcpServers": {
+    "helm": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "MCP_TRANSPORT=stdio",
+        "-v",
+        "/path/to/your/kubeconfig:/app/.kube/config:ro",
+        "talkopsai/helm-mcp-server:latest"
+      ]
+    }
+  }
+}
+```
+
 **2. Restart your client and try asking:**
 
 - *"Install the latest Bitnami PostgreSQL chart into the `database` namespace."*
@@ -75,11 +97,11 @@ claude mcp add helm -e KUBECONFIG=/path/to/your/kubeconfig -- uvx --from talkops
 
 ## Allowing changes
 
-Out of the box the server is read-only. To let your assistant make changes (installs, upgrades, rollbacks, uninstalls, and adding chart repositories), add `"--allow-write"` to `args` (or set `MCP_ALLOW_WRITE=true`). Even then, changes are previewed first and destructive actions ask for confirmation.
+Out of the box the server is read-only. To let your assistant make changes (installs, upgrades, rollbacks, uninstalls, and adding chart repositories), add `"--allow-write"` to `args` (or pass `-e MCP_ALLOW_WRITE=true` to `docker run`). Even then, changes are previewed first and destructive actions ask for confirmation.
 
 ## Configuration
 
-Set these as environment variables (the `env` block in your client config) or pass the matching flag.
+Set these as environment variables (the `env` block in your client config, or `-e` with `docker run`) or pass the matching flag.
 
 | Variable | Flag | Default | What it does |
 | :--- | :--- | :--- | :--- |
@@ -94,9 +116,15 @@ Run `uvx --from talkops-helm-mcp-server helm-mcp-server --help` to see every opt
 
 ### Running over HTTP
 
-To share one server between several clients or run it remotely, start it in HTTP mode:
+To share one server between several clients or run it remotely, start it in HTTP mode with Docker or `uvx`:
 
 ```bash
+# With Docker (starts in HTTP mode by default)
+docker run --rm -p 8765:8765 \
+  -v ~/.kube/config:/app/.kube/config:ro \
+  talkopsai/helm-mcp-server:latest
+
+# Or with uvx
 MCP_TRANSPORT=http MCP_PORT=8765 uvx --from talkops-helm-mcp-server helm-mcp-server
 ```
 
