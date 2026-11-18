@@ -13,7 +13,7 @@ def test_plugin_json_conforms_to_agentplugins_v1():
     data = json.loads(plugin_path.read_text(encoding="utf-8"))
     assert data["$schema"] == "https://agentplugins.io/schema/v1.0.0/plugin.json"
     assert data["name"] == "traefik"
-    assert data["version"] == "0.2.0"
+    assert data["version"] == "0.2.1"
     assert "com.anysphere.cursor" not in data.get("extensions", {})
     assert not (ROOT_DIR / "com.anysphere.cursor").exists()
 

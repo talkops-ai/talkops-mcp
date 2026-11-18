@@ -87,7 +87,7 @@ WORKDIR /app
 # Default environment variables (can be overridden via docker run -e)
 # MCP Server Configuration
 ENV MCP_SERVER_NAME=argocd-mcp-server \
-    MCP_SERVER_VERSION=0.4.0 \
+    MCP_SERVER_VERSION=0.4.1 \
     MCP_TRANSPORT=http \
     MCP_HOST=0.0.0.0 \
     MCP_PORT=8765 \

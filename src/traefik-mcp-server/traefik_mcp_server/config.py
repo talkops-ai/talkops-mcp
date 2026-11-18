@@ -62,7 +62,7 @@ class ServerConfig:
 
     # Server identity
     name: str = "traefik-mcp-server"
-    version: str = "0.2.0"
+    version: str = "0.2.1"
     description: str = "Traefik v3 Traffic Management & Diagnostics MCP Execution Server"
 
     # Transport settings (local stdio only per D6)
@@ -153,7 +153,7 @@ class Config:
 
         return ServerConfig(
             name=os.getenv("MCP_SERVER_NAME", "traefik-mcp-server"),
-            version=os.getenv("MCP_SERVER_VERSION", "0.2.0"),
+            version=os.getenv("MCP_SERVER_VERSION", "0.2.1"),
             transport=os.getenv("MCP_TRANSPORT", "stdio").strip().lower(),
             allow_write=allow_write,
             toolsets=toolsets,

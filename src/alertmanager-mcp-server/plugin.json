@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "talkops-alertmanager",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Operational skills and MCP execution server for Prometheus Alertmanager triage, notification diagnostics, silence lifecycle management, routing validation, and governance.",
   "author": {
     "name": "TalkOps Team"

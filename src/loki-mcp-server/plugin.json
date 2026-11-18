@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "talkops-loki",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Operational Agent Skills and MCP execution server for Grafana Loki 3.x and Loki Operator (loki.grafana.com/v1): discovery-first LogQL authoring, structured metadata & Bloom filter optimization, service error triage, release regression comparison, cross-pillar trace correlation, FinOps volume attribution, Loki Ruler alerting/recording rules, Compactor log deletion, and Kubernetes LokiStack management.",
   "author": {
     "name": "TalkOps Team"

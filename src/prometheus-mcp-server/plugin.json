@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "talkops-prometheus",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Operational skills and MCP execution server for Prometheus 3.0+, Thanos, Mimir, Cortex, and VictoriaMetrics: PromQL authoring, RED/SLO triage, trace exemplar pivoting, rule simulation & testing, TSDB cardinality FinOps, Kubernetes Operator scrape CRDs, and exporter lifecycle management.",
   "author": {
     "name": "TalkOps Team"

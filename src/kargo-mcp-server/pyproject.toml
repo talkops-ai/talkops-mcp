@@ -1,6 +1,6 @@
 [project]
 name = "talkops-kargo-mcp-server"
-version = "0.2.0"
+version = "0.2.1"
 description = "Execution-only MCP server and Agent Skills package for Kargo v1.12 continuous promotion orchestration."
 readme = "README.md"
 license = {text = "Apache-2.0"}

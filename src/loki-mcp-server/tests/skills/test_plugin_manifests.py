@@ -33,7 +33,7 @@ class TestPluginManifests:
 
         assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
         assert data["name"] == "talkops-loki"
-        assert data["version"] == "0.2.0"
+        assert data["version"] == "0.2.1"
 
         unexpected_keys = set(data.keys()) - CLOSED_V1_PLUGIN_FIELDS
         assert not unexpected_keys, (

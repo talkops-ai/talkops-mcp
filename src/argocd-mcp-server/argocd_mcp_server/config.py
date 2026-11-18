@@ -56,7 +56,7 @@ class LoggingConfig:
 class ServerConfig:
     """MCP server configuration."""
     name: str = 'argocd-mcp-server'
-    version: str = '0.4.0'
+    version: str = '0.4.1'
     transport: str = 'http'  # http (Streamable HTTP) or stdio
     host: str = '0.0.0.0'
     port: int = 8770  # HTTP server port
@@ -94,7 +94,7 @@ class Config:
 
         config = ServerConfig(
             name=os.getenv('MCP_SERVER_NAME', 'argocd-mcp-server'),
-            version=os.getenv('MCP_SERVER_VERSION', '0.4.0'),
+            version=os.getenv('MCP_SERVER_VERSION', '0.4.1'),
             transport=os.getenv('MCP_TRANSPORT', 'http').lower(),
             host=os.getenv('MCP_HOST', '0.0.0.0'),
             port=int(os.getenv('MCP_PORT', '8770')),

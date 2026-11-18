@@ -55,7 +55,7 @@ class ServerConfig:
 
     # Server identity
     name: str = "argo-rollout-mcp-server"
-    version: str = "0.2.0"
+    version: str = "0.2.1"
     description: str = "Argo Rollouts Progressive Delivery MCP Execution Server"
 
     # Transport settings
@@ -117,7 +117,7 @@ class Config:
 
         return ServerConfig(
             name=os.getenv("MCP_SERVER_NAME", "argo-rollout-mcp-server"),
-            version=os.getenv("MCP_SERVER_VERSION", "0.2.0"),
+            version=os.getenv("MCP_SERVER_VERSION", "0.2.1"),
             transport=os.getenv("MCP_TRANSPORT", "stdio").strip().lower(),
             host=os.getenv("MCP_HOST", "0.0.0.0"),
             port=int(os.getenv("MCP_PORT", "8768")),

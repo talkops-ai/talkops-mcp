@@ -124,7 +124,7 @@ class ServerConfig:
     """
 
     name: str = "opentelemetry-mcp-server"
-    version: str = "0.2.0"
+    version: str = "0.2.1"
     transport: str = "stdio"
     host: str = "0.0.0.0"
     port: int = 8768
@@ -196,7 +196,7 @@ class Config:
 
         return ServerConfig(
             name=os.getenv("MCP_SERVER_NAME", "opentelemetry-mcp-server"),
-            version=os.getenv("MCP_SERVER_VERSION", "0.2.0"),
+            version=os.getenv("MCP_SERVER_VERSION", "0.2.1"),
             transport=os.getenv("MCP_TRANSPORT", "stdio").strip().lower(),
             host=os.getenv("MCP_HOST", "0.0.0.0"),
             port=int(os.getenv("MCP_PORT", "8768")),

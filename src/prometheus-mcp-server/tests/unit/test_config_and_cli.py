@@ -17,7 +17,7 @@ class TestConfigAndCli:
         with patch.dict(os.environ, {}, clear=True):
             cfg = Config.from_env()
             assert cfg.name == "prometheus-mcp-server"
-            assert cfg.version == "0.2.0"
+            assert cfg.version == "0.2.1"
             assert cfg.transport == "stdio"
             assert cfg.allow_write is True
             assert cfg.toolsets == ["all"]

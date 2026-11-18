@@ -94,7 +94,7 @@ WORKDIR /app
 
 # Default environment variables (can be overridden via docker run -e)
 ENV MCP_SERVER_NAME=helm-mcp-server
-ENV MCP_SERVER_VERSION=0.5.0
+ENV MCP_SERVER_VERSION=0.5.1
 ENV MCP_TRANSPORT=http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8765

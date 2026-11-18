@@ -3,7 +3,7 @@ set -e
 
 # Set default environment variables if not already set
 export MCP_SERVER_NAME="${MCP_SERVER_NAME:-alertmanager-mcp-server}"
-export MCP_SERVER_VERSION="${MCP_SERVER_VERSION:-0.2.0}"
+export MCP_SERVER_VERSION="${MCP_SERVER_VERSION:-0.2.1}"
 export MCP_TRANSPORT="${MCP_TRANSPORT:-http}"
 export MCP_HOST="${MCP_HOST:-0.0.0.0}"
 export MCP_PORT="${MCP_PORT:-8769}"

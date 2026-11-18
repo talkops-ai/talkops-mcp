@@ -1,6 +1,6 @@
 [project]
 name = "talkops-traefik-mcp-server"
-version = "0.2.0"
+version = "0.2.1"
 description = "A Model Context Protocol (MCP) server for Traefik v3 traffic management — routing, canary/weighted services, middlewares, TLS, TCP/UDP, and runtime diagnostics."
 readme = "README.md"
 license = {text = "Apache-2.0"}

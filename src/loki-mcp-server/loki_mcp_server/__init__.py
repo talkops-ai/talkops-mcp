@@ -3,4 +3,4 @@
 A Model Context Protocol server for Grafana Loki log observability.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

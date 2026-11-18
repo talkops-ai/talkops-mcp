@@ -1,4 +1,4 @@
-"""Shared test fixtures for Alertmanager MCP server v0.2.0 test suite."""
+"""Shared test fixtures for Alertmanager MCP server v0.2.1 test suite."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def test_backend_config() -> BackendConfig:
 def test_server_config(test_backend_config: BackendConfig) -> ServerConfig:
     return ServerConfig(
         name="test-alertmanager-mcp",
-        version="0.2.0",
+        version="0.2.1",
         transport="stdio",
         allow_write=True,
         toolsets=["all"],
@@ -51,7 +51,7 @@ def test_server_config(test_backend_config: BackendConfig) -> ServerConfig:
 def readonly_server_config(test_backend_config: BackendConfig) -> ServerConfig:
     return ServerConfig(
         name="test-alertmanager-mcp-ro",
-        version="0.2.0",
+        version="0.2.1",
         transport="stdio",
         allow_write=False,
         toolsets=["all"],

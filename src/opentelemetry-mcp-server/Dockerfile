@@ -84,7 +84,7 @@ WORKDIR /app
 
 # Default environment variables
 ENV MCP_SERVER_NAME=opentelemetry-mcp-server
-ENV MCP_SERVER_VERSION=0.2.0
+ENV MCP_SERVER_VERSION=0.2.1
 ENV MCP_TRANSPORT=http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8771

@@ -114,7 +114,7 @@ class ServerConfig:
     """MCP server configuration."""
 
     name: str = "alertmanager-mcp-server"
-    version: str = "0.2.0"
+    version: str = "0.2.1"
     transport: str = "stdio"
     host: str = "0.0.0.0"
     port: int = 8769
@@ -301,7 +301,7 @@ class Config:
 
         return ServerConfig(
             name=os.getenv("MCP_SERVER_NAME", "alertmanager-mcp-server"),
-            version=os.getenv("MCP_SERVER_VERSION", "0.2.0"),
+            version=os.getenv("MCP_SERVER_VERSION", "0.2.1"),
             transport=os.getenv("MCP_TRANSPORT", "stdio"),
             host=os.getenv("MCP_HOST", "0.0.0.0"),
             port=int(os.getenv("MCP_PORT", "8769")),

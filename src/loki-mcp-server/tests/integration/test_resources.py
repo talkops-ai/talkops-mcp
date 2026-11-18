@@ -21,7 +21,7 @@ class TestSystemAndConfigResources:
         text = get_text(result)
         data = json.loads(text)
         assert data["server"] == "loki-mcp-server"
-        assert data["version"] == "0.2.0"
+        assert data["version"] == "0.2.1"
         assert "allow_write" in data
         assert "toolsets" in data
         assert "backend" in data

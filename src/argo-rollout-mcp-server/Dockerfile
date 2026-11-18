@@ -94,7 +94,7 @@ WORKDIR /app
 
 # Default environment variables (override with -e at runtime)
 ENV MCP_SERVER_NAME=argo-rollout-mcp-server
-ENV MCP_SERVER_VERSION=0.2.0
+ENV MCP_SERVER_VERSION=0.2.1
 ENV MCP_TRANSPORT=http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8768

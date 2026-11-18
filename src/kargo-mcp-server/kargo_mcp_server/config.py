@@ -73,7 +73,7 @@ class ServerConfig:
 
     # Server identity
     name: str = "kargo-mcp-server"
-    version: str = "0.2.0"
+    version: str = "0.2.1"
     description: str = "Kargo Continuous Promotion MCP Execution Server"
 
     # Transport settings (supports stdio and http / streamable-http)
@@ -157,7 +157,7 @@ class Config:
 
         return ServerConfig(
             name=os.getenv("MCP_SERVER_NAME", "kargo-mcp-server"),
-            version=os.getenv("MCP_SERVER_VERSION", "0.2.0"),
+            version=os.getenv("MCP_SERVER_VERSION", "0.2.1"),
             transport=raw_transport,
             host=os.getenv("MCP_HOST", "0.0.0.0"),
             port=int(os.getenv("MCP_PORT", "8766")),

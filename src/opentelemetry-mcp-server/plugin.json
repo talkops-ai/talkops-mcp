@@ -1,7 +1,7 @@
 {
   "$schema": "https://agentplugins.io/schema/v1.0.0/plugin.json",
   "name": "opentelemetry",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "OpenTelemetry on Kubernetes — collector provisioning, workload auto-instrumentation, eBPF/OBI zero-code telemetry, OTTL processing, tail sampling, spanmetrics/servicegraph connectors, pipeline diagnostics, and security auditing.",
   "author": {
     "name": "TalkOps"

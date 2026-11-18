@@ -13,7 +13,7 @@ def _default_package_version() -> str:
     try:
         return pkg_version("talkops-helm-mcp-server")
     except PackageNotFoundError:
-        return "0.5.0"
+        return "0.5.1"
 
 
 def _parse_toolsets(raw: str) -> List[str]:

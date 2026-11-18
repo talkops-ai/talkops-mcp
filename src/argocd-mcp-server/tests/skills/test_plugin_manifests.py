@@ -34,7 +34,7 @@ def test_plugin_json_valid_and_paths_resolve() -> None:
     assert data["$schema"] == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
     assert data["name"] == "argocd-gitops-plugin"
     assert re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", data["name"])
-    assert data["version"] == "0.4.0"
+    assert data["version"] == "0.4.1"
     assert isinstance(data["author"], dict)
     assert "name" in data["author"]
 

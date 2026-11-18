@@ -441,7 +441,7 @@ class LoggingConfig:
 class ServerConfig:
     """MCP server configuration."""
     name: str = 'prometheus-mcp-server'
-    version: str = '0.2.0'
+    version: str = '0.2.1'
     transport: str = 'stdio'
     host: str = '0.0.0.0'
     port: int = 8767
@@ -558,7 +558,7 @@ class Config:
 
         return ServerConfig(
             name=_non_empty_env('MCP_SERVER_NAME', default='prometheus-mcp-server') or 'prometheus-mcp-server',
-            version=_non_empty_env('MCP_SERVER_VERSION', default='0.2.0') or '0.2.0',
+            version=_non_empty_env('MCP_SERVER_VERSION', default='0.2.1') or '0.2.1',
             transport=_non_empty_env('MCP_TRANSPORT', default='stdio') or 'stdio',
             host=_non_empty_env('MCP_HOST', default='0.0.0.0') or '0.0.0.0',
             port=int(_non_empty_env('MCP_PORT', default='8767') or '8767'),
