@@ -7,45 +7,29 @@ from traefik_mcp_server.server.middleware import setup_middleware
 
 
 def _load_instructions() -> str:
-    """Load MCP instructions from static file.
-    
-    Returns:
-        Instructions content as string
-    """
-    static_dir = Path(__file__).parent.parent / 'static'
-    instructions_path = static_dir / 'ARGOFLOW_MCP_INSTRUCTIONS.md'
-    
+    """Load MCP instructions from static file."""
+    static_dir = Path(__file__).parent.parent / "static"
+    instructions_path = static_dir / "TRAEFIK_MCP_INSTRUCTIONS.md"
+
     try:
-        return instructions_path.read_text(encoding='utf-8')
+        return instructions_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return (
-            "ArgoFlow MCP Server - Progressive delivery and traffic management "
-            "for Kubernetes using Argo Rollouts and Traefik."
+            "Traefik MCP Server - Execution layer for Traefik v3 routing, "
+            "weighted services, middlewares, TLS policies, TCP/UDP, and runtime diagnostics."
         )
 
 
 def create_mcp_server(config: ServerConfig) -> FastMCP:
-    """Create and configure FastMCP server.
-    
-    Args:
-        config: Server configuration
-    
-    Returns:
-        Configured FastMCP instance
-    """
-    # Load instructions from static file
+    """Create and configure FastMCP server."""
     instructions = _load_instructions()
-    
-    # Create FastMCP instance
-    # Note: FastMCP handles timeouts internally via uvicorn
-    # HTTP timeout settings are configured via environment variables
+
     mcp = FastMCP(
         name=config.name,
         version=config.version,
-        instructions=instructions
+        instructions=instructions,
     )
-    
-    # Setup middleware
+
     setup_middleware(mcp, config)
-    
+
     return mcp

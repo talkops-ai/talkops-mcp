@@ -1,0 +1,12 @@
+{
+  "$schema": "https://agentplugins.io/schema/v1.0.0/plugin.json",
+  "name": "traefik",
+  "version": "0.2.0",
+  "description": "Traefik v3 Kubernetes MCP Server & Agent Plugin — HTTP/TCP/UDP IngressRoute management, weighted canary/blue-green traffic splitting, traffic mirroring, 26 HTTP/TCP middlewares, TLS & mTLS policies, ServersTransport tuning, Gateway API diagnostics, security posture auditing, and built-in NGINX annotation provider adoption.",
+  "author": {
+    "name": "TalkOps"
+  },
+  "homepage": "https://github.com/talkops/talkops-mcp",
+  "repository": "https://github.com/talkops/talkops-mcp",
+  "license": "Apache-2.0"
+}
